@@ -76,6 +76,7 @@ jobs:
         env:
           GITLEAKS_VERSION: 8.30.1
           GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          HEALTHLABS_FORK_BASE_SHA: ce0be528e7cfce4bf1fa846c3c136186dd719af5
         run: |
           archive=/tmp/gitleaks.tar.gz
           curl --fail --silent --show-error --location \
@@ -83,4 +84,5 @@ jobs:
             --output "$archive"
           printf '%s  %s\n' "$GITLEAKS_SHA256" "$archive" | sha256sum --check --status
           tar -xzf "$archive" -C /tmp gitleaks
-          /tmp/gitleaks git --redact --verbose .
+          /tmp/gitleaks git --redact --verbose \
+            --log-opts="${HEALTHLABS_FORK_BASE_SHA}..HEAD" .

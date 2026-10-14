@@ -1,5 +1,5 @@
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from mealie.core.config import get_app_settings
 from mealie.db.models._model_base import SqlAlchemyBase
@@ -61,7 +61,7 @@ def test_convert_types_preserves_row_around_nested_json():
     converted = exporter.convert_types(payload)
     restored_row = converted["healthlabs_idempotency_operations"][0]
 
-    assert restored_row["id"] == operation_id.hex
+    assert UUID(str(restored_row["id"])) == operation_id
     assert restored_row["expires_at"].isoformat() == "2026-10-15T12:00:00"
     assert restored_row["response_body"] == {
         "id": str(recipe_id),

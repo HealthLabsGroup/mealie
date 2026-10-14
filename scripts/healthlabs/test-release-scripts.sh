@@ -27,6 +27,7 @@ trap cleanup EXIT
 
 mkdir -p "$fixture_root/.github/workflows"
 cp "$repository_root/.github/workflows/publish.yml" "$fixture_root/.github/workflows/publish.yml"
+cp "$repository_root/.github/workflows/pull-requests.yml" "$fixture_root/.github/workflows/pull-requests.yml"
 cp "$repository_root/.github/workflows/release.yml" "$fixture_root/.github/workflows/release.yml"
 "$script_dir/verify-release-policy.sh" "$fixture_root"
 

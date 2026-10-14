@@ -24,6 +24,7 @@ def test_public_about_get_app_info(
 
     assert as_dict["production"] == settings.PRODUCTION
     assert as_dict["version"] == APP_VERSION
+    assert as_dict["sourceUrl"] == "https://github.com/HealthLabsGroup/mealie"
     assert as_dict["demoStatus"] == settings.IS_DEMO
     assert as_dict["allowSignup"] == settings.ALLOW_SIGNUP
 
@@ -41,6 +42,7 @@ def test_admin_about_get_app_info(api_client: TestClient, admin_user: TestUser):
     settings = get_app_settings()
 
     assert as_dict["version"] == APP_VERSION
+    assert as_dict["sourceUrl"] == "https://github.com/HealthLabsGroup/mealie"
     assert as_dict["demoStatus"] == settings.IS_DEMO
     assert as_dict["apiPort"] == settings.API_PORT
     assert as_dict["apiDocs"] == settings.API_DOCS

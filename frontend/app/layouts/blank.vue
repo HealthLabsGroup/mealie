@@ -18,6 +18,8 @@
         </div>
       </v-scroll-x-transition>
     </v-main>
+
+    <AppFooter />
   </v-app>
 </template>
 

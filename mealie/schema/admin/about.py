@@ -13,6 +13,7 @@ class AppStatistics(MealieModel):
 class AppInfo(MealieModel):
     production: bool
     version: str
+    source_url: str
     demo_status: bool
     allow_signup: bool
     allow_password_login: bool

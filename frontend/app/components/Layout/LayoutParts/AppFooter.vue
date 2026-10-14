@@ -15,10 +15,13 @@
         cols="12"
       >
         <v-btn
+          data-testid="source-link"
+          aria-label="Source code for this deployed version"
           color="white"
           icon
-          href="https://github.com/mealie-recipes/mealie"
+          :href="$appInfo.sourceUrl"
           target="_blank"
+          rel="noopener noreferrer"
         >
           <v-icon>
             {{ $globals.icons.github }}

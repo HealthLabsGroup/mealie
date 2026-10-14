@@ -8,10 +8,12 @@ been modified by HealthLabs beginning 2026-10-14.
 ## Branches and upstream synchronization
 
 `mealie-next` is the protected default integration branch. HealthLabs work is
-reviewed on focused branches. To synchronize upstream, create a branch from the
-current HealthLabs `mealie-next`, merge `upstream/mealie-next` into it, resolve
-conflicts there, run every required check, and merge it by pull request.
-Upstream updates are never deployed automatically.
+developed on focused branches. To synchronize upstream, create a branch from
+the current HealthLabs `mealie-next`, merge `upstream/mealie-next` into it,
+resolve conflicts there, run every required check, and merge it by pull
+request. Upstream updates are never deployed automatically. While the fork has
+one maintainer, approving reviews are not required; required checks and
+resolved conversations remain mandatory.
 
 Classify each change before merge:
 

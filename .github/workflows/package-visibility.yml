@@ -1,0 +1,25 @@
+name: HealthLabs Package Visibility
+
+on:
+  workflow_call:
+  push:
+    branches:
+      - mealie-next
+    paths:
+      - .github/workflows/package-visibility.yml
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Make the HealthLabs image public
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method PATCH \
+            /orgs/HealthLabsGroup/packages/container/mealie \
+            -f visibility=public

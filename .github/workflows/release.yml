@@ -130,10 +130,15 @@ jobs:
       tag: ${{ github.ref_name }}
       ref: ${{ github.sha }}
 
+  package-visibility:
+    needs: publish
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/package-visibility.yml
+
   github-release:
-    needs:
-      - validate
-      - publish
+    needs: [validate, publish, package-visibility]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -3,12 +3,14 @@ set -euo pipefail
 
 repository_root=${1:-$(git rev-parse --show-toplevel)}
 publish_workflow=$repository_root/.github/workflows/publish.yml
+package_visibility_workflow=$repository_root/.github/workflows/package-visibility.yml
 pull_request_workflow=$repository_root/.github/workflows/pull-requests.yml
 release_workflow=$repository_root/.github/workflows/release.yml
 trivy_workflow=$repository_root/.github/workflows/partial-trivy-container-scanning.yml
 dockerfile=$repository_root/docker/Dockerfile
 active_workflows_dir=$(mktemp -d)
 active_publish_workflow=$active_workflows_dir/publish.yml
+active_package_visibility_workflow=$active_workflows_dir/package-visibility.yml
 active_pull_request_workflow=$active_workflows_dir/pull-requests.yml
 active_release_workflow=$active_workflows_dir/release.yml
 active_trivy_workflow=$active_workflows_dir/partial-trivy-container-scanning.yml
@@ -25,6 +27,7 @@ strip_yaml_comments() {
 }
 
 strip_yaml_comments "$publish_workflow" "$active_publish_workflow"
+strip_yaml_comments "$package_visibility_workflow" "$active_package_visibility_workflow"
 strip_yaml_comments "$pull_request_workflow" "$active_pull_request_workflow"
 strip_yaml_comments "$release_workflow" "$active_release_workflow"
 strip_yaml_comments "$trivy_workflow" "$active_trivy_workflow"
@@ -41,7 +44,19 @@ grep -Fq "hashFiles(format('trivy-{0}.sarif', matrix.suffix)) != ''" "$active_pu
 grep -Fq 'ghcr.io/healthlabsgroup/mealie@${{ steps.build.outputs.digest }}' "$active_publish_workflow"
 grep -Fq 'docker buildx imagetools create' "$active_publish_workflow"
 grep -Fq 'docker buildx imagetools inspect' "$active_publish_workflow"
+grep -Fq '/orgs/HealthLabsGroup/packages/container/mealie' "$active_package_visibility_workflow"
+grep -Fq 'visibility=public' "$active_package_visibility_workflow"
+grep -Fq 'packages: write' "$active_package_visibility_workflow"
+grep -Fq 'branches:' "$active_package_visibility_workflow"
+grep -Fq -- '- mealie-next' "$active_package_visibility_workflow"
+if grep -Fq 'workflow_dispatch:' "$active_package_visibility_workflow"; then
+  printf 'package visibility workflow permits unsafe manual dispatch\n' >&2
+  exit 1
+fi
 grep -Fq 'v*-healthlabs.*' "$active_release_workflow"
+grep -Fq 'package-visibility:' "$active_release_workflow"
+grep -Fq './.github/workflows/package-visibility.yml' "$active_release_workflow"
+grep -Fq 'needs: [validate, publish, package-visibility]' "$active_release_workflow"
 # Workflow shell variables must remain literal.
 # shellcheck disable=SC2016
 grep -Fq 'test "$GITHUB_SHA" = "$branch_head"' "$active_release_workflow"
@@ -64,7 +79,7 @@ grep -Fq '/usr/local/bin/python -m pip uninstall --yes pip' "$dockerfile"
 grep -Fq "\$VENV_PATH/bin/python -m pip uninstall --yes pip" "$dockerfile"
 
 for forbidden in 'hkotel/mealie' 'registry: docker.io' 'DOCKERHUB_TOKEN' 'DOCKERHUB_USERNAME' 'depot/' ':latest' 'gitleaks/gitleaks-action'; do
-  if grep -Fq -- "$forbidden" "$active_publish_workflow" "$active_pull_request_workflow" "$active_release_workflow"; then
+  if grep -Fq -- "$forbidden" "$active_publish_workflow" "$active_package_visibility_workflow" "$active_pull_request_workflow" "$active_release_workflow"; then
     printf 'forbidden release publisher content: %s\n' "$forbidden" >&2
     exit 1
   fi

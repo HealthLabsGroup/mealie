@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
+from io import BytesIO
 from uuid import UUID
 
 import sqlalchemy as sa
+from PIL import Image, UnidentifiedImageError
 from sqlalchemy.orm import Session
 
 from mealie.db.models.healthlabs import HealthLabsAccessAudit
@@ -34,9 +36,20 @@ from mealie.services.recipe.recipe_service import RecipeService
 
 AUTHORING_EXTRAS_KEY = "healthlabs.ephra"
 PAGE_SIZE = 50
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_IMAGE_PIXELS = 40_000_000
+IMAGE_MIME_FORMATS = {
+    "image/jpeg": ("JPEG", "jpg"),
+    "image/png": ("PNG", "png"),
+    "image/webp": ("WEBP", "webp"),
+}
 
 
 class HealthLabsRecipeNotFound(LookupError):
+    pass
+
+
+class HealthLabsInvalidImage(ValueError):
     pass
 
 
@@ -149,6 +162,8 @@ class RecipeApiService:
             raise RecipeAccessDenied("Recipe scope is immutable")
         native = self._native_write(data, scope=current_scope)
         native.settings = current.settings
+        if "source_url" not in data.model_fields_set:
+            native.org_url = current.org_url
         cleaned = self.native.clean_recipe_dict(native.model_dump(mode="json", by_alias=False))
         updated = self.native.update_one(recipe_id, Recipe.model_validate(cleaned))
         return self.to_out(updated)
@@ -158,6 +173,36 @@ class RecipeApiService:
         result = self.to_out(current)
         self.native.delete_one(recipe_id)
         return result
+
+    def update_recipe_image(self, recipe_id: UUID, data: bytes, content_type: str) -> HealthLabsRecipeOut:
+        current = self._get_mutation_target(recipe_id)
+        extension = self._validate_image(data, content_type)
+        self.native.update_recipe_image(current.slug, data, extension)
+        return self.to_out(self._get_any_recipe(recipe_id))
+
+    def read_recipe_image(
+        self,
+        recipe_id: UUID,
+        *,
+        access_reason: str | None = None,
+        break_glass_reason: str | None = None,
+    ) -> bytes:
+        recipe = self.get_recipe(
+            recipe_id,
+            access_reason=access_reason,
+            break_glass_reason=break_glass_reason,
+        )
+        if not recipe.image:
+            raise HealthLabsRecipeNotFound(recipe_id)
+        image_path = Recipe.directory_from_id(recipe_id).joinpath("images", "original.webp")
+        if not image_path.is_file():
+            raise HealthLabsRecipeNotFound(recipe_id)
+        return image_path.read_bytes()
+
+    def delete_recipe_image(self, recipe_id: UUID) -> HealthLabsRecipeOut:
+        current = self._get_mutation_target(recipe_id)
+        self.native.delete_recipe_image(current.slug)
+        return self.to_out(self._get_any_recipe(recipe_id))
 
     def to_out(
         self,
@@ -203,6 +248,7 @@ class RecipeApiService:
             total_time_seconds=recipe.total_time_seconds,
             prep_time_seconds=recipe.prep_time_seconds,
             perform_time_seconds=recipe.perform_time_seconds,
+            source_url=recipe.org_url,
             image=recipe.image,
             ingredients=ingredients,
             instructions=instructions,
@@ -243,6 +289,7 @@ class RecipeApiService:
             total_time_seconds=data.total_time_seconds,
             prep_time_seconds=data.prep_time_seconds,
             perform_time_seconds=data.perform_time_seconds,
+            org_url=data.source_url,
             recipe_ingredient=ingredients,
             recipe_instructions=instructions,
             extras={
@@ -254,6 +301,24 @@ class RecipeApiService:
                 )
             },
         )
+
+    @staticmethod
+    def _validate_image(data: bytes, content_type: str) -> str:
+        expected = IMAGE_MIME_FORMATS.get(content_type.lower())
+        if expected is None:
+            raise HealthLabsInvalidImage("Unsupported image content type")
+        expected_format, extension = expected
+        try:
+            with Image.open(BytesIO(data)) as image:
+                actual_format = image.format
+                if image.width * image.height > MAX_IMAGE_PIXELS:
+                    raise HealthLabsInvalidImage("Recipe image dimensions are too large")
+                image.verify()
+        except (Image.DecompressionBombError, UnidentifiedImageError, OSError) as exc:
+            raise HealthLabsInvalidImage("Invalid image data") from exc
+        if actual_format != expected_format:
+            raise HealthLabsInvalidImage("Image content does not match its content type")
+        return extension
 
     @staticmethod
     def _ingredient_out(item) -> HealthLabsIngredientOut:

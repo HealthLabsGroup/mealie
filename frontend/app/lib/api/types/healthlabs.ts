@@ -35,11 +35,35 @@ export interface HealthLabsCapabilityGrantOut {
   grantedAt: string;
   revokedAt?: string | null;
 }
+export interface HealthLabsDraftIngredient {
+  referenceId?: string;
+  quantity?: number | null;
+  food?: HealthLabsFoodIn | null;
+  unit?: HealthLabsUnitIn | null;
+  note?: string | null;
+  originalText?: string | null;
+  title?: string | null;
+  confidence?: HealthLabsIngredientConfidence;
+}
 export interface HealthLabsFoodIn {
   id?: string | null;
   name: string;
   pluralName?: string | null;
   description?: string;
+}
+export interface HealthLabsUnitIn {
+  id?: string | null;
+  name: string;
+  pluralName?: string | null;
+  abbreviation?: string;
+  pluralAbbreviation?: string;
+}
+export interface HealthLabsIngredientConfidence {
+  average?: number | null;
+  quantity?: number | null;
+  unit?: number | null;
+  food?: number | null;
+  comment?: number | null;
 }
 export interface HealthLabsFoodOut {
   id: string;
@@ -51,6 +75,39 @@ export interface HealthLabsIdentity {
   externalSubjectId: string;
   userId: string;
 }
+export interface HealthLabsImportDraftOut {
+  id: string;
+  state: string;
+  recipe: HealthLabsImportRecipeDraft;
+  createdAt: string;
+  expiresAt: string;
+}
+export interface HealthLabsImportRecipeDraft {
+  name: string;
+  description?: string | null;
+  scope?: HealthLabsRecipeScope | null;
+  servings?: number;
+  yieldQuantity?: number;
+  yieldName?: string | null;
+  totalTimeSeconds?: number | null;
+  prepTimeSeconds?: number | null;
+  performTimeSeconds?: number | null;
+  sourceUrl?: string | null;
+  ingredients?: HealthLabsDraftIngredient[];
+  instructions?: HealthLabsInstruction[];
+  authoring?: {
+    [k: string]: boolean;
+  };
+}
+export interface HealthLabsInstruction {
+  title?: string | null;
+  summary?: string | null;
+  text: string;
+  ingredientReferences?: string[];
+}
+export interface HealthLabsImportDraftRequest {
+  url: string;
+}
 export interface HealthLabsIngredientIn {
   referenceId?: string;
   quantity?: number | null;
@@ -59,13 +116,6 @@ export interface HealthLabsIngredientIn {
   note?: string | null;
   originalText?: string | null;
   title?: string | null;
-}
-export interface HealthLabsUnitIn {
-  id?: string | null;
-  name: string;
-  pluralName?: string | null;
-  abbreviation?: string;
-  pluralAbbreviation?: string;
 }
 export interface HealthLabsIngredientOut {
   referenceId: string;
@@ -82,12 +132,6 @@ export interface HealthLabsUnitOut {
   pluralName?: string | null;
   abbreviation?: string;
   pluralAbbreviation?: string;
-}
-export interface HealthLabsInstruction {
-  title?: string | null;
-  summary?: string | null;
-  text: string;
-  ingredientReferences?: string[];
 }
 export interface HealthLabsOperationOut {
   idempotencyKey: string;
@@ -117,6 +161,7 @@ export interface HealthLabsRecipeOut {
   totalTimeSeconds?: number | null;
   prepTimeSeconds?: number | null;
   performTimeSeconds?: number | null;
+  sourceUrl?: string | null;
   image?: string | null;
   ingredients?: HealthLabsIngredientOut[];
   instructions?: HealthLabsInstruction[];
@@ -146,6 +191,7 @@ export interface HealthLabsRecipeWrite {
   totalTimeSeconds?: number | null;
   prepTimeSeconds?: number | null;
   performTimeSeconds?: number | null;
+  sourceUrl?: string | null;
   ingredients?: HealthLabsIngredientIn[];
   instructions?: HealthLabsInstruction[];
   authoring?: {

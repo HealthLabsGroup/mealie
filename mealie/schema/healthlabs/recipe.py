@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
-from pydantic import UUID4, Field
+from pydantic import UUID4, Field, field_validator
 
 from mealie.schema._mealie import MealieModel
 
@@ -58,6 +59,18 @@ class HealthLabsIngredientOut(MealieModel):
     title: str | None = None
 
 
+class HealthLabsIngredientConfidence(MealieModel):
+    average: float | None = None
+    quantity: float | None = None
+    unit: float | None = None
+    food: float | None = None
+    comment: float | None = None
+
+
+class HealthLabsDraftIngredient(HealthLabsIngredientIn):
+    confidence: HealthLabsIngredientConfidence = HealthLabsIngredientConfidence()
+
+
 class HealthLabsInstruction(MealieModel):
     title: str | None = ""
     summary: str | None = ""
@@ -75,9 +88,21 @@ class HealthLabsRecipeWrite(MealieModel):
     total_time_seconds: int | None = Field(default=None, ge=0)
     prep_time_seconds: int | None = Field(default=None, ge=0)
     perform_time_seconds: int | None = Field(default=None, ge=0)
+    source_url: str | None = Field(default=None, max_length=2048)
     ingredients: list[HealthLabsIngredientIn] = []
     instructions: list[HealthLabsInstruction] = []
     authoring: dict[str, bool] = {}
+
+    @field_validator("source_url")
+    @classmethod
+    def validate_source_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("sourceUrl must be an HTTP(S) URL without credentials")
+        return value
 
 
 class HealthLabsRecipeOut(MealieModel):
@@ -97,6 +122,7 @@ class HealthLabsRecipeOut(MealieModel):
     total_time_seconds: int | None = None
     prep_time_seconds: int | None = None
     perform_time_seconds: int | None = None
+    source_url: str | None = None
     image: str | None = None
     ingredients: list[HealthLabsIngredientOut] = []
     instructions: list[HealthLabsInstruction] = []
@@ -124,4 +150,20 @@ class HealthLabsOperationOut(MealieModel):
     response_status: int | None = None
     response_body: dict[str, Any] | None = None
     completed_at: datetime | None = None
+    expires_at: datetime
+
+
+class HealthLabsImportDraftRequest(MealieModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+
+class HealthLabsImportRecipeDraft(HealthLabsRecipeWrite):
+    ingredients: list[HealthLabsDraftIngredient] = []
+
+
+class HealthLabsImportDraftOut(MealieModel):
+    id: UUID4
+    state: str
+    recipe: HealthLabsImportRecipeDraft
+    created_at: datetime
     expires_at: datetime

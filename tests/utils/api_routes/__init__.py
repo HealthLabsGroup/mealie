@@ -93,6 +93,8 @@ groups_storage = "/api/groups/storage"
 """`/api/groups/storage`"""
 healthlabs_v1_catalogue = "/api/healthlabs/v1/catalogue"
 """`/api/healthlabs/v1/catalogue`"""
+healthlabs_v1_import_drafts = "/api/healthlabs/v1/import-drafts"
+"""`/api/healthlabs/v1/import-drafts`"""
 healthlabs_v1_recipes = "/api/healthlabs/v1/recipes"
 """`/api/healthlabs/v1/recipes`"""
 healthlabs_v1_subjects = "/api/healthlabs/v1/subjects"
@@ -378,6 +380,11 @@ def groups_reports_item_id(item_id):
     return f"{prefix}/groups/reports/{item_id}"
 
 
+def healthlabs_v1_import_drafts_draft_id(draft_id):
+    """`/api/healthlabs/v1/import-drafts/{draft_id}`"""
+    return f"{prefix}/healthlabs/v1/import-drafts/{draft_id}"
+
+
 def healthlabs_v1_operations_idempotency_key(idempotency_key):
     """`/api/healthlabs/v1/operations/{idempotency_key}`"""
     return f"{prefix}/healthlabs/v1/operations/{idempotency_key}"
@@ -386,6 +393,11 @@ def healthlabs_v1_operations_idempotency_key(idempotency_key):
 def healthlabs_v1_recipes_recipe_id(recipe_id):
     """`/api/healthlabs/v1/recipes/{recipe_id}`"""
     return f"{prefix}/healthlabs/v1/recipes/{recipe_id}"
+
+
+def healthlabs_v1_recipes_recipe_id_image(recipe_id):
+    """`/api/healthlabs/v1/recipes/{recipe_id}/image`"""
+    return f"{prefix}/healthlabs/v1/recipes/{recipe_id}/image"
 
 
 def healthlabs_v1_recipes_recipe_id_revisions_revision_id(recipe_id, revision_id):

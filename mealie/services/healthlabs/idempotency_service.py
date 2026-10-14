@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -111,6 +112,59 @@ class IdempotencyService:
             return None
         return row
 
+    async def execute_async(
+        self,
+        *,
+        idempotency_key: str,
+        request_sha256: str,
+        operation: Callable[[], Awaitable[tuple[int, dict[str, Any]]]],
+    ) -> IdempotentResponse:
+        while True:
+            existing = self._find(idempotency_key)
+            if existing is not None:
+                resolved = await self._resolve_existing_async(existing, request_sha256)
+                if resolved is not None:
+                    return resolved
+                continue
+
+            row = HealthLabsIdempotencyOperation(
+                actor_user_id=self.actor_user_id,
+                idempotency_key=idempotency_key,
+                request_sha256=request_sha256,
+                state="pending",
+                expires_at=get_utc_now() + self.RETENTION,
+            )
+            self.session.add(row)
+            try:
+                self.session.commit()
+            except IntegrityError:
+                self.session.rollback()
+                continue
+
+            try:
+                status_code, body = await operation()
+            except Exception:
+                self.session.rollback()
+                self.session.execute(
+                    sa.delete(HealthLabsIdempotencyOperation).where(
+                        HealthLabsIdempotencyOperation.id == row.id,
+                        HealthLabsIdempotencyOperation.state == "pending",
+                    )
+                )
+                self.session.commit()
+                raise
+
+            persisted = self.session.get(HealthLabsIdempotencyOperation, row.id)
+            if persisted is None:
+                raise RuntimeError("Idempotency operation disappeared before completion")
+            persisted.state = "completed"
+            persisted.response_status = status_code
+            persisted.response_body = body
+            persisted.completed_at = get_utc_now()
+            persisted.expires_at = get_utc_now() + self.RETENTION
+            self.session.commit()
+            return IdempotentResponse(status_code=status_code, body=body, replayed=False)
+
     def _find(self, idempotency_key: str) -> HealthLabsIdempotencyOperation | None:
         return self.session.scalar(
             sa.select(HealthLabsIdempotencyOperation).where(
@@ -139,6 +193,41 @@ class IdempotencyService:
         while time.monotonic() < deadline:
             self.session.rollback()
             time.sleep(0.02)
+            refreshed = self._find(row.idempotency_key)
+            if refreshed is None:
+                return None
+            if refreshed.request_sha256 != request_sha256:
+                raise IdempotencyConflict("Idempotency key was already used for a different request")
+            if refreshed.state == "completed":
+                if refreshed.response_status is None or refreshed.response_body is None:
+                    raise RuntimeError("Completed idempotency operation has no response")
+                return IdempotentResponse(
+                    status_code=refreshed.response_status,
+                    body=refreshed.response_body,
+                    replayed=True,
+                )
+        raise IdempotencyInProgress("Matching operation is still in progress")
+
+    async def _resolve_existing_async(
+        self,
+        row: HealthLabsIdempotencyOperation,
+        request_sha256: str,
+    ) -> IdempotentResponse | None:
+        if row.expires_at <= get_utc_now():
+            self.session.delete(row)
+            self.session.commit()
+            return None
+        if row.request_sha256 != request_sha256:
+            raise IdempotencyConflict("Idempotency key was already used for a different request")
+        if row.state == "completed":
+            if row.response_status is None or row.response_body is None:
+                raise RuntimeError("Completed idempotency operation has no response")
+            return IdempotentResponse(status_code=row.response_status, body=row.response_body, replayed=True)
+
+        deadline = time.monotonic() + self.WAIT_SECONDS
+        while time.monotonic() < deadline:
+            self.session.rollback()
+            await asyncio.sleep(0.02)
             refreshed = self._find(row.idempotency_key)
             if refreshed is None:
                 return None

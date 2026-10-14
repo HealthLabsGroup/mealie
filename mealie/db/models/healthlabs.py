@@ -94,3 +94,18 @@ class HealthLabsIdempotencyOperation(SqlAlchemyBase, BaseMixins):
     response_body: Mapped[dict[str, Any] | None] = mapped_column(sa.JSON, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(NaiveDateTime, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(NaiveDateTime, nullable=False, index=True)
+
+
+class HealthLabsImportDraft(SqlAlchemyBase, BaseMixins):
+    __tablename__ = "healthlabs_import_drafts"
+
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    actor_user_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="ready")
+    payload: Mapped[dict[str, Any]] = mapped_column(sa.JSON, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(NaiveDateTime, nullable=False, index=True)

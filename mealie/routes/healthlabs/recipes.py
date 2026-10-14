@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
 from mealie.core import exceptions as mealie_exceptions
@@ -24,7 +25,13 @@ from mealie.services.healthlabs.idempotency_service import (
     IdempotencyInProgress,
     IdempotencyService,
 )
-from mealie.services.healthlabs.recipe_api_service import HealthLabsRecipeNotFound, RecipeApiService
+from mealie.services.healthlabs.recipe_api_service import (
+    IMAGE_MIME_FORMATS,
+    MAX_IMAGE_BYTES,
+    HealthLabsInvalidImage,
+    HealthLabsRecipeNotFound,
+    RecipeApiService,
+)
 
 router = APIRouter(tags=["HealthLabs: Recipes"])
 
@@ -44,6 +51,8 @@ def _raise_http(exc: Exception) -> None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc), headers={"Retry-After": "1"}
         ) from exc
+    if isinstance(exc, HealthLabsInvalidImage):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     if isinstance(exc, ValueError):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     raise exc
@@ -218,6 +227,82 @@ def get_recipe_revision(
             access_reason=access_reason,
             break_glass_reason=break_glass_reason,
         )
+    except Exception as exc:
+        _raise_http(exc)
+        raise
+
+
+@router.post("/recipes/{recipe_id}/image", response_model=HealthLabsRecipeOut)
+async def update_recipe_image(
+    recipe_id: UUID,
+    image: UploadFile = File(...),
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=1, max_length=255),
+    session: Session = Depends(generate_session),
+    user: PrivateUser = Depends(get_current_user),
+    translator: Translator = Depends(get_locale_provider),
+) -> JSONResponse:
+    content_type = (image.content_type or "").lower()
+    if content_type not in IMAGE_MIME_FORMATS:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Unsupported image content type")
+    data = await image.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Recipe image is too large")
+
+    resource = f"/recipes/{recipe_id}/image"
+    request_hash = IdempotencyService.request_hash(
+        "POST",
+        resource,
+        {"contentType": content_type, "contentSha256": hashlib.sha256(data).hexdigest()},
+    )
+    service = _service(session, user, translator)
+
+    def operation() -> tuple[int, dict]:
+        body = service.update_recipe_image(recipe_id, data, content_type).model_dump(mode="json", by_alias=True)
+        return status.HTTP_200_OK, body
+
+    try:
+        return _idempotent_json(
+            session=session,
+            user=user,
+            idempotency_key=idempotency_key,
+            request_sha256=request_hash,
+            operation=operation,
+        )
+    except Exception as exc:
+        _raise_http(exc)
+        raise
+
+
+@router.get("/recipes/{recipe_id}/image", response_class=Response)
+def get_recipe_image(
+    recipe_id: UUID,
+    access_reason: str | None = Header(default=None, alias="X-HealthLabs-Access-Reason"),
+    break_glass_reason: str | None = Header(default=None, alias="X-HealthLabs-Break-Glass-Reason"),
+    session: Session = Depends(generate_session),
+    user: PrivateUser = Depends(get_current_user),
+    translator: Translator = Depends(get_locale_provider),
+) -> Response:
+    try:
+        data = _service(session, user, translator).read_recipe_image(
+            recipe_id,
+            access_reason=access_reason,
+            break_glass_reason=break_glass_reason,
+        )
+        return Response(content=data, media_type="image/webp", headers={"Cache-Control": "private, no-store"})
+    except Exception as exc:
+        _raise_http(exc)
+        raise
+
+
+@router.delete("/recipes/{recipe_id}/image", response_model=HealthLabsRecipeOut)
+def delete_recipe_image(
+    recipe_id: UUID,
+    session: Session = Depends(generate_session),
+    user: PrivateUser = Depends(get_current_user),
+    translator: Translator = Depends(get_locale_provider),
+) -> HealthLabsRecipeOut:
+    try:
+        return _service(session, user, translator).delete_recipe_image(recipe_id)
     except Exception as exc:
         _raise_http(exc)
         raise

@@ -10,7 +10,7 @@ class IngredientReferences(MealieModel):
     A list of ingredient references.
     """
 
-    reference_id: UUID4 | None = None
+    reference_id: UUID | None = None
     model_config = ConfigDict(from_attributes=True)
 
 

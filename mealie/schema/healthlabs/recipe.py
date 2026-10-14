@@ -75,7 +75,7 @@ class HealthLabsInstruction(MealieModel):
     title: str | None = ""
     summary: str | None = ""
     text: str
-    ingredient_references: list[UUID4] = []
+    ingredient_references: list[UUID] = []
 
 
 class HealthLabsRecipeWrite(MealieModel):

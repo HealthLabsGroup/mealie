@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi.testclient import TestClient
 
@@ -103,3 +103,37 @@ def test_recipe_crud_search_revision_and_exact_structured_round_trip(
     assert deleted.status_code == 200
     assert deleted.json()["id"] == recipe["id"]
     assert api_client.get(f"/api/healthlabs/v1/recipes/{recipe['id']}", headers=headers).status_code == 404
+
+
+def test_recipe_accepts_deterministic_ingredient_references_in_instructions(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+) -> None:
+    _, headers = healthlabs_provision()
+    reference_id = str(uuid5(NAMESPACE_URL, "ephra:recipe:ingredient:0"))
+    payload = {
+        "name": f"Deterministic references {uuid4()}",
+        "ingredients": [
+            {
+                "referenceId": reference_id,
+                "quantity": 1,
+                "food": {"name": "Pearl barley"},
+            }
+        ],
+        "instructions": [
+            {
+                "text": "Cook the barley.",
+                "ingredientReferences": [reference_id],
+            }
+        ],
+    }
+
+    created = api_client.post(
+        "/api/healthlabs/v1/recipes",
+        json=payload,
+        headers={**headers, "Idempotency-Key": f"create-{uuid4()}"},
+    )
+
+    assert created.status_code == 201, created.text
+    assert created.json()["ingredients"][0]["referenceId"] == reference_id
+    assert created.json()["instructions"][0]["ingredientReferences"] == [reference_id]

@@ -13,6 +13,10 @@ grep -Fq 'digest:' "$publish_workflow"
 grep -Fq 'push-by-digest=true' "$publish_workflow"
 # GitHub expression must remain literal.
 # shellcheck disable=SC2016
+grep -Fq 'TRIVY_PLATFORM: ${{ matrix.platform }}' "$publish_workflow"
+grep -Fq "hashFiles(format('trivy-{0}.sarif', matrix.suffix)) != ''" "$publish_workflow"
+# GitHub expression must remain literal.
+# shellcheck disable=SC2016
 grep -Fq 'ghcr.io/healthlabsgroup/mealie@${{ steps.build.outputs.digest }}' "$publish_workflow"
 grep -Fq 'docker buildx imagetools create' "$publish_workflow"
 grep -Fq 'docker buildx imagetools inspect' "$publish_workflow"

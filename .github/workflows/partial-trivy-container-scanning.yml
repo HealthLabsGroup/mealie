@@ -32,10 +32,13 @@ jobs:
           image-ref: "mealie"
           format: "sarif"
           output: "trivy-results.sarif"
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"
         env:
           TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db,public.ecr.aws/aquasecurity/trivy-db
 
       - name: Upload Trivy scan results to GitHub Security tab
+        if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: "trivy-results.sarif"

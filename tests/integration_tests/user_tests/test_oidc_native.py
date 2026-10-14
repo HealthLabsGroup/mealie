@@ -4,7 +4,11 @@ from joserfc.errors import InvalidClaimError
 from pytest import MonkeyPatch
 
 from mealie.app import app
+from mealie.core.config import get_app_settings
+from mealie.core.security.providers.openid_provider import OpenIDProvider
+from mealie.db.models.users import User
 from mealie.routes.auth import auth as auth_routes
+from tests import utils
 from tests.utils import api_routes
 
 native_token_request = {
@@ -117,3 +121,51 @@ def test_native_token_returns_500_when_id_token_is_rejected(monkeypatch: MonkeyP
     response = client.post(api_routes.auth_oauth_native_token, json=native_token_request)
 
     assert response.status_code == 500
+
+
+def test_managed_oidc_account_matches_subject_when_email_changes(
+    unique_user_fn_scoped: utils.TestUser,
+    monkeypatch: MonkeyPatch,
+):
+    monkeypatch.setenv("OIDC_SIGNUP_ENABLED", "false")
+    get_app_settings.cache_clear()
+    session = unique_user_fn_scoped.repos.session
+    user = session.get(User, unique_user_fn_scoped.user_id)
+    assert user is not None
+    user.external_subject_id = "healthlabs-native-subject"
+    user.healthlabs_managed = True
+    session.commit()
+
+    claims = {
+        "sub": "healthlabs-native-subject",
+        "preferred_username": "renamed-person",
+        "email": "changed-address@example.com",
+        "email_verified": True,
+        "name": "Renamed Person",
+    }
+
+    assert OpenIDProvider(session, claims).authenticate() is not None
+
+
+def test_managed_oidc_account_cannot_fall_back_to_email(
+    unique_user_fn_scoped: utils.TestUser,
+    monkeypatch: MonkeyPatch,
+):
+    monkeypatch.setenv("OIDC_SIGNUP_ENABLED", "false")
+    get_app_settings.cache_clear()
+    session = unique_user_fn_scoped.repos.session
+    user = session.get(User, unique_user_fn_scoped.user_id)
+    assert user is not None
+    user.external_subject_id = "healthlabs-correct-subject"
+    user.healthlabs_managed = True
+    session.commit()
+
+    claims = {
+        "sub": "healthlabs-wrong-subject",
+        "preferred_username": unique_user_fn_scoped.username,
+        "email": unique_user_fn_scoped.email,
+        "email_verified": True,
+        "name": unique_user_fn_scoped.full_name,
+    }
+
+    assert OpenIDProvider(session, claims).authenticate() is None

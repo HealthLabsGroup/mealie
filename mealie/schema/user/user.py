@@ -211,6 +211,8 @@ class PrivateUser(UserOut):
     locked_at: datetime | None = None
     tokens_valid_after: datetime | None = None
     external_avatar_hash: str | None = None
+    external_subject_id: str | None = None
+    healthlabs_managed: bool = False
     model_config = ConfigDict(from_attributes=True)
 
     @field_validator("login_attemps", mode="before")

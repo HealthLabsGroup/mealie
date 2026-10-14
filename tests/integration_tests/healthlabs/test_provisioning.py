@@ -115,7 +115,9 @@ def test_rotation_invalidates_prior_token_and_deprovision_removes_workspace(
     assert api_client.get("/api/recipes", headers=old_headers).status_code == 401
 
     new_headers = {"Authorization": f"Bearer {rotated.json()['token']}"}
-    assert api_client.get("/api/healthlabs/v1/recipes", headers=new_headers).status_code == 404
+    recipes = api_client.get("/api/healthlabs/v1/recipes", headers=new_headers)
+    assert recipes.status_code == 200
+    assert recipes.json() == {"items": [], "nextCursor": None}
 
     deleted = api_client.delete(f"{SUBJECTS_URL}/{subject}", headers=PROVISIONING_HEADERS)
     assert deleted.status_code == 204

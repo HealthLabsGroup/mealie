@@ -185,8 +185,56 @@ def upgrade() -> None:
         unique=False,
     )
 
+    op.create_table(
+        "healthlabs_idempotency_operations",
+        sa.Column("id", GUID(), nullable=False),
+        sa.Column("actor_user_id", GUID(), nullable=False),
+        sa.Column("idempotency_key", sa.String(length=255), nullable=False),
+        sa.Column("request_sha256", sa.String(length=64), nullable=False),
+        sa.Column("state", sa.String(length=16), nullable=False),
+        sa.Column("response_status", sa.Integer(), nullable=True),
+        sa.Column("response_body", sa.JSON(), nullable=True),
+        sa.Column("completed_at", sa.DateTime(), nullable=True),
+        sa.Column("expires_at", sa.DateTime(), nullable=False),
+        sa.Column("created_at", sa.DateTime(), nullable=True),
+        sa.Column("update_at", sa.DateTime(), nullable=True),
+        sa.CheckConstraint(
+            "state IN ('pending', 'completed')",
+            name="healthlabs_idempotency_state_valid",
+        ),
+        sa.ForeignKeyConstraint(["actor_user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "actor_user_id",
+            "idempotency_key",
+            name="healthlabs_idempotency_actor_key",
+        ),
+    )
+    op.create_index(
+        "ix_healthlabs_idempotency_operations_actor_user_id",
+        "healthlabs_idempotency_operations",
+        ["actor_user_id"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_healthlabs_idempotency_operations_expires_at",
+        "healthlabs_idempotency_operations",
+        ["expires_at"],
+        unique=False,
+    )
+
 
 def downgrade() -> None:
+    op.drop_index(
+        "ix_healthlabs_idempotency_operations_expires_at",
+        table_name="healthlabs_idempotency_operations",
+    )
+    op.drop_index(
+        "ix_healthlabs_idempotency_operations_actor_user_id",
+        table_name="healthlabs_idempotency_operations",
+    )
+    op.drop_table("healthlabs_idempotency_operations")
+
     op.drop_index(
         "ix_healthlabs_recipe_revisions_recipe_id",
         table_name="healthlabs_recipe_revisions",

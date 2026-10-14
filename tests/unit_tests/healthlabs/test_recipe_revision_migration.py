@@ -46,6 +46,7 @@ def test_recipe_revision_migration_preserves_ordinary_recipes_with_safe_defaults
             ).one()
             assert migrated == ("personal", 0, None, None, None)
             assert sa.inspect(connection).has_table("healthlabs_recipe_revisions")
+            assert sa.inspect(connection).has_table("healthlabs_idempotency_operations")
 
             connection.execute(
                 sa.text("INSERT INTO recipes (id, name) VALUES ('recipe-after-upgrade', 'Ordinary recipe')")
@@ -62,5 +63,6 @@ def test_recipe_revision_migration_preserves_ordinary_recipes_with_safe_defaults
 
             assert "healthlabs_scope" not in _columns(connection, "recipes")
             assert not sa.inspect(connection).has_table("healthlabs_recipe_revisions")
+            assert not sa.inspect(connection).has_table("healthlabs_idempotency_operations")
     finally:
         engine.dispose()

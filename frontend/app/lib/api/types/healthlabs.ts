@@ -14,6 +14,7 @@ export type HealthLabsCapability =
   | "plans:write_all"
   | "catalogue:read"
   | "catalogue:write";
+export type HealthLabsRecipeScope = "personal" | "catalogue";
 
 export interface HealthLabsAccessAuditOut {
   id: string;
@@ -34,7 +35,120 @@ export interface HealthLabsCapabilityGrantOut {
   grantedAt: string;
   revokedAt?: string | null;
 }
+export interface HealthLabsFoodIn {
+  id?: string | null;
+  name: string;
+  pluralName?: string | null;
+  description?: string;
+}
+export interface HealthLabsFoodOut {
+  id: string;
+  name: string;
+  pluralName?: string | null;
+  description?: string;
+}
 export interface HealthLabsIdentity {
   externalSubjectId: string;
   userId: string;
+}
+export interface HealthLabsIngredientIn {
+  referenceId?: string;
+  quantity?: number | null;
+  food?: HealthLabsFoodIn | null;
+  unit?: HealthLabsUnitIn | null;
+  note?: string | null;
+  originalText?: string | null;
+  title?: string | null;
+}
+export interface HealthLabsUnitIn {
+  id?: string | null;
+  name: string;
+  pluralName?: string | null;
+  abbreviation?: string;
+  pluralAbbreviation?: string;
+}
+export interface HealthLabsIngredientOut {
+  referenceId: string;
+  quantity?: number | null;
+  food?: HealthLabsFoodOut | null;
+  unit?: HealthLabsUnitOut | null;
+  note?: string | null;
+  originalText?: string | null;
+  title?: string | null;
+}
+export interface HealthLabsUnitOut {
+  id: string;
+  name: string;
+  pluralName?: string | null;
+  abbreviation?: string;
+  pluralAbbreviation?: string;
+}
+export interface HealthLabsInstruction {
+  title?: string | null;
+  summary?: string | null;
+  text: string;
+  ingredientReferences?: string[];
+}
+export interface HealthLabsOperationOut {
+  idempotencyKey: string;
+  state: string;
+  requestSha256: string;
+  responseStatus?: number | null;
+  responseBody?: {
+    [k: string]: unknown;
+  } | null;
+  completedAt?: string | null;
+  expiresAt: string;
+}
+export interface HealthLabsRecipeOut {
+  id: string;
+  slug: string;
+  name: string;
+  description?: string | null;
+  scope: HealthLabsRecipeScope;
+  revisionId?: string | null;
+  revisionNumber: number;
+  copiedFromRecipeId?: string | null;
+  copiedFromRevisionId?: string | null;
+  copiedAt?: string | null;
+  servings?: number;
+  yieldQuantity?: number;
+  yieldName?: string | null;
+  totalTimeSeconds?: number | null;
+  prepTimeSeconds?: number | null;
+  performTimeSeconds?: number | null;
+  image?: string | null;
+  ingredients?: HealthLabsIngredientOut[];
+  instructions?: HealthLabsInstruction[];
+  authoring?: {
+    [k: string]: boolean;
+  };
+}
+export interface HealthLabsRecipePage {
+  items: HealthLabsRecipeOut[];
+  nextCursor?: string | null;
+}
+export interface HealthLabsRecipeRevisionOut {
+  id: string;
+  recipeId: string;
+  revisionNumber: number;
+  contentSha256: string;
+  createdAt: string;
+  recipe: HealthLabsRecipeOut;
+}
+export interface HealthLabsRecipeWrite {
+  name: string;
+  description?: string | null;
+  scope?: HealthLabsRecipeScope | null;
+  servings?: number;
+  yieldQuantity?: number;
+  yieldName?: string | null;
+  totalTimeSeconds?: number | null;
+  prepTimeSeconds?: number | null;
+  performTimeSeconds?: number | null;
+  ingredients?: HealthLabsIngredientIn[];
+  instructions?: HealthLabsInstruction[];
+  authoring?: {
+    [k: string]: boolean;
+  };
 }

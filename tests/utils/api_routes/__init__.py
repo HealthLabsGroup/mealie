@@ -91,6 +91,12 @@ groups_self = "/api/groups/self"
 """`/api/groups/self`"""
 groups_storage = "/api/groups/storage"
 """`/api/groups/storage`"""
+healthlabs_v1_catalogue = "/api/healthlabs/v1/catalogue"
+"""`/api/healthlabs/v1/catalogue`"""
+healthlabs_v1_recipes = "/api/healthlabs/v1/recipes"
+"""`/api/healthlabs/v1/recipes`"""
+healthlabs_v1_subjects = "/api/healthlabs/v1/subjects"
+"""`/api/healthlabs/v1/subjects`"""
 households_cookbooks = "/api/households/cookbooks"
 """`/api/households/cookbooks`"""
 households_events_notifications = "/api/households/events/notifications"
@@ -370,6 +376,31 @@ def groups_members_username_or_id(username_or_id):
 def groups_reports_item_id(item_id):
     """`/api/groups/reports/{item_id}`"""
     return f"{prefix}/groups/reports/{item_id}"
+
+
+def healthlabs_v1_operations_idempotency_key(idempotency_key):
+    """`/api/healthlabs/v1/operations/{idempotency_key}`"""
+    return f"{prefix}/healthlabs/v1/operations/{idempotency_key}"
+
+
+def healthlabs_v1_recipes_recipe_id(recipe_id):
+    """`/api/healthlabs/v1/recipes/{recipe_id}`"""
+    return f"{prefix}/healthlabs/v1/recipes/{recipe_id}"
+
+
+def healthlabs_v1_recipes_recipe_id_revisions_revision_id(recipe_id, revision_id):
+    """`/api/healthlabs/v1/recipes/{recipe_id}/revisions/{revision_id}`"""
+    return f"{prefix}/healthlabs/v1/recipes/{recipe_id}/revisions/{revision_id}"
+
+
+def healthlabs_v1_subjects_external_subject_id(external_subject_id):
+    """`/api/healthlabs/v1/subjects/{external_subject_id}`"""
+    return f"{prefix}/healthlabs/v1/subjects/{external_subject_id}"
+
+
+def healthlabs_v1_subjects_external_subject_id_tokens_rotate(external_subject_id):
+    """`/api/healthlabs/v1/subjects/{external_subject_id}/tokens/rotate`"""
+    return f"{prefix}/healthlabs/v1/subjects/{external_subject_id}/tokens/rotate"
 
 
 def households_cookbooks_item_id(item_id):

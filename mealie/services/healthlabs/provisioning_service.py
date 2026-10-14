@@ -71,7 +71,7 @@ class HealthLabsProvisioningService:
             household=household,
             label=f"HealthLabs recipe user {digest}",
             capabilities=SUBJECT_CAPABILITIES,
-            token_name="HealthLabs Ephra recipe service",
+            token_name="HealthLabs recipe service",
         )
         self.session.commit()
         return self._credential_for(user, created=True)
@@ -114,7 +114,7 @@ class HealthLabsProvisioningService:
             raise LookupError(external_subject_id)
 
         self.session.execute(sa.delete(LongLiveToken).where(LongLiveToken.user_id == user.id))
-        self.session.add(self._new_api_token(user, "HealthLabs Ephra recipe service"))
+        self.session.add(self._new_api_token(user, "HealthLabs recipe service"))
         self.session.commit()
         return self._credential_for(user, created=False)
 

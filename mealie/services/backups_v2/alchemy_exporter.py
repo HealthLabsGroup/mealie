@@ -65,6 +65,11 @@ class AlchemyExporter(BaseService):
         "locked_at",
         "last_made",
         "completed_date",
+        "completed_at",
+        "copied_at",
+        "granted_at",
+        "occurred_at",
+        "revoked_at",
         "tokens_valid_after",
     }
     """Column names restored back into datetimes. Anything stored as a `NaiveDateTime` and missing
@@ -115,7 +120,7 @@ class AlchemyExporter(BaseService):
         """
         for key, value in data.items():
             if isinstance(value, dict):
-                data = self.convert_types(value)
+                data[key] = self.convert_types(value)
             elif isinstance(value, list):  # assume that this is a list of dictionaries
                 data[key] = [self.convert_types(item) for item in value]
             elif isinstance(value, str):

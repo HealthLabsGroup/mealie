@@ -4,3 +4,7 @@ allowBuilds:
   json-editor-vue: true
   unrs-resolver: true
   vue-demi: true
+overrides:
+  '@simple-git/argv-parser': 2.0.1
+  simple-git: 4.0.2
+  tinypool: 2.1.2

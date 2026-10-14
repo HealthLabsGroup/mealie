@@ -122,7 +122,9 @@ jobs:
       - codeql
       - secret-and-policy-scan
     permissions:
+      attestations: write
       contents: read
+      id-token: write
       packages: write
       security-events: write
     uses: ./.github/workflows/publish.yml
@@ -153,4 +155,7 @@ jobs:
 
           Upstream version: $UPSTREAM_VERSION
           Source commit: https://github.com/HealthLabsGroup/mealie/tree/$GITHUB_SHA
-          Rollback: redeploy the previously recorded immutable digest. This baseline release contains no HealthLabs schema migration."
+          HealthLabs changes: subject-scoped recipe ownership, immutable revisions, idempotent writes, isolated workspace provisioning, capability-aware authorization, and the stable recipe-service HTTP API.
+
+          Database migration: Alembic revision 4a71e4c92a16 adds the HealthLabs recipe identity, authorization, revision, idempotency, audit, and provisioning schema. Back up the database before upgrading.
+          Rollback: restore the pre-upgrade database backup, then redeploy the previously recorded immutable digest. Do not run an older image against the migrated schema."

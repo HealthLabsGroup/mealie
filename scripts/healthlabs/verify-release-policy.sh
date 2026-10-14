@@ -41,6 +41,14 @@ grep -Fq "hashFiles(format('trivy-{0}.sarif', matrix.suffix)) != ''" "$active_pu
 grep -Fq 'ghcr.io/healthlabsgroup/mealie@${{ steps.build.outputs.digest }}' "$active_publish_workflow"
 grep -Fq 'docker buildx imagetools create' "$active_publish_workflow"
 grep -Fq 'docker buildx imagetools inspect' "$active_publish_workflow"
+grep -Fq 'sigstore/cosign-installer@v4.1.2' "$active_publish_workflow"
+# Workflow shell variables must remain literal.
+# shellcheck disable=SC2016
+grep -Fq 'cosign sign --yes "$REGISTRY_IMAGE@$IMAGE_DIGEST"' "$active_publish_workflow"
+grep -Fq 'actions/attest-build-provenance@v4.2.2' "$active_publish_workflow"
+grep -Fq 'push-to-registry: true' "$active_publish_workflow"
+grep -Fq 'attestations: write' "$active_publish_workflow" "$active_release_workflow"
+grep -Fq 'id-token: write' "$active_publish_workflow" "$active_release_workflow"
 grep -Fq 'v*-healthlabs.*' "$active_release_workflow"
 # Workflow shell variables must remain literal.
 # shellcheck disable=SC2016

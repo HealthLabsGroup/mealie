@@ -3,16 +3,10 @@
   "version": "1.0.0",
   "main": "index.js",
   "license": "MIT",
+  "packageManager": "pnpm@11.23.0",
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "@types/node": "^24.12.4"
   },
-  "scripts": {},
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": "11",
-      "onFail": "warn"
-    }
-  }
+  "scripts": {}
 }

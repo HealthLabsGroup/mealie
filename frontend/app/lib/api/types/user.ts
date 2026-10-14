@@ -155,6 +155,8 @@ export interface PrivateUser {
   lockedAt?: string | null;
   tokensValidAfter?: string | null;
   externalAvatarHash?: string | null;
+  externalSubjectId?: string | null;
+  healthlabsManaged?: boolean;
 }
 export interface LongLiveTokenOut {
   name: string;

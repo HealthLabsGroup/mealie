@@ -105,7 +105,16 @@ class OpenIDProvider(AuthProvider[UserInfo]):
                 )
                 return None
 
-        user = self.try_get_user(claims.get(settings.OIDC_USER_CLAIM))
+        subject = claims.get("sub")
+        user = repos.users.get_one(subject, "external_subject_id") if subject else None
+        if user is not None and not user.healthlabs_managed:
+            user = None
+
+        if user is None:
+            user = self.try_get_user(claims.get(settings.OIDC_USER_CLAIM))
+            if user is not None and user.healthlabs_managed:
+                self._logger.warning("[OIDC] managed account refused non-subject account matching")
+                return None
         if not user:
             if not settings.OIDC_SIGNUP_ENABLED:
                 self._logger.debug("[OIDC] No user found. Not creating a new user - new user creation is disabled.")

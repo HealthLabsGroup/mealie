@@ -1,4 +1,5 @@
 import json
+from uuid import UUID, uuid4
 
 from mealie.core.config import get_app_settings
 from mealie.db.models._model_base import SqlAlchemyBase
@@ -36,3 +37,36 @@ def test_every_datetime_column_survives_a_backup():
         f"datetime columns missing from AlchemyExporter.look_for_datetime: {sorted(unregistered)}. "
         "Add them, or they will restore as strings."
     )
+
+
+def test_convert_types_preserves_row_around_nested_json():
+    settings = get_app_settings()
+    exporter = AlchemyExporter(settings.DB_URL)
+    operation_id = uuid4()
+    recipe_id = uuid4()
+    payload = {
+        "healthlabs_idempotency_operations": [
+            {
+                "id": str(operation_id),
+                "expires_at": "2026-10-15T12:00:00",
+                "response_body": {
+                    "id": str(recipe_id),
+                    "name": "Soup",
+                    "created_at": "2026-10-15T11:00:00",
+                },
+            }
+        ]
+    }
+
+    converted = exporter.convert_types(payload)
+    restored_row = converted["healthlabs_idempotency_operations"][0]
+
+    assert UUID(str(restored_row["id"])) == operation_id
+    assert restored_row["expires_at"].isoformat() == "2026-10-15T12:00:00"
+    assert restored_row["response_body"] == {
+        "id": str(recipe_id),
+        "name": "Soup",
+        "created_at": "2026-10-15T11:00:00",
+    }
+
+    exporter.engine.dispose()

@@ -1,5 +1,5 @@
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 import sqlalchemy.orm as orm
@@ -12,7 +12,7 @@ from sqlalchemy.orm.attributes import get_history
 from sqlalchemy.orm.session import object_session
 
 from mealie.db.models._model_utils.auto_init import auto_init
-from mealie.db.models._model_utils.datetime import NaiveDateTime, get_utc_today
+from mealie.db.models._model_utils.datetime import NaiveDateTime, get_utc_now, get_utc_today
 from mealie.db.models._model_utils.guid import GUID
 from mealie.db.models.recipe.ingredient import RecipeIngredientModel
 
@@ -41,8 +41,16 @@ if TYPE_CHECKING:
 
 class RecipeModel(SqlAlchemyBase, BaseMixins):
     __tablename__ = "recipes"
-    __table_args__: tuple[sa.UniqueConstraint, ...] = (
+    __table_args__: tuple[sa.Constraint, ...] = (
         sa.UniqueConstraint("slug", "group_id", name="recipe_slug_group_id_key"),
+        sa.CheckConstraint(
+            "healthlabs_scope IN ('personal', 'catalogue')",
+            name="healthlabs_recipe_scope_valid",
+        ),
+        sa.CheckConstraint(
+            "healthlabs_revision_number >= 0",
+            name="healthlabs_recipe_revision_nonnegative",
+        ),
     )
 
     id: FilterableColumn[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
@@ -57,6 +65,22 @@ class RecipeModel(SqlAlchemyBase, BaseMixins):
 
     user_id: FilterableColumn[GUID | None] = mapped_column(GUID, sa.ForeignKey("users.id", use_alter=True), index=True)
     user: Mapped[User] = orm.relationship("User", uselist=False, foreign_keys=[user_id])
+
+    healthlabs_scope: FilterableColumn[str] = mapped_column(
+        sa.String(16),
+        nullable=False,
+        default="personal",
+        server_default="personal",
+    )
+    healthlabs_revision_number: FilterableColumn[int] = mapped_column(
+        sa.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    copied_from_recipe_id: FilterableColumn[GUID | None] = mapped_column(GUID, nullable=True, index=True)
+    copied_from_revision_id: FilterableColumn[GUID | None] = mapped_column(GUID, nullable=True, index=True)
+    copied_at: FilterableColumn[datetime | None] = mapped_column(NaiveDateTime, nullable=True)
 
     rating: FilterableColumn[float | None] = mapped_column(sa.Float, index=True, nullable=True)
     rated_by: Mapped[list[User]] = orm.relationship(
@@ -190,6 +214,22 @@ class RecipeModel(SqlAlchemyBase, BaseMixins):
         assert name != ""
         return name
 
+    @validates("healthlabs_scope")
+    def validate_healthlabs_scope(self, _key: str, value: str) -> str:
+        if value not in {"personal", "catalogue"}:
+            raise ValueError("healthlabs_scope must be personal or catalogue")
+        current = getattr(self, "healthlabs_scope", None)
+        if current is not None and value != current:
+            raise ValueError("healthlabs_scope is immutable after assignment")
+        return value
+
+    @validates("copied_from_recipe_id", "copied_from_revision_id", "copied_at")
+    def validate_copy_provenance(self, key: str, value: Any) -> Any:
+        current = getattr(self, key, None)
+        if current is not None and value != current:
+            raise ValueError(f"{key} is immutable after assignment")
+        return value
+
     @api_extras
     @auto_init()
     def __init__(
@@ -236,6 +276,14 @@ class RecipeModel(SqlAlchemyBase, BaseMixins):
 
         tableargs = [  # base set of indices
             sa.UniqueConstraint("slug", "group_id", name="recipe_slug_group_id_key"),
+            sa.CheckConstraint(
+                "healthlabs_scope IN ('personal', 'catalogue')",
+                name="healthlabs_recipe_scope_valid",
+            ),
+            sa.CheckConstraint(
+                "healthlabs_revision_number >= 0",
+                name="healthlabs_recipe_revision_nonnegative",
+            ),
             sa.Index(
                 "ix_recipes_name_normalized",
                 "name_normalized",
@@ -305,3 +353,39 @@ def calculate_rating(mapper, connection, target: RecipeModel):
         .filter(UserToRecipe.recipe_id == target.id, UserToRecipe.rating is not None, UserToRecipe.rating > 0)
         .scalar()
     )
+
+
+class HealthLabsRecipeRevision(SqlAlchemyBase):
+    __tablename__ = "healthlabs_recipe_revisions"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "recipe_id",
+            "revision_number",
+            name="healthlabs_recipe_revision_number_key",
+        ),
+        sa.CheckConstraint("revision_number > 0", name="healthlabs_recipe_revision_positive"),
+    )
+
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    recipe_id: Mapped[GUID] = mapped_column(
+        GUID,
+        sa.ForeignKey("recipes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    revision_number: Mapped[int] = mapped_column(sa.Integer, nullable=False)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(sa.JSON, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(sa.String(64), nullable=False, index=True)
+    actor_user_id: Mapped[GUID] = mapped_column(GUID, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        NaiveDateTime,
+        nullable=False,
+        default=get_utc_now,
+        index=True,
+    )
+
+
+@event.listens_for(HealthLabsRecipeRevision, "before_update")
+@event.listens_for(HealthLabsRecipeRevision, "before_delete")
+def prevent_recipe_revision_mutation(*_args: Any) -> None:
+    raise ValueError("HealthLabs recipe revisions are immutable")

@@ -29,6 +29,11 @@ Each GitHub release records the source commit, image digest, upstream version,
 HealthLabs changes, and rollback instructions. Schema-changing releases also
 record the tested database backup and restore procedure.
 
+The first recipe-service API release is
+[`v3.28.0-healthlabs.3`](docs/healthlabs/recipe-service-v1.md). Its image is
+published for `linux/amd64` and `linux/arm64`; consumers must deploy the digest
+recorded in the GitHub release rather than the mutable tag reference.
+
 ## AGPL-3.0 and source availability
 
 The upstream AGPL-3.0 license, copyright notices, and attribution remain in
@@ -50,6 +55,11 @@ Mealie owns recipes, imports, recipe images, recipe organization, and recipe
 search. Ephra owns meal logs, normalized nutrition, planning, shopping,
 clinical safeguards, evidence, habits, and care workflows. The systems use
 documented HTTP/JSON APIs, separate processes, and separate databases.
+
+The recipe-service interface is additive under `/api/healthlabs/v1`. It does
+not expose Mealie group or household identifiers in recipe responses, and it
+keeps consumer source and runtime state outside this repository. Consumers are
+responsible for their own AGPL compliance assessment.
 
 ## Security reports
 

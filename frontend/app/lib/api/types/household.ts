@@ -7,6 +7,7 @@
 
 export type GroupRecipeActionType = "link" | "post";
 export type WebhookType = "mealplan";
+export type HealthLabsRecipeScope = "personal" | "catalogue";
 
 export interface CreateGroupRecipeAction {
   actionType: GroupRecipeActionType;
@@ -379,6 +380,7 @@ export interface IngredientFood {
   substitutions?: IngredientFoodSubstitution[];
   householdsWithIngredientFood?: string[];
   label?: MultiPurposeLabelSummary | null;
+  recipeCount?: number;
   createdAt?: string | null;
   updatedAt?: string | null;
 }
@@ -426,6 +428,11 @@ export interface Recipe {
   userId?: string;
   householdId?: string;
   groupId?: string;
+  healthlabsScope?: HealthLabsRecipeScope;
+  healthlabsRevisionNumber?: number;
+  copiedFromRecipeId?: string | null;
+  copiedFromRevisionId?: string | null;
+  copiedAt?: string | null;
   name?: string | null;
   slug?: string;
   image?: unknown;
@@ -730,6 +737,11 @@ export interface RecipeSummary {
   userId?: string;
   householdId?: string;
   groupId?: string;
+  healthlabsScope?: HealthLabsRecipeScope;
+  healthlabsRevisionNumber?: number;
+  copiedFromRecipeId?: string | null;
+  copiedFromRevisionId?: string | null;
+  copiedAt?: string | null;
   name?: string | null;
   slug?: string;
   image?: unknown;

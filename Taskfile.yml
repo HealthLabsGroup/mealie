@@ -62,7 +62,7 @@ tasks:
     run: once
     cmds:
       - pnpm install
-      - pnpm run playwright install --with-deps
+      - pnpm exec playwright install --with-deps
     sources:
       - package.json
       - playwright.config.ts

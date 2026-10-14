@@ -1,8 +1,10 @@
 import json
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from pytest import fixture
 
+from mealie.db.models.users import User
 from tests.utils import api_routes
 from tests.utils.fixture_schemas import TestUser
 
@@ -73,3 +75,22 @@ def test_delete_token_denies_other_users(api_client: TestClient, unique_user: Te
     # still there, and still the owner's to delete
     response = api_client.delete(api_routes.users_api_tokens_token_id(token_id), headers=unique_admin.token)
     assert response.status_code == 200
+
+
+def test_managed_account_cannot_create_token_through_upstream_route(
+    api_client: TestClient,
+    unique_user_fn_scoped: TestUser,
+) -> None:
+    session = unique_user_fn_scoped.repos.session
+    user = session.get(User, unique_user_fn_scoped.user_id)
+    assert user is not None
+    user.external_subject_id = f"managed-token-test-{uuid4()}"
+    user.healthlabs_managed = True
+    session.commit()
+
+    response = api_client.post(
+        api_routes.users_api_tokens,
+        json={"name": "Managed bypass"},
+        headers=unique_user_fn_scoped.token,
+    )
+    assert response.status_code == 403

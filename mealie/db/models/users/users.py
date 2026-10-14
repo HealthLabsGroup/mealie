@@ -6,7 +6,7 @@ from pydantic import ConfigDict
 from sqlalchemy import Boolean, Enum, ForeignKey, Integer, String, orm, select
 from sqlalchemy.ext.associationproxy import AssociationProxy, association_proxy
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.orm import Mapped, Session, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column, validates
 
 from mealie.core.config import get_app_settings
 from mealie.db.models._model_utils.auto_init import auto_init
@@ -59,6 +59,13 @@ class User(SqlAlchemyBase, BaseMixins):
     auth_method: Mapped[Enum[AuthMethod]] = mapped_column(Enum(AuthMethod), default=AuthMethod.MEALIE)
     admin: Mapped[bool | None] = mapped_column(Boolean, default=False)
     advanced: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    external_subject_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    healthlabs_managed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     group_id: FilterableColumn[GUID] = mapped_column(GUID, ForeignKey("groups.id"), nullable=False, index=True)
     group: Mapped[Group] = orm.relationship("Group", back_populates="users")
@@ -215,6 +222,13 @@ class User(SqlAlchemyBase, BaseMixins):
         # token minted in the same second as the change would have a lower `iat` and be rejected,
         # locking the user out until the clock ticked over.
         self.tokens_valid_after = datetime.now(UTC).replace(microsecond=0)
+
+    @validates("external_subject_id")
+    def validate_external_subject_id(self, _key: str, value: str | None) -> str | None:
+        current = getattr(self, "external_subject_id", None)
+        if current is not None and value != current:
+            raise ValueError("external_subject_id is immutable after assignment")
+        return value
 
     def _set_permissions(
         self, admin, can_manage_household=False, can_manage=False, can_invite=False, can_organize=False, **_

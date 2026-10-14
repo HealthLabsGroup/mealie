@@ -7,6 +7,7 @@ from . import (
     comments,
     explore,
     groups,
+    healthlabs,
     households,
     organizers,
     parser,
@@ -21,6 +22,7 @@ router = APIRouter(prefix="/api")
 
 router.include_router(app.router)
 router.include_router(auth.router)
+router.include_router(healthlabs.router)
 router.include_router(users.router)
 router.include_router(households.router)
 router.include_router(groups.router)

@@ -168,6 +168,7 @@ async def _attempt(
     read_body: bool,
     proxy: str | None,
     max_bytes: int | None = None,
+    max_redirects: int = 20,
 ) -> tuple[FetchResult | None, bool, int, str | None]:
     """
     Performs a single fetch attempt with one browser impersonation.
@@ -180,7 +181,7 @@ async def _attempt(
       rotating won't fix, and the caller should stop.
     """
     transport = _build_transport(impersonation, proxy)
-    async with AsyncClient(transport=transport) as client:
+    async with AsyncClient(transport=transport, max_redirects=max_redirects) as client:
         async with client.stream(method, url, timeout=timeout, follow_redirects=True) as resp:
             status_code = resp.status_code
             retry_after = resp.headers.get("Retry-After")
@@ -222,6 +223,7 @@ async def _rotate(
     proxy: str | None,
     deadline: float,
     max_bytes: int | None = None,
+    max_redirects: int = 20,
 ) -> tuple[FetchResult | None, bool]:
     """
     Cycles through browser impersonations (in randomized order) for a single egress path
@@ -241,7 +243,7 @@ async def _rotate(
 
         logger.debug(f'Trying browser impersonation: "{impersonation}"')
         result, blocked, status_code, retry_after = await _attempt(
-            url, method, timeout, impersonation, read_body, proxy, max_bytes
+            url, method, timeout, impersonation, read_body, proxy, max_bytes, max_redirects
         )
 
         if result is not None:
@@ -275,6 +277,7 @@ async def resilient_fetch(
     timeout: int = SCRAPER_TIMEOUT,
     allow_flaresolverr: bool = True,
     max_bytes: int | None = None,
+    max_redirects: int = 20,
 ) -> FetchResult | None:
     """
     Fetches a URL while cycling through browser TLS impersonations (via httpx-curl-cffi) to
@@ -312,7 +315,7 @@ async def resilient_fetch(
     proxy_first = bool(proxy) and settings.SCRAPER_PROXY_MODE == ScraperProxyMode.always
 
     result, blocked = await _rotate(
-        url, method, timeout, read_body, proxy if proxy_first else None, deadline, max_bytes
+        url, method, timeout, read_body, proxy if proxy_first else None, deadline, max_bytes, max_redirects
     )
     if result is not None:
         return result
@@ -321,7 +324,7 @@ async def resilient_fetch(
     # hard error, and not if we already used the proxy above).
     if blocked and proxy and not proxy_first:
         logger.debug("Direct fetch blocked; retrying through configured proxy")
-        result, blocked = await _rotate(url, method, timeout, read_body, proxy, deadline, max_bytes)
+        result, blocked = await _rotate(url, method, timeout, read_body, proxy, deadline, max_bytes, max_redirects)
         if result is not None:
             return result
 

@@ -42,6 +42,29 @@ cp "$repository_root/.github/workflows/partial-trivy-container-scanning.yml" "$f
 cp "$repository_root/docker/Dockerfile" "$fixture_root/docker/Dockerfile"
 "$script_dir/verify-release-policy.sh" "$fixture_root"
 
+sed -E \
+  -e '/TRIVY_PLATFORM:/s/^([[:space:]]*)/\1# /' \
+  -e '/hashFiles\(format/s/^([[:space:]]*)/\1# /' \
+  "$repository_root/.github/workflows/publish.yml" \
+  > "$fixture_root/.github/workflows/publish.yml.commented"
+mv "$fixture_root/.github/workflows/publish.yml.commented" "$fixture_root/.github/workflows/publish.yml"
+if "$script_dir/verify-release-policy.sh" "$fixture_root" >/dev/null 2>&1; then
+  printf 'accepted a workflow fixture with required release controls commented out\n' >&2
+  exit 1
+fi
+
+cp "$repository_root/.github/workflows/publish.yml" "$fixture_root/.github/workflows/publish.yml"
+sed -E \
+  -e '/validate-release-tag\.sh/s/^([[:space:]]*)/\1# /' \
+  "$repository_root/.github/workflows/release.yml" \
+  > "$fixture_root/.github/workflows/release.yml.commented"
+mv "$fixture_root/.github/workflows/release.yml.commented" "$fixture_root/.github/workflows/release.yml"
+if "$script_dir/verify-release-policy.sh" "$fixture_root" >/dev/null 2>&1; then
+  printf 'accepted a release workflow with tag validation commented out\n' >&2
+  exit 1
+fi
+
+cp "$repository_root/.github/workflows/release.yml" "$fixture_root/.github/workflows/release.yml"
 printf '\nregistry: docker.io\n' >> "$fixture_root/.github/workflows/publish.yml"
 if "$script_dir/verify-release-policy.sh" "$fixture_root" >/dev/null 2>&1; then
   printf 'accepted a workflow fixture containing a forbidden publisher\n' >&2

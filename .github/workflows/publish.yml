@@ -109,6 +109,8 @@ jobs:
           retention-days: 1
       - name: Scan exact platform digest
         uses: aquasecurity/trivy-action@0.35.0
+        env:
+          TRIVY_PLATFORM: ${{ matrix.platform }}
         with:
           image-ref: ghcr.io/healthlabsgroup/mealie@${{ steps.build.outputs.digest }}
           format: sarif
@@ -118,7 +120,7 @@ jobs:
           ignore-unfixed: true
           exit-code: 1
       - name: Upload exact-image scan results
-        if: always()
+        if: always() && hashFiles(format('trivy-{0}.sarif', matrix.suffix)) != ''
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-${{ matrix.suffix }}.sarif

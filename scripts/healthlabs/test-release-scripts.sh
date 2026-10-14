@@ -8,7 +8,16 @@ expected=$'upstream-version=3.28.0\npackage-version=3.28.0+healthlabs.1'
 actual=$("$script_dir/validate-release-tag.sh" v3.28.0-healthlabs.1)
 test "$actual" = "$expected"
 
-for invalid_tag in 3.28.0-healthlabs.1 v3.28-healthlabs.1 v3.28.0-healthlabs.0 v3.28.0-healthlabs.latest v3.28.0; do
+for invalid_tag in \
+  3.28.0-healthlabs.1 \
+  v03.28.0-healthlabs.1 \
+  v3.028.0-healthlabs.1 \
+  v3.28.00-healthlabs.1 \
+  v3.28.0-healthlabs.01 \
+  v3.28-healthlabs.1 \
+  v3.28.0-healthlabs.0 \
+  v3.28.0-healthlabs.latest \
+  v3.28.0; do
   if "$script_dir/validate-release-tag.sh" "$invalid_tag" >/dev/null 2>&1; then
     printf 'accepted invalid tag: %s\n' "$invalid_tag" >&2
     exit 1

@@ -14,14 +14,53 @@ on:
         description: Published multi-platform image digest
         value: ${{ jobs.publish.outputs.digest }}
 
+env:
+  REGISTRY_IMAGE: ghcr.io/healthlabsgroup/mealie
+
 jobs:
-  publish:
+  validate-target:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Require immutable source tag and unused image tag
+        env:
+          RELEASE_REF: ${{ inputs.ref }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          git fetch --force --tags origin
+          test "$(git rev-parse "${RELEASE_TAG}^{}")" = "$RELEASE_REF"
+          if docker buildx imagetools inspect "$REGISTRY_IMAGE:$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "container tag already exists: $REGISTRY_IMAGE:$RELEASE_TAG" >&2
+            exit 1
+          fi
+
+  build-and-scan:
+    needs: validate-target
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            suffix: amd64
+          - platform: linux/arm64
+            suffix: arm64
     steps:
       - uses: actions/checkout@v6
         with:
@@ -37,7 +76,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and publish immutable image
+      - name: Build immutable platform image
         id: build
         uses: docker/build-push-action@v6
         with:
@@ -47,10 +86,95 @@ jobs:
             packages=dist
           build-args: |
             COMMIT=${{ inputs.ref }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ghcr.io/healthlabsgroup/mealie:${{ inputs.tag }}
+          platforms: ${{ matrix.platform }}
+          tags: ${{ env.REGISTRY_IMAGE }}
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           labels: |
             org.opencontainers.image.source=https://github.com/HealthLabsGroup/mealie
             org.opencontainers.image.revision=${{ inputs.ref }}
             org.opencontainers.image.version=${{ inputs.tag }}
+          provenance: mode=max
+          sbom: true
+      - name: Record platform digest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${IMAGE_DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-digest-${{ matrix.suffix }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+      - name: Scan exact platform digest
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ghcr.io/healthlabsgroup/mealie@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: trivy-${{ matrix.suffix }}.sarif
+          scanners: "vuln"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+      - name: Upload exact-image scan results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-${{ matrix.suffix }}.sarif
+          category: release-trivy-${{ matrix.suffix }}
+
+  publish:
+    needs:
+      - validate-target
+      - build-and-scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: release-digest-*
+          path: /tmp/digests
+          merge-multiple: true
+      - name: Publish scanned multi-platform manifest
+        id: publish
+        env:
+          RELEASE_REF: ${{ inputs.ref }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          git fetch --force --tags origin
+          test "$(git rev-parse "${RELEASE_TAG}^{}")" = "$RELEASE_REF"
+
+          target="$REGISTRY_IMAGE:$RELEASE_TAG"
+          if docker buildx imagetools inspect "$target" >/dev/null 2>&1; then
+            echo "container tag already exists: $target" >&2
+            exit 1
+          fi
+
+          mapfile -t digest_files < <(find /tmp/digests -maxdepth 1 -type f | sort)
+          test "${#digest_files[@]}" -eq 2
+          sources=()
+          for digest_file in "${digest_files[@]}"; do
+            sources+=("$REGISTRY_IMAGE@sha256:$(basename "$digest_file")")
+          done
+
+          docker buildx imagetools create --tag "$target" "${sources[@]}"
+          digest=$(docker buildx imagetools inspect "$target" --format '{{json .Manifest.Digest}}' | tr -d '"')
+
+          git fetch --force --tags origin
+          test "$(git rev-parse "${RELEASE_TAG}^{}")" = "$RELEASE_REF"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"

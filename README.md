@@ -8,6 +8,7 @@
 
 > [!IMPORTANT]
 > This is the HealthLabs maintained fork of [Mealie](https://github.com/mealie-recipes/mealie).
+> This distribution has been modified by HealthLabs beginning 2026-10-14.
 > It stays upstream-first and publishes tested HealthLabs releases from public source.
 > See [HEALTHLABS.md](HEALTHLABS.md) for synchronization, release, and support policy.
 

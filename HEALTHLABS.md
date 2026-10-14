@@ -2,7 +2,8 @@
 
 This public repository is the HealthLabs maintained fork of
 [`mealie-recipes/mealie`](https://github.com/mealie-recipes/mealie). It retains
-the upstream history, license, notices, and attribution.
+the upstream history, license, notices, and attribution. This distribution has
+been modified by HealthLabs beginning 2026-10-14.
 
 ## Branches and upstream synchronization
 

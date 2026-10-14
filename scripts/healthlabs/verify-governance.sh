@@ -14,8 +14,10 @@ require_text() {
 
 require_text LICENSE "GNU AFFERO GENERAL PUBLIC LICENSE"
 require_text README.md "HealthLabs maintained fork"
+require_text README.md "modified by HealthLabs beginning 2026-10-14"
 require_text README.md "https://github.com/mealie-recipes/mealie"
 require_text HEALTHLABS.md "upstream/mealie-next"
+require_text HEALTHLABS.md "modified by HealthLabs beginning 2026-10-14"
 require_text HEALTHLABS.md "v<upstream-version>-healthlabs.<revision>"
 require_text HEALTHLABS.md "ghcr.io/healthlabsgroup/mealie"
 require_text HEALTHLABS.md "Ephra integration boundary"

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root=${1:-$(git rev-parse --show-toplevel)}
+
+require_text() {
+  local file=$1
+  local text=$2
+  if ! grep -Fq -- "$text" "$repository_root/$file"; then
+    printf 'missing required text in %s: %s\n' "$file" "$text" >&2
+    return 1
+  fi
+}
+
+require_text LICENSE "GNU AFFERO GENERAL PUBLIC LICENSE"
+require_text README.md "HealthLabs maintained fork"
+require_text README.md "https://github.com/mealie-recipes/mealie"
+require_text HEALTHLABS.md "upstream/mealie-next"
+require_text HEALTHLABS.md "v<upstream-version>-healthlabs.<revision>"
+require_text HEALTHLABS.md "ghcr.io/healthlabsgroup/mealie"
+require_text HEALTHLABS.md "Ephra integration boundary"
+require_text .github/pull_request_template.md "Change classification"
+require_text .github/pull_request_template.md "AGPL/source disclosure impact"

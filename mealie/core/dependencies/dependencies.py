@@ -14,6 +14,7 @@ from sqlalchemy.orm.session import Session
 
 from mealie.core import root_logger
 from mealie.core.config import get_app_dirs, get_app_settings
+from mealie.core.dependencies.healthlabs import enforce_healthlabs_managed_route_boundary
 from mealie.core.security.tokens import ALGORITHM
 from mealie.db.db_setup import generate_session
 from mealie.repos.all_repositories import get_repositories
@@ -90,16 +91,18 @@ async def get_auth_token(
 
 
 async def try_get_current_user(
+    request: Request,
     token: str = Depends(get_auth_token),
     session=Depends(generate_session),
 ) -> PrivateUser | None:
     try:
-        return await get_current_user(token, session)
+        return await get_current_user(request, token, session)
     except Exception:
         return None
 
 
 async def get_current_user(
+    request: Request,
     token: str = Depends(get_auth_token),
     session=Depends(generate_session),
 ) -> PrivateUser:
@@ -109,7 +112,9 @@ async def get_current_user(
         long_token: str | None = payload.get("long_token")
 
         if long_token is not None:
-            return validate_long_live_token(session, token, payload.get("id"))
+            user = validate_long_live_token(session, token, payload.get("id"))
+            enforce_healthlabs_managed_route_boundary(request, user)
+            return user
 
         if user_id is None:
             raise credentials_exception
@@ -135,6 +140,7 @@ async def get_current_user(
         if issued_at is None or issued_at < user.tokens_valid_after.timestamp():
             raise credentials_exception
 
+    enforce_healthlabs_managed_route_boundary(request, user)
     return user
 
 

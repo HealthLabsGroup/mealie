@@ -170,6 +170,8 @@ class AppSettings(AppLoggingSettings):
 
     SECRET: str
     SESSION_SECRET: str
+    HEALTHLABS_PROVISIONING_SECRET: MaskedNoneString = None
+    """Shared secret accepted only by the private HealthLabs provisioning API."""
 
     GIT_COMMIT_HASH: str = "unknown"
 

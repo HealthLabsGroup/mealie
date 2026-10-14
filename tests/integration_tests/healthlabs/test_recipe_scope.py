@@ -10,6 +10,8 @@ from mealie.schema.healthlabs.identity import HealthLabsCapability
 from tests.utils import TestUser, api_routes
 from tests.utils.factories import random_string
 
+pytestmark = pytest.mark.usefixtures("allow_managed_upstream_for_service_policy_tests")
+
 
 def _configure_managed(
     user: TestUser,

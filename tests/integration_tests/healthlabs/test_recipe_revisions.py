@@ -3,6 +3,7 @@ import json
 from copy import deepcopy
 from uuid import uuid4
 
+import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -14,6 +15,8 @@ from mealie.schema.healthlabs.identity import HealthLabsCapability
 from mealie.schema.recipe.recipe_ingredient import SaveIngredientFood, SaveIngredientUnit
 from tests.utils import TestUser, api_routes
 from tests.utils.factories import random_string
+
+pytestmark = pytest.mark.usefixtures("allow_managed_upstream_for_service_policy_tests")
 
 
 def _configure_managed(user: TestUser, *capabilities: HealthLabsCapability) -> None:

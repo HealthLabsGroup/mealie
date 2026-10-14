@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+from enum import StrEnum
 from numbers import Number
 from pathlib import Path
 from typing import Annotated, Any, ClassVar
@@ -157,8 +158,14 @@ class CreateRecipeByUrlBulk(BaseModel):
     imports: list[CreateRecipeBulk]
 
 
+class HealthLabsRecipeScope(StrEnum):
+    PERSONAL = "personal"
+    CATALOGUE = "catalogue"
+
+
 class CreateRecipe(MealieModel):
     name: str
+    healthlabs_scope: HealthLabsRecipeScope = HealthLabsRecipeScope.PERSONAL
 
 
 MAX_DURATION_SECONDS = 2**31 - 1
@@ -174,6 +181,12 @@ class RecipeSummary(MealieModel):
     user_id: Annotated[UUID4, Field(default_factory=uuid4, validate_default=True)]
     household_id: Annotated[UUID4, Field(default_factory=uuid4, validate_default=True)]
     group_id: Annotated[UUID4, Field(default_factory=uuid4, validate_default=True)]
+
+    healthlabs_scope: HealthLabsRecipeScope = HealthLabsRecipeScope.PERSONAL
+    healthlabs_revision_number: int = Field(default=0, ge=0)
+    copied_from_recipe_id: UUID4 | None = None
+    copied_from_revision_id: UUID4 | None = None
+    copied_at: datetime.datetime | None = None
 
     name: str | None = None
     slug: Annotated[str, Field(validate_default=True)] = ""

@@ -20,8 +20,9 @@ from mealie.repos.all_repositories import get_repositories
 from mealie.repos.repository_factory import AllRepositories
 from mealie.repos.repository_generic import RepositoryGeneric
 from mealie.schema import mapper
+from mealie.schema.healthlabs.identity import HealthLabsCapability
 from mealie.schema.household.household import HouseholdInDB, HouseholdRecipeUpdate
-from mealie.schema.recipe.recipe import CreateRecipe, Recipe, create_recipe_slug
+from mealie.schema.recipe.recipe import CreateRecipe, HealthLabsRecipeScope, Recipe, create_recipe_slug
 from mealie.schema.recipe.recipe_ingredient import (
     CreateIngredientFood,
     CreateIngredientUnit,
@@ -36,6 +37,8 @@ from mealie.schema.recipe.recipe_tool import RecipeToolSave
 from mealie.schema.recipe.request_helpers import RecipeDuplicate
 from mealie.schema.user.user import PrivateUser, UserRatingCreate
 from mealie.services._base_service import BaseService
+from mealie.services.healthlabs.access_policy import RecipeAccessDenied, RecipeAccessPolicy
+from mealie.services.healthlabs.revision_service import RecipeRevisionService
 from mealie.services.household_services.household_service import HouseholdService
 from mealie.services.parser_services._base import DataMatcher
 from mealie.services.recipe.recipe_data_service import RecipeDataService
@@ -67,6 +70,65 @@ class RecipeServiceBase(BaseService):
 
 
 class RecipeService(RecipeServiceBase):
+    @property
+    def revision_service(self) -> RecipeRevisionService:
+        return RecipeRevisionService(self.repos.session)
+
+    def _require_capability(self, capability: HealthLabsCapability) -> None:
+        try:
+            RecipeAccessPolicy(self.repos.session, self.user).require(capability)
+        except RecipeAccessDenied as exc:
+            raise exceptions.PermissionDenied(str(exc)) from exc
+
+    def _require_create_scope(self, scope: HealthLabsRecipeScope) -> None:
+        if scope == HealthLabsRecipeScope.CATALOGUE:
+            self._require_capability(HealthLabsCapability.CATALOGUE_WRITE)
+        elif self.user.healthlabs_managed:
+            self._require_capability(HealthLabsCapability.RECIPES_WRITE_OWN)
+
+    def _require_mutation(self, recipe: Recipe) -> None:
+        if recipe.healthlabs_scope == HealthLabsRecipeScope.CATALOGUE:
+            self._require_capability(HealthLabsCapability.CATALOGUE_WRITE)
+            return
+
+        if not self.user.healthlabs_managed:
+            return
+
+        self._require_capability(HealthLabsCapability.RECIPES_WRITE_OWN)
+        if recipe.user_id != self.user.id:
+            raise exceptions.PermissionDenied("You do not own this personal recipe.")
+
+    def _record_revision(self, recipe: Recipe) -> Recipe:
+        self.revision_service.record(recipe, actor_user_id=self.user.id)
+        return recipe
+
+    @staticmethod
+    def _normalize_immutable_value(value: Any) -> Any:
+        if isinstance(value, datetime) and value.tzinfo is not None:
+            return value.astimezone(UTC).replace(tzinfo=None)
+        return value
+
+    def _preserve_immutable_metadata(self, recipe: Recipe, new_data: Recipe) -> None:
+        immutable_fields = (
+            "healthlabs_scope",
+            "copied_from_recipe_id",
+            "copied_from_revision_id",
+            "copied_at",
+        )
+        for field in immutable_fields:
+            current = getattr(recipe, field)
+            if field not in new_data.model_fields_set:
+                setattr(new_data, field, current)
+                continue
+
+            incoming = getattr(new_data, field)
+            if self._normalize_immutable_value(incoming) != self._normalize_immutable_value(current):
+                raise exceptions.PermissionDenied(f"{field} is immutable")
+
+        # Revision numbers are server-owned and cannot be rolled back by a
+        # stale or forged request body.
+        new_data.healthlabs_revision_number = recipe.healthlabs_revision_number
+
     def _get_recipe(self, data: str | UUID, key: str | None = None) -> Recipe:
         recipe = self.group_recipes.get_one(data, key)
         if recipe is None:
@@ -209,10 +271,18 @@ class RecipeService(RecipeServiceBase):
             return self._get_recipe(slug_or_id, "slug")
 
     def create_one(self, create_data: Recipe | CreateRecipe) -> Recipe:
+        self._require_create_scope(create_data.healthlabs_scope)
         if create_data.name is None:
             create_data.name = "New Recipe"
 
-        data: Recipe = self._recipe_creation_factory(name=create_data.name, additional_attrs=create_data.model_dump())
+        create_payload = create_data.model_dump()
+        create_payload.update(
+            healthlabs_revision_number=0,
+            copied_from_recipe_id=None,
+            copied_from_revision_id=None,
+            copied_at=None,
+        )
+        data: Recipe = self._recipe_creation_factory(name=create_data.name, additional_attrs=create_payload)
 
         if isinstance(create_data, CreateRecipe) or create_data.settings is None:
             if self.household.preferences is not None:
@@ -251,7 +321,7 @@ class RecipeService(RecipeServiceBase):
         )
 
         self.repos.recipe_timeline_events.create(timeline_event_data)
-        return new_recipe
+        return self._record_revision(new_recipe)
 
     def _transform_user_id(self, user_id: str) -> str:
         query = self.repos.users.get_one(user_id)
@@ -521,7 +591,32 @@ class RecipeService(RecipeServiceBase):
         """Duplicates a recipe and returns the new recipe."""
 
         old_recipe = self.get_one(old_slug_or_id)
-        new_recipe_data = old_recipe.model_dump(exclude={"id", "name", "slug", "image", "comments"}, round_trip=True)
+        source_revision_id = None
+        if old_recipe.healthlabs_scope == HealthLabsRecipeScope.CATALOGUE:
+            self._require_capability(HealthLabsCapability.CATALOGUE_READ)
+            if self.user.healthlabs_managed:
+                self._require_capability(HealthLabsCapability.RECIPES_WRITE_OWN)
+            source_revision_id = self.revision_service.record(
+                old_recipe,
+                actor_user_id=self.user.id,
+            ).id
+        else:
+            self._require_mutation(old_recipe)
+
+        new_recipe_data = old_recipe.model_dump(
+            exclude={
+                "id",
+                "name",
+                "slug",
+                "image",
+                "comments",
+                "healthlabs_revision_number",
+                "copied_from_recipe_id",
+                "copied_from_revision_id",
+                "copied_at",
+            },
+            round_trip=True,
+        )
         new_recipe = Recipe.model_validate(new_recipe_data)
 
         # Asset images in steps directly link to the original recipe, so we
@@ -553,6 +648,12 @@ class RecipeService(RecipeServiceBase):
             else list(map(copy_recipe_ingredient, old_recipe.recipe_ingredient))
         )
         new_recipe.last_made = None
+        new_recipe.healthlabs_scope = HealthLabsRecipeScope.PERSONAL
+        new_recipe.healthlabs_revision_number = 0
+        if source_revision_id is not None:
+            new_recipe.copied_from_recipe_id = old_recipe.id
+            new_recipe.copied_from_revision_id = source_revision_id
+            new_recipe.copied_at = datetime.now(UTC)
 
         new_recipe = self._recipe_creation_factory(new_name, additional_attrs=new_recipe.model_dump())
 
@@ -571,7 +672,7 @@ class RecipeService(RecipeServiceBase):
         except Exception as e:
             self.logger.error(f"Failed to copy assets from {old_recipe.slug} to {new_recipe.slug}: {e}")
 
-        return new_recipe
+        return self._record_revision(new_recipe)
 
     def has_recursive_recipe_link(self, recipe: Recipe, path: set[str] | None = None):
         """Recursively checks if a recipe links to itself through its ingredients."""
@@ -626,6 +727,9 @@ class RecipeService(RecipeServiceBase):
 
         if recipe is None or recipe.settings is None:
             raise exceptions.NoEntryFound("Recipe not found.")
+
+        self._preserve_immutable_metadata(recipe, new_data)
+        self._require_mutation(recipe)
 
         if not self.can_update([recipe.slug]):
             raise exceptions.PermissionDenied("You do not have permission to edit this recipe.")
@@ -724,20 +828,24 @@ class RecipeService(RecipeServiceBase):
 
         new_data = self.group_recipes.update(recipe.slug, update_data)
         self.check_assets(new_data, recipe.slug)
-        return new_data
+        return self._record_revision(new_data)
 
     def update_recipe_image(self, slug: str, image: bytes, extension: str):
         recipe = self.get_one(slug)
+        self._require_mutation(recipe)
         if not self.can_update([recipe.slug]):
             raise exceptions.PermissionDenied("You do not have permission to edit this recipe.")
 
         data_service = RecipeDataService(recipe.id)
         data_service.write_image(image, extension)
 
-        return self.group_recipes.update_image(slug, extension)
+        image_id = self.group_recipes.update_image(slug, extension)
+        self._record_revision(self.get_one(slug))
+        return image_id
 
     def delete_recipe_image(self, slug: str) -> None:
         recipe = self.get_one(slug)
+        self._require_mutation(recipe)
         if not self.can_update([recipe.slug]):
             raise exceptions.PermissionDenied("You do not have permission to edit this recipe.")
 
@@ -745,6 +853,7 @@ class RecipeService(RecipeServiceBase):
         data_service.delete_image()
 
         self.group_recipes.delete_image(slug)
+        self._record_revision(self.get_one(slug))
         return None
 
     def patch_one(self, slug_or_id: str | UUID, patch_data: Recipe) -> Recipe:
@@ -753,7 +862,7 @@ class RecipeService(RecipeServiceBase):
         new_data = self.group_recipes.patch(recipe.slug, patch_data.model_dump(exclude_unset=True))
 
         self.check_assets(new_data, recipe.slug)
-        return new_data
+        return self._record_revision(new_data)
 
     def update_last_made(self, slug_or_id: str | UUID, timestamp: datetime) -> Recipe:
         # we bypass the pre update check since any user can update a recipe's last made date, even if it's locked,
@@ -770,6 +879,9 @@ class RecipeService(RecipeServiceBase):
         return resp[0]
 
     def delete_many(self, recipe_slugs: list[str]) -> list[Recipe]:
+        for slug in recipe_slugs:
+            self._require_mutation(self.get_one(slug))
+
         if not self.can_delete(recipe_slugs):
             if len(recipe_slugs) == 1:
                 msg = "You do not have permission to delete this recipe."

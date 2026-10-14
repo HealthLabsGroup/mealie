@@ -5,6 +5,7 @@
 /* Do not modify it by hand - just update the pydantic models and then re-run the script
 */
 
+export type HealthLabsRecipeScope = "personal" | "catalogue";
 export type ExportTypes = "json";
 export type RegisteredParser = "nlp" | "brute" | "openai";
 export type OrderByNullPosition = "first" | "last";
@@ -103,6 +104,7 @@ export interface CreateIngredientUnitAlias {
 }
 export interface CreateRecipe {
   name: string;
+  healthlabsScope?: HealthLabsRecipeScope;
 }
 export interface CreateRecipeBulk {
   url: string;
@@ -262,6 +264,11 @@ export interface Recipe {
   userId?: string;
   householdId?: string;
   groupId?: string;
+  healthlabsScope?: HealthLabsRecipeScope;
+  healthlabsRevisionNumber?: number;
+  copiedFromRecipeId?: string | null;
+  copiedFromRevisionId?: string | null;
+  copiedAt?: string | null;
   name?: string | null;
   slug?: string;
   image?: unknown;
@@ -362,6 +369,11 @@ export interface RecipeSummary {
   userId?: string;
   householdId?: string;
   groupId?: string;
+  healthlabsScope?: HealthLabsRecipeScope;
+  healthlabsRevisionNumber?: number;
+  copiedFromRecipeId?: string | null;
+  copiedFromRevisionId?: string | null;
+  copiedAt?: string | null;
   name?: string | null;
   slug?: string;
   image?: unknown;
@@ -408,6 +420,11 @@ export interface RecipeIn {
   userId?: string;
   householdId?: string;
   groupId?: string;
+  healthlabsScope?: HealthLabsRecipeScope;
+  healthlabsRevisionNumber?: number;
+  copiedFromRecipeId?: string | null;
+  copiedFromRevisionId?: string | null;
+  copiedAt?: string | null;
   name?: string | null;
   slug?: string;
   image?: unknown;

@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from functools import cached_property
 from pathlib import Path
 
@@ -33,29 +34,35 @@ class RecipeBulkActionsController(BaseUserController):
     def recipe_service(self) -> RecipeService:
         return RecipeService(self.repos, self.user, self.household, self.translator)
 
+    def _run_authorized_mutation(self, operation: Callable[[], object]) -> None:
+        try:
+            operation()
+        except PermissionDenied as exc:
+            self.logger.error("Permission denied on recipe mutation")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ErrorResponse.respond(message="Permission Denied"),
+            ) from exc
+
     # TODO Should these actions return some success response?
     @router.post("/tag")
     def bulk_tag_recipes(self, tag_data: AssignTags):
-        self.service.assign_tags(tag_data.recipes, tag_data.tags)
+        self._run_authorized_mutation(lambda: self.service.assign_tags(tag_data.recipes, tag_data.tags))
 
     @router.post("/settings")
     def bulk_settings_recipes(self, settings_data: AssignSettings):
-        self.service.set_settings(settings_data.recipes, settings_data.settings)
+        self._run_authorized_mutation(lambda: self.service.set_settings(settings_data.recipes, settings_data.settings))
 
     @router.post("/categorize")
     def bulk_categorize_recipes(self, assign_cats: AssignCategories):
-        self.service.assign_categories(assign_cats.recipes, assign_cats.categories)
+        self._run_authorized_mutation(
+            lambda: self.service.assign_categories(assign_cats.recipes, assign_cats.categories)
+        )
 
     @router.post("/delete")
     def bulk_delete_recipes(self, delete_recipes: DeleteRecipes):
         # TODO: this route should be migrated to the standard recipe controller
-        try:
-            self.recipe_service.delete_many(delete_recipes.recipes)
-        except PermissionDenied as e:
-            self.logger.error("Permission Denied on recipe controller action")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail=ErrorResponse.respond(message="Permission Denied")
-            ) from e
+        self._run_authorized_mutation(lambda: self.recipe_service.delete_many(delete_recipes.recipes))
 
     @router.post("/export", status_code=202)
     def bulk_export_recipes(self, export_recipes: ExportRecipes):

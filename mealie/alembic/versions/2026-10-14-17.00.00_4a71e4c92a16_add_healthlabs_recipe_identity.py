@@ -34,6 +34,45 @@ def upgrade() -> None:
             unique=True,
         )
 
+    with op.batch_alter_table("recipes", schema=None) as batch_op:
+        batch_op.add_column(
+            sa.Column(
+                "healthlabs_scope",
+                sa.String(length=16),
+                nullable=False,
+                server_default="personal",
+            )
+        )
+        batch_op.add_column(
+            sa.Column(
+                "healthlabs_revision_number",
+                sa.Integer(),
+                nullable=False,
+                server_default="0",
+            )
+        )
+        batch_op.add_column(sa.Column("copied_from_recipe_id", GUID(), nullable=True))
+        batch_op.add_column(sa.Column("copied_from_revision_id", GUID(), nullable=True))
+        batch_op.add_column(sa.Column("copied_at", sa.DateTime(), nullable=True))
+        batch_op.create_index(
+            "ix_recipes_copied_from_recipe_id",
+            ["copied_from_recipe_id"],
+            unique=False,
+        )
+        batch_op.create_index(
+            "ix_recipes_copied_from_revision_id",
+            ["copied_from_revision_id"],
+            unique=False,
+        )
+        batch_op.create_check_constraint(
+            "healthlabs_recipe_scope_valid",
+            "healthlabs_scope IN ('personal', 'catalogue')",
+        )
+        batch_op.create_check_constraint(
+            "healthlabs_recipe_revision_nonnegative",
+            "healthlabs_revision_number >= 0",
+        )
+
     op.create_table(
         "healthlabs_capability_grants",
         sa.Column("id", GUID(), nullable=False),
@@ -102,8 +141,70 @@ def upgrade() -> None:
         unique=False,
     )
 
+    op.create_table(
+        "healthlabs_recipe_revisions",
+        sa.Column("id", GUID(), nullable=False),
+        sa.Column("recipe_id", GUID(), nullable=False),
+        sa.Column("revision_number", sa.Integer(), nullable=False),
+        sa.Column("snapshot", sa.JSON(), nullable=False),
+        sa.Column("content_sha256", sa.String(length=64), nullable=False),
+        sa.Column("actor_user_id", GUID(), nullable=False),
+        sa.Column("created_at", sa.DateTime(), nullable=False),
+        sa.Column("update_at", sa.DateTime(), nullable=True),
+        sa.CheckConstraint("revision_number > 0", name="healthlabs_recipe_revision_positive"),
+        sa.ForeignKeyConstraint(["recipe_id"], ["recipes.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "recipe_id",
+            "revision_number",
+            name="healthlabs_recipe_revision_number_key",
+        ),
+    )
+    op.create_index(
+        "ix_healthlabs_recipe_revisions_actor_user_id",
+        "healthlabs_recipe_revisions",
+        ["actor_user_id"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_healthlabs_recipe_revisions_content_sha256",
+        "healthlabs_recipe_revisions",
+        ["content_sha256"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_healthlabs_recipe_revisions_created_at",
+        "healthlabs_recipe_revisions",
+        ["created_at"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_healthlabs_recipe_revisions_recipe_id",
+        "healthlabs_recipe_revisions",
+        ["recipe_id"],
+        unique=False,
+    )
+
 
 def downgrade() -> None:
+    op.drop_index(
+        "ix_healthlabs_recipe_revisions_recipe_id",
+        table_name="healthlabs_recipe_revisions",
+    )
+    op.drop_index(
+        "ix_healthlabs_recipe_revisions_created_at",
+        table_name="healthlabs_recipe_revisions",
+    )
+    op.drop_index(
+        "ix_healthlabs_recipe_revisions_content_sha256",
+        table_name="healthlabs_recipe_revisions",
+    )
+    op.drop_index(
+        "ix_healthlabs_recipe_revisions_actor_user_id",
+        table_name="healthlabs_recipe_revisions",
+    )
+    op.drop_table("healthlabs_recipe_revisions")
+
     op.drop_index(
         "ix_healthlabs_access_audit_subject_external_id",
         table_name="healthlabs_access_audit",
@@ -122,6 +223,17 @@ def downgrade() -> None:
         table_name="healthlabs_capability_grants",
     )
     op.drop_table("healthlabs_capability_grants")
+
+    with op.batch_alter_table("recipes", schema=None) as batch_op:
+        batch_op.drop_constraint("healthlabs_recipe_revision_nonnegative", type_="check")
+        batch_op.drop_constraint("healthlabs_recipe_scope_valid", type_="check")
+        batch_op.drop_index("ix_recipes_copied_from_revision_id")
+        batch_op.drop_index("ix_recipes_copied_from_recipe_id")
+        batch_op.drop_column("copied_at")
+        batch_op.drop_column("copied_from_revision_id")
+        batch_op.drop_column("copied_from_recipe_id")
+        batch_op.drop_column("healthlabs_revision_number")
+        batch_op.drop_column("healthlabs_scope")
 
     with op.batch_alter_table("users", schema=None) as batch_op:
         batch_op.drop_index("ix_users_external_subject_id")

@@ -11,6 +11,7 @@ export type PlanRulesType = "breakfast" | "lunch" | "dinner" | "side" | "snack" 
 export type LogicalOperator = "AND" | "OR";
 export type RelationalKeyword = "IS" | "IS NOT" | "IN" | "NOT IN" | "CONTAINS ALL" | "LIKE" | "NOT LIKE";
 export type RelationalOperator = "=" | "<>" | ">" | "<" | ">=" | "<=";
+export type HealthLabsRecipeScope = "personal" | "catalogue";
 
 export interface CreatePlanEntry {
   date: string;
@@ -81,6 +82,11 @@ export interface RecipeSummary {
   userId?: string;
   householdId?: string;
   groupId?: string;
+  healthlabsScope?: HealthLabsRecipeScope;
+  healthlabsRevisionNumber?: number;
+  copiedFromRecipeId?: string | null;
+  copiedFromRevisionId?: string | null;
+  copiedAt?: string | null;
   name?: string | null;
   slug?: string;
   image?: unknown;

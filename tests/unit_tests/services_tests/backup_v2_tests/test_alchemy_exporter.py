@@ -49,7 +49,11 @@ def test_convert_types_preserves_row_around_nested_json():
             {
                 "id": str(operation_id),
                 "expires_at": "2026-10-15T12:00:00",
-                "response_body": {"id": str(recipe_id), "name": "Soup"},
+                "response_body": {
+                    "id": str(recipe_id),
+                    "name": "Soup",
+                    "created_at": "2026-10-15T11:00:00",
+                },
             }
         ]
     }
@@ -59,6 +63,10 @@ def test_convert_types_preserves_row_around_nested_json():
 
     assert restored_row["id"] == operation_id.hex
     assert restored_row["expires_at"].isoformat() == "2026-10-15T12:00:00"
-    assert restored_row["response_body"] == {"id": recipe_id.hex, "name": "Soup"}
+    assert restored_row["response_body"] == {
+        "id": str(recipe_id),
+        "name": "Soup",
+        "created_at": "2026-10-15T11:00:00",
+    }
 
     exporter.engine.dispose()

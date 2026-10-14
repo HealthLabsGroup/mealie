@@ -131,6 +131,7 @@ ARG COMMIT
 ENV GIT_COMMIT_HASH=$COMMIT
 
 RUN apt-get update \
+    && apt-get upgrade --no-install-recommends -y \
     && apt-get install --no-install-recommends -y \
     curl \
     ffmpeg \
@@ -146,6 +147,11 @@ RUN mkdir -p /run/secrets
 
 # Copy venv into image. It contains a fully-installed mealie backend and frontend.
 COPY --from=venv-builder $VENV_PATH $VENV_PATH
+
+# Package installers are build tools, not runtime dependencies. Removing both
+# copies also removes their vendored libraries and reduces the attack surface.
+RUN /usr/local/bin/python -m pip uninstall --yes pip \
+    && $VENV_PATH/bin/python -m pip uninstall --yes pip
 
 # install nltk data for the ingredient parser
 ENV NLTK_DATA="/nltk_data/"

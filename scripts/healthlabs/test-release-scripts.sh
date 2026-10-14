@@ -25,10 +25,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$fixture_root/.github/workflows"
+mkdir -p "$fixture_root/.github/workflows" "$fixture_root/docker"
 cp "$repository_root/.github/workflows/publish.yml" "$fixture_root/.github/workflows/publish.yml"
 cp "$repository_root/.github/workflows/pull-requests.yml" "$fixture_root/.github/workflows/pull-requests.yml"
 cp "$repository_root/.github/workflows/release.yml" "$fixture_root/.github/workflows/release.yml"
+cp "$repository_root/.github/workflows/partial-trivy-container-scanning.yml" "$fixture_root/.github/workflows/partial-trivy-container-scanning.yml"
+cp "$repository_root/docker/Dockerfile" "$fixture_root/docker/Dockerfile"
 "$script_dir/verify-release-policy.sh" "$fixture_root"
 
 printf '\nregistry: docker.io\n' >> "$fixture_root/.github/workflows/publish.yml"

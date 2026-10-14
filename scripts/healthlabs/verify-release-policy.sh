@@ -5,6 +5,8 @@ repository_root=${1:-$(git rev-parse --show-toplevel)}
 publish_workflow=$repository_root/.github/workflows/publish.yml
 pull_request_workflow=$repository_root/.github/workflows/pull-requests.yml
 release_workflow=$repository_root/.github/workflows/release.yml
+trivy_workflow=$repository_root/.github/workflows/partial-trivy-container-scanning.yml
+dockerfile=$repository_root/docker/Dockerfile
 
 grep -Fq 'ghcr.io/healthlabsgroup/mealie' "$publish_workflow"
 grep -Fq 'digest:' "$publish_workflow"
@@ -17,6 +19,10 @@ grep -Fq 'gitleaks git --redact --verbose' "$pull_request_workflow"
 grep -Fq 'gitleaks git --redact --verbose' "$release_workflow"
 grep -Fq -- "--log-opts=\"\${HEALTHLABS_FORK_BASE_SHA}..HEAD\"" "$pull_request_workflow"
 grep -Fq -- "--log-opts=\"\${HEALTHLABS_FORK_BASE_SHA}..HEAD\"" "$release_workflow"
+grep -Fq 'scanners: "vuln"' "$trivy_workflow"
+grep -Fq 'apt-get upgrade --no-install-recommends -y' "$dockerfile"
+grep -Fq '/usr/local/bin/python -m pip uninstall --yes pip' "$dockerfile"
+grep -Fq "\$VENV_PATH/bin/python -m pip uninstall --yes pip" "$dockerfile"
 
 for forbidden in 'hkotel/mealie' 'registry: docker.io' 'DOCKERHUB_TOKEN' 'DOCKERHUB_USERNAME' 'depot/' ':latest' 'gitleaks/gitleaks-action'; do
   if grep -Fq -- "$forbidden" "$publish_workflow" "$pull_request_workflow" "$release_workflow"; then

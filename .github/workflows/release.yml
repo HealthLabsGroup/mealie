@@ -1,158 +1,156 @@
-name: Docker Build Production
+name: HealthLabs Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*-healthlabs.*"
 
 jobs:
-  commit-version-bump:
-    name: Commit version bump to repository
+  validate:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
+      packages: read
     outputs:
-      commit-sha: ${{ steps.commit.outputs.commit-sha }}
+      upstream-version: ${{ steps.tag.outputs.upstream-version }}
+      package-version: ${{ steps.tag.outputs.package-version }}
     steps:
-      - name: Generate GitHub App Token
-        id: app-token
-        uses: actions/create-github-app-token@v1
+      - uses: actions/checkout@v6
         with:
-          app-id: ${{ secrets.COMMIT_BOT_APP_ID }}
-          private-key: ${{ secrets.COMMIT_BOT_APP_PRIVATE_KEY }}
-
-      - name: Checkout 🛎
-        uses: actions/checkout@v6
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-
-      - name: Extract Version From Tag Name
-        run: echo "VERSION_NUM=$(echo ${{ github.event.release.tag_name }} | sed 's/^v//')" >> $GITHUB_ENV
-
-      - name: Configure Git
+          fetch-depth: 0
+      - id: tag
+        name: Validate release tag
+        run: ./scripts/healthlabs/validate-release-tag.sh "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+      - name: Require release commit on mealie-next
         run: |
-          git config user.name "mealie-commit-bot[bot]"
-          git config user.email "mealie-commit-bot[bot]@users.noreply.github.com"
-
-      - name: Update all version strings
+          git fetch origin mealie-next
+          branch_head=$(git rev-parse origin/mealie-next)
+          test "$GITHUB_SHA" = "$branch_head"
+          test "$(git rev-parse "${GITHUB_REF_NAME}^{}")" = "$GITHUB_SHA"
+      - name: Require immutable release namespace
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sed -i 's/^version = "[^"]*"/version = "${{ env.VERSION_NUM }}"/' pyproject.toml
-          sed -i '/^name = "mealie"$/,/^version = / s/^version = "[^"]*"/version = "${{ env.VERSION_NUM }}"/' uv.lock
-          sed -i '0,/"version": "/{s/\("version": "\)[^"]*"/\1${{ env.VERSION_NUM }}"/}' frontend/package.json
-          sed -i 's/:v[0-9]*\.[0-9]*\.[0-9]*/:v${{ env.VERSION_NUM }}/' docs/docs/documentation/getting-started/installation/installation-checklist.md
-          sed -i 's/:v[0-9]*\.[0-9]*\.[0-9]*/:v${{ env.VERSION_NUM }}/' docs/docs/documentation/getting-started/installation/sqlite.md
-          sed -i 's/:v[0-9]*\.[0-9]*\.[0-9]*/:v${{ env.VERSION_NUM }}/' docs/docs/documentation/getting-started/installation/postgres.md
-
-      - name: Commit and push changes
-        id: commit
+          protected=$(gh api "repos/$GITHUB_REPOSITORY/rulesets" \
+            --jq 'any(.[]; .name == "Protect HealthLabs release tags" and .enforcement == "active")')
+          test "$protected" = true
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub release already exists: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+      - name: Require matching upstream application version
         run: |
-          git add pyproject.toml frontend/package.json uv.lock docs/
-          git commit -m "chore: bump version to ${{ github.event.release.tag_name }}"
-          git push origin HEAD:${{ github.event.repository.default_branch }}
-          echo "commit-sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Move release tag to new commit
-        run: |
-          git tag -f ${{ github.event.release.tag_name }}
-          git push -f origin ${{ github.event.release.tag_name }}
+          actual=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          test "$actual" = "${{ steps.tag.outputs.upstream-version }}"
 
   backend-tests:
-    name: "Backend Server Tests"
+    needs: validate
     uses: ./.github/workflows/test-backend.yml
-    needs:
-      - commit-version-bump
     with:
-      ref: ${{ needs.commit-version-bump.outputs.commit-sha }}
+      ref: ${{ github.sha }}
 
   frontend-tests:
-    name: "Frontend Tests"
+    needs: validate
     uses: ./.github/workflows/test-frontend.yml
-    needs:
-      - commit-version-bump
     with:
-      ref: ${{ needs.commit-version-bump.outputs.commit-sha }}
+      ref: ${{ github.sha }}
 
   build-package:
-    name: Build Package
+    needs: validate
     uses: ./.github/workflows/build-package.yml
-    needs:
-      - commit-version-bump
     with:
-      tag: ${{ github.event.release.tag_name }}
-      ref: ${{ needs.commit-version-bump.outputs.commit-sha }}
+      tag: ${{ needs.validate.outputs.package-version }}
+      ref: ${{ github.sha }}
 
-  publish:
+  end-to-end:
+    needs: build-package
+    uses: ./.github/workflows/e2e.yml
+
+  codeql:
+    needs: validate
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/codeql.yml
+
+  secret-and-policy-scan:
+    needs: validate
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
-      # The id-token write permission is needed to connect to Depot.dev
-      # as part of the partial-builder.yml action. It needs to be declared
-      # in the parent action, as noted here:
-      # https://github.com/orgs/community/discussions/76409#discussioncomment-8131390
-      id-token: write
-    name: Build Tagged Release
-    uses: ./.github/workflows/publish.yml
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - run: ./scripts/healthlabs/verify-governance.sh
+      - run: ./scripts/healthlabs/verify-release-policy.sh
+      - run: ./scripts/healthlabs/test-release-scripts.sh
+      - name: Validate all GitHub Actions workflows
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive=/tmp/actionlint.tar.gz
+          curl --fail --silent --show-error --location \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            --output "$archive"
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" "$archive" | sha256sum --check --status
+          tar -xzf "$archive" -C /tmp actionlint
+          /tmp/actionlint -shellcheck=
+      - name: Scan Git history for secrets
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          HEALTHLABS_FORK_BASE_SHA: ce0be528e7cfce4bf1fa846c3c136186dd719af5
+        run: |
+          archive=/tmp/gitleaks.tar.gz
+          curl --fail --silent --show-error --location \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            --output "$archive"
+          printf '%s  %s\n' "$GITLEAKS_SHA256" "$archive" | sha256sum --check --status
+          tar -xzf "$archive" -C /tmp gitleaks
+          /tmp/gitleaks git --redact --verbose \
+            --log-opts="${HEALTHLABS_FORK_BASE_SHA}..HEAD" .
+
+  publish:
     needs:
       - backend-tests
       - frontend-tests
       - build-package
-      - commit-version-bump
+      - end-to-end
+      - codeql
+      - secret-and-policy-scan
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    uses: ./.github/workflows/publish.yml
     with:
-      ref: ${{ needs.commit-version-bump.outputs.commit-sha }}
-      tag: ${{ github.event.release.tag_name }}
-      tags: |
-          hkotel/mealie:latest
-          ghcr.io/${{ github.repository }}:latest
-    secrets:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      tag: ${{ github.ref_name }}
+      ref: ${{ github.sha }}
 
-  rollback-on-failure:
-    name: Rollback version commit if deployment fails
+  github-release:
     needs:
-      - commit-version-bump
+      - validate
       - publish
-    if: always() && needs.publish.result == 'failure'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Generate GitHub App Token
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.COMMIT_BOT_APP_ID }}
-          private-key: ${{ secrets.COMMIT_BOT_APP_PRIVATE_KEY }}
-
-      - name: Checkout 🛎
-        uses: actions/checkout@v6
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-          fetch-depth: 0
-
-      - name: Configure Git
-        run: |
-          git config user.name "mealie-commit-bot[bot]"
-          git config user.email "mealie-commit-bot[bot]@users.noreply.github.com"
-
-      - name: Delete release tag
-        run: |
-          git push --delete origin ${{ github.event.release.tag_name }}
-
-      - name: Revert version bump commit
-        run: |
-          git revert --no-edit ${{ needs.commit-version-bump.outputs.commit-sha }}
-          git push origin HEAD:${{ github.event.repository.default_branch }}
-
-  notify-discord:
-    name: Notify Discord
-    needs:
-      - publish
-    if: success()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Discord notification
+      - name: Publish source-linked release notes
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
-        uses: Ilshidur/action-discord@0.3.2
-        with:
-          args: "🚀  Version {{ EVENT_PAYLOAD.release.tag_name }} of Mealie has been released. See the release notes https://github.com/mealie-recipes/mealie/releases/tag/{{ EVENT_PAYLOAD.release.tag_name }}"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
+          UPSTREAM_VERSION: ${{ needs.validate.outputs.upstream-version }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes "Image: ghcr.io/healthlabsgroup/mealie@$IMAGE_DIGEST
+
+          Upstream version: $UPSTREAM_VERSION
+          Source commit: https://github.com/HealthLabsGroup/mealie/tree/$GITHUB_SHA
+          Rollback: redeploy the previously recorded immutable digest. This baseline release contains no HealthLabs schema migration."

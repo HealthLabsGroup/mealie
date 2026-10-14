@@ -54,6 +54,19 @@ _(fill-in or delete this section)_
    Which parts of the code should reviewers focus on?
 -->
 
+## HealthLabs fork review
+
+### Change classification
+
+- [ ] Suitable for an upstream pull request
+- [ ] HealthLabs operational hardening
+- [ ] Generally useful API capability required by an external integration
+
+### AGPL/source disclosure impact
+
+- [ ] License, notices, attribution, and exact-source disclosure remain intact
+- [ ] No Ephra source, credentials, customer data, or private deployment configuration is included
+
 ## Testing
 
 _(fill-in or delete this section)_

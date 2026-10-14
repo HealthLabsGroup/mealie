@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from mealie.core.release_checker import get_latest_version
 from mealie.core.settings.static import APP_VERSION
+from mealie.core.source import healthlabs_source_url
 from mealie.routes._base import BaseAdminController, controller
 from mealie.schema.admin.about import AdminAboutInfo, AppStatistics, CheckAppConfig
 
@@ -20,6 +21,7 @@ class AdminAboutController(BaseAdminController):
         return AdminAboutInfo(
             production=settings.PRODUCTION,
             version=APP_VERSION,
+            source_url=healthlabs_source_url(settings.GIT_COMMIT_HASH),
             versionLatest=get_latest_version(),
             demo_status=settings.IS_DEMO,
             api_port=settings.API_PORT,

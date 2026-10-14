@@ -8,6 +8,7 @@
 export interface AdminAboutInfo {
   production: boolean;
   version: string;
+  sourceUrl: string;
   demoStatus: boolean;
   allowSignup: boolean;
   allowPasswordLogin: boolean;
@@ -40,6 +41,7 @@ export interface BackupFile {
 export interface AppInfo {
   production: boolean;
   version: string;
+  sourceUrl: string;
   demoStatus: boolean;
   allowSignup: boolean;
   allowPasswordLogin: boolean;

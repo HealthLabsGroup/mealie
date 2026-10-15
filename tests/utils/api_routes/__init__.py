@@ -95,6 +95,8 @@ healthlabs_v1_catalogue = "/api/healthlabs/v1/catalogue"
 """`/api/healthlabs/v1/catalogue`"""
 healthlabs_v1_import_drafts = "/api/healthlabs/v1/import-drafts"
 """`/api/healthlabs/v1/import-drafts`"""
+healthlabs_v1_plans_current = "/api/healthlabs/v1/plans/current"
+"""`/api/healthlabs/v1/plans/current`"""
 healthlabs_v1_recipes = "/api/healthlabs/v1/recipes"
 """`/api/healthlabs/v1/recipes`"""
 healthlabs_v1_subjects = "/api/healthlabs/v1/subjects"
@@ -390,6 +392,11 @@ def healthlabs_v1_operations_idempotency_key(idempotency_key):
     return f"{prefix}/healthlabs/v1/operations/{idempotency_key}"
 
 
+def healthlabs_v1_plans_plan_id_entries_entry_id(plan_id, entry_id):
+    """`/api/healthlabs/v1/plans/{plan_id}/entries/{entry_id}`"""
+    return f"{prefix}/healthlabs/v1/plans/{plan_id}/entries/{entry_id}"
+
+
 def healthlabs_v1_recipes_recipe_id(recipe_id):
     """`/api/healthlabs/v1/recipes/{recipe_id}`"""
     return f"{prefix}/healthlabs/v1/recipes/{recipe_id}"
@@ -408,6 +415,16 @@ def healthlabs_v1_recipes_recipe_id_revisions_revision_id(recipe_id, revision_id
 def healthlabs_v1_subjects_external_subject_id(external_subject_id):
     """`/api/healthlabs/v1/subjects/{external_subject_id}`"""
     return f"{prefix}/healthlabs/v1/subjects/{external_subject_id}"
+
+
+def healthlabs_v1_subjects_external_subject_id_plan_publications(external_subject_id):
+    """`/api/healthlabs/v1/subjects/{external_subject_id}/plan-publications`"""
+    return f"{prefix}/healthlabs/v1/subjects/{external_subject_id}/plan-publications"
+
+
+def healthlabs_v1_subjects_external_subject_id_plans_current(external_subject_id):
+    """`/api/healthlabs/v1/subjects/{external_subject_id}/plans/current`"""
+    return f"{prefix}/healthlabs/v1/subjects/{external_subject_id}/plans/current"
 
 
 def healthlabs_v1_subjects_external_subject_id_tokens_rotate(external_subject_id):

@@ -68,9 +68,10 @@ def test_recipe_owner_metadata_is_only_resolved_for_cross_subject_reader(
 ) -> None:
     owner, owner_headers = healthlabs_provision()
     editor, editor_headers = healthlabs_provision()
+    recipe_name = f"Owner recipe {uuid4()}"
     recipe = api_client.post(
         "/api/healthlabs/v1/recipes",
-        json={"name": f"Owner recipe {uuid4()}", "ingredients": [], "instructions": []},
+        json={"name": recipe_name, "ingredients": [], "instructions": []},
         headers={**owner_headers, "Idempotency-Key": f"recipe-{uuid4()}"},
     )
     assert recipe.status_code == 201
@@ -80,6 +81,7 @@ def test_recipe_owner_metadata_is_only_resolved_for_cross_subject_reader(
     assert own_item.get("ownerExternalSubjectId") is None
     response = api_client.get(
         "/api/healthlabs/v1/recipes",
+        params={"q": recipe_name},
         headers={**editor_headers, "X-HealthLabs-Access-Reason": "Build meal plan"},
     )
     assert response.status_code == 200

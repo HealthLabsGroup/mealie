@@ -104,6 +104,48 @@ class IdempotencyService:
             self.session.commit()
             return IdempotentResponse(status_code=status_code, body=body, replayed=False)
 
+    def execute_atomic(
+        self,
+        *,
+        idempotency_key: str,
+        request_sha256: str,
+        operation: Callable[[], tuple[int, dict[str, Any]]],
+    ) -> IdempotentResponse:
+        while True:
+            existing = self._find(idempotency_key)
+            if existing is not None:
+                resolved = self._resolve_existing(existing, request_sha256)
+                if resolved is not None:
+                    return resolved
+                continue
+
+            row = HealthLabsIdempotencyOperation(
+                actor_user_id=self.actor_user_id,
+                idempotency_key=idempotency_key,
+                request_sha256=request_sha256,
+                state="pending",
+                expires_at=get_utc_now() + self.RETENTION,
+            )
+            self.session.add(row)
+            try:
+                self.session.flush()
+            except IntegrityError:
+                self.session.rollback()
+                continue
+
+            try:
+                status_code, body = operation()
+                row.state = "completed"
+                row.response_status = status_code
+                row.response_body = body
+                row.completed_at = get_utc_now()
+                row.expires_at = get_utc_now() + self.RETENTION
+                self.session.commit()
+            except Exception:
+                self.session.rollback()
+                raise
+            return IdempotentResponse(status_code=status_code, body=body, replayed=False)
+
     def get(self, idempotency_key: str) -> HealthLabsIdempotencyOperation | None:
         row = self._find(idempotency_key)
         if row is not None and row.expires_at <= get_utc_now():

@@ -80,8 +80,8 @@ def _idempotent_json(
 def list_recipes(
     q: str | None = Query(default=None, max_length=255),
     cursor: str | None = Query(default=None, max_length=64),
-    access_reason: str | None = Header(default=None, alias="X-HealthLabs-Access-Reason"),
-    break_glass_reason: str | None = Header(default=None, alias="X-HealthLabs-Break-Glass-Reason"),
+    access_reason: str | None = Header(default=None, alias="X-HealthLabs-Access-Reason", max_length=500),
+    break_glass_reason: str | None = Header(default=None, alias="X-HealthLabs-Break-Glass-Reason", max_length=500),
     session: Session = Depends(generate_session),
     user: PrivateUser = Depends(get_current_user),
     translator: Translator = Depends(get_locale_provider),
@@ -130,8 +130,8 @@ def create_recipe(
 @router.get("/recipes/{recipe_id}", response_model=HealthLabsRecipeOut)
 def get_recipe(
     recipe_id: UUID,
-    access_reason: str | None = Header(default=None, alias="X-HealthLabs-Access-Reason"),
-    break_glass_reason: str | None = Header(default=None, alias="X-HealthLabs-Break-Glass-Reason"),
+    access_reason: str | None = Header(default=None, alias="X-HealthLabs-Access-Reason", max_length=500),
+    break_glass_reason: str | None = Header(default=None, alias="X-HealthLabs-Break-Glass-Reason", max_length=500),
     session: Session = Depends(generate_session),
     user: PrivateUser = Depends(get_current_user),
     translator: Translator = Depends(get_locale_provider),
@@ -214,8 +214,8 @@ def delete_recipe(
 def get_recipe_revision(
     recipe_id: UUID,
     revision_id: UUID,
-    access_reason: str | None = Header(default=None, alias="X-HealthLabs-Access-Reason"),
-    break_glass_reason: str | None = Header(default=None, alias="X-HealthLabs-Break-Glass-Reason"),
+    access_reason: str | None = Header(default=None, alias="X-HealthLabs-Access-Reason", max_length=500),
+    break_glass_reason: str | None = Header(default=None, alias="X-HealthLabs-Break-Glass-Reason", max_length=500),
     session: Session = Depends(generate_session),
     user: PrivateUser = Depends(get_current_user),
     translator: Translator = Depends(get_locale_provider),
@@ -276,8 +276,8 @@ async def update_recipe_image(
 @router.get("/recipes/{recipe_id}/image", response_class=Response)
 def get_recipe_image(
     recipe_id: UUID,
-    access_reason: str | None = Header(default=None, alias="X-HealthLabs-Access-Reason"),
-    break_glass_reason: str | None = Header(default=None, alias="X-HealthLabs-Break-Glass-Reason"),
+    access_reason: str | None = Header(default=None, alias="X-HealthLabs-Access-Reason", max_length=500),
+    break_glass_reason: str | None = Header(default=None, alias="X-HealthLabs-Break-Glass-Reason", max_length=500),
     session: Session = Depends(generate_session),
     user: PrivateUser = Depends(get_current_user),
     translator: Translator = Depends(get_locale_provider),

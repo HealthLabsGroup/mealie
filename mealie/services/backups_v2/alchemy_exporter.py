@@ -67,15 +67,18 @@ class AlchemyExporter(BaseService):
         "completed_date",
         "completed_at",
         "copied_at",
+        "cooked_at",
         "granted_at",
         "occurred_at",
+        "published_at",
         "revoked_at",
+        "superseded_at",
         "tokens_valid_after",
     }
     """Column names restored back into datetimes. Anything stored as a `NaiveDateTime` and missing
     here comes back from a backup as a string; `test_every_datetime_column_survives_a_backup` guards
     against forgetting to add one."""
-    look_for_date = {"date_added", "date"}
+    look_for_date = {"date_added", "date", "from_date"}
     look_for_time = {"scheduled_time"}
 
     class DateTimeParser(BaseModel):
@@ -236,7 +239,8 @@ class AlchemyExporter(BaseService):
                     rows = self.clean_rows(db_dump, table, rows)
 
                     connection.execute(table.delete())
-                    connection.execute(insert(table), rows)
+                    if rows:
+                        connection.execute(insert(table), rows)
                 if self.engine.dialect.name == "postgresql":
                     # Restore postgres sequence numbers
                     sequences = [

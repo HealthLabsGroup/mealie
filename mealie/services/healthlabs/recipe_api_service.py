@@ -231,6 +231,14 @@ class RecipeApiService:
             )
             for step in (recipe.recipe_instructions or [])
         ]
+        owner_external_subject_id = None
+        if (
+            HealthLabsCapability.RECIPES_READ_ALL in self.capabilities
+            and recipe.healthlabs_scope == NativeRecipeScope.PERSONAL
+            and recipe.user_id is not None
+        ):
+            owner = self.session.get(User, recipe.user_id)
+            owner_external_subject_id = owner.external_subject_id if owner is not None else None
         return HealthLabsRecipeOut(
             id=recipe.id,
             slug=recipe.slug,
@@ -242,6 +250,7 @@ class RecipeApiService:
             copied_from_recipe_id=recipe.copied_from_recipe_id,
             copied_from_revision_id=recipe.copied_from_revision_id,
             copied_at=recipe.copied_at,
+            owner_external_subject_id=owner_external_subject_id,
             servings=recipe.recipe_servings,
             yield_quantity=recipe.recipe_yield_quantity,
             yield_name=recipe.recipe_yield,

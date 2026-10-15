@@ -50,6 +50,8 @@ def test_subject_provisioning_is_secret_authenticated_and_idempotent(
     assert body["token"]
     assert body["capabilities"] == [
         HealthLabsCapability.CATALOGUE_READ.value,
+        HealthLabsCapability.PLANS_MARK_COOKED_OWN.value,
+        HealthLabsCapability.PLANS_READ_OWN.value,
         HealthLabsCapability.RECIPES_READ_OWN.value,
         HealthLabsCapability.RECIPES_WRITE_OWN.value,
     ]
@@ -143,6 +145,44 @@ def test_provisioning_grants_are_active_and_exact(
     ).all()
     assert {grant.capability for grant in grants} == {
         HealthLabsCapability.CATALOGUE_READ.value,
+        HealthLabsCapability.PLANS_MARK_COOKED_OWN.value,
+        HealthLabsCapability.PLANS_READ_OWN.value,
         HealthLabsCapability.RECIPES_READ_OWN.value,
         HealthLabsCapability.RECIPES_WRITE_OWN.value,
     }
+
+
+def test_reprovisioning_does_not_restore_a_revoked_baseline_capability(
+    api_client: TestClient,
+    unfiltered_database: AllRepositories,
+) -> None:
+    subject = f"revoked-{uuid4()}"
+    first = _provision(api_client, subject)
+    assert first.status_code == 201
+    user_id = first.json()["userId"]
+    capability = HealthLabsCapability.RECIPES_WRITE_OWN.value
+    session = unfiltered_database.session
+    grant = session.scalar(
+        sa.select(HealthLabsCapabilityGrant).where(
+            HealthLabsCapabilityGrant.user_id == user_id,
+            HealthLabsCapabilityGrant.capability == capability,
+        )
+    )
+    assert grant is not None
+    grant.revoked_at = grant.granted_at
+    session.commit()
+
+    reprovisioned = _provision(api_client, subject)
+    assert reprovisioned.status_code == 200
+    assert capability not in reprovisioned.json()["capabilities"]
+    assert (
+        session.scalar(
+            sa.select(sa.func.count())
+            .select_from(HealthLabsCapabilityGrant)
+            .where(
+                HealthLabsCapabilityGrant.user_id == user_id,
+                HealthLabsCapabilityGrant.capability == capability,
+            )
+        )
+        == 1
+    )

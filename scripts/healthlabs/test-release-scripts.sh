@@ -25,6 +25,25 @@ for invalid_tag in \
 done
 
 "$script_dir/verify-release-policy.sh" "$repository_root"
+bash -n "$script_dir/smoke-recipe-service.sh"
+bash -n "$script_dir/smoke-plan-service.sh"
+grep -Fq 'HEALTHLABS_PLAN_EDITOR_TOKEN' "$script_dir/smoke-plan-service.sh"
+grep -Fq '/plan-publications' "$script_dir/smoke-plan-service.sh"
+grep -Fq '/entries/' "$script_dir/smoke-plan-service.sh"
+
+if insecure_output=$(
+  HEALTHLABS_BASE_URL=http://127.0.0.1:1 \
+    HEALTHLABS_PROVISIONING_SECRET=test-secret \
+    HEALTHLABS_PLAN_EDITOR_TOKEN=test-token \
+    "$script_dir/smoke-plan-service.sh" 2>&1
+); then
+  printf 'plan-service smoke accepted an insecure base URL\n' >&2
+  exit 1
+fi
+if ! grep -Fq 'HEALTHLABS_BASE_URL must use https://' <<<"$insecure_output"; then
+  printf 'plan-service smoke did not reject HTTP before making requests\n' >&2
+  exit 1
+fi
 
 fixture_root=$(mktemp -d)
 cleanup() {

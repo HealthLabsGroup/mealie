@@ -24,6 +24,8 @@ SUBJECT_CAPABILITIES = frozenset(
         HealthLabsCapability.RECIPES_READ_OWN,
         HealthLabsCapability.RECIPES_WRITE_OWN,
         HealthLabsCapability.CATALOGUE_READ,
+        HealthLabsCapability.PLANS_READ_OWN,
+        HealthLabsCapability.PLANS_MARK_COOKED_OWN,
     }
 )
 CATALOGUE_CAPABILITIES: dict[CatalogueAccess, frozenset[HealthLabsCapability]] = {
@@ -59,6 +61,8 @@ class HealthLabsProvisioningService:
         self._acquire_subject_lock(external_subject_id)
         existing = self._find_user(external_subject_id)
         if existing is not None:
+            self._grant_missing_capabilities(existing, SUBJECT_CAPABILITIES)
+            self.session.commit()
             return self._credential_for(existing, created=False)
 
         digest = self._subject_digest(external_subject_id)
@@ -227,6 +231,30 @@ class HealthLabsProvisioningService:
             TOKEN_LIFETIME,
         )
         return LongLiveToken(name=name, token=token, user_id=user.id)
+
+    def _grant_missing_capabilities(
+        self,
+        user: User,
+        capabilities: frozenset[HealthLabsCapability],
+    ) -> None:
+        known = set(
+            self.session.scalars(
+                sa.select(HealthLabsCapabilityGrant.capability).where(
+                    HealthLabsCapabilityGrant.user_id == user.id,
+                )
+            )
+        )
+        self.session.add_all(
+            [
+                HealthLabsCapabilityGrant(
+                    user_id=user.id,
+                    capability=capability.value,
+                    reason="HealthLabs managed-account provisioning",
+                )
+                for capability in capabilities
+                if capability.value not in known
+            ]
+        )
 
     def _credential_for(self, user: User, *, created: bool) -> ProvisionedCredential:
         token = self.session.scalar(

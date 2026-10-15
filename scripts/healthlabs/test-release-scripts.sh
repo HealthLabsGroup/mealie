@@ -25,6 +25,11 @@ for invalid_tag in \
 done
 
 "$script_dir/verify-release-policy.sh" "$repository_root"
+bash -n "$script_dir/smoke-recipe-service.sh"
+bash -n "$script_dir/smoke-plan-service.sh"
+grep -Fq 'HEALTHLABS_PLAN_EDITOR_TOKEN' "$script_dir/smoke-plan-service.sh"
+grep -Fq '/plan-publications' "$script_dir/smoke-plan-service.sh"
+grep -Fq '/entries/' "$script_dir/smoke-plan-service.sh"
 
 fixture_root=$(mktemp -d)
 cleanup() {

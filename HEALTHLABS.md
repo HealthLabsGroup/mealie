@@ -34,6 +34,11 @@ The first recipe-service API release is
 published for `linux/amd64` and `linux/arm64`; consumers must deploy the digest
 recorded in the GitHub release rather than the mutable tag reference.
 
+The first immutable plan-service release is
+[`v3.28.0-healthlabs.5`](docs/healthlabs/plan-service-v1.md). It adds
+capability-scoped publication, current-plan reads, and cooked-state updates on
+the existing HealthLabs API boundary.
+
 ## AGPL-3.0 and source availability
 
 The upstream AGPL-3.0 license, copyright notices, and attribution remain in

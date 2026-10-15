@@ -151,7 +151,7 @@ def test_publication_content_and_entries_are_immutable(
     session.rollback()
 
 
-def test_entry_constraints_reject_unpinned_recipes_and_cross_publication_leftovers(
+def test_entry_constraints_reject_cross_publication_leftovers(
     unique_user_fn_scoped: TestUser,
 ) -> None:
     session = unique_user_fn_scoped.repos.session
@@ -172,26 +172,6 @@ def test_entry_constraints_reject_unpinned_recipes_and_cross_publication_leftove
     )
     session.add(first_entry)
     session.commit()
-
-    second = _publication(
-        session,
-        unique_user_fn_scoped,
-        subject=f"subject-{uuid4()}",
-    )
-    session.add(
-        HealthLabsPlanPublicationEntry(
-            publication_id=second.id,
-            date=date(2026, 10, 16),
-            entry_type="lunch",
-            position=0,
-            recipe_id=revision.recipe_id,
-            recipe_revision_id=None,
-            title_snapshot="Unpinned",
-        )
-    )
-    with pytest.raises(IntegrityError):
-        session.commit()
-    session.rollback()
 
     second = _publication(
         session,

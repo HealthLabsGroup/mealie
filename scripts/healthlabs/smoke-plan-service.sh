@@ -13,6 +13,10 @@ done
 : "${HEALTHLABS_PLAN_EDITOR_TOKEN:?set HEALTHLABS_PLAN_EDITOR_TOKEN}"
 
 origin=${HEALTHLABS_BASE_URL%/}
+if [[ $origin != https://* ]]; then
+  printf 'HEALTHLABS_BASE_URL must use https://\n' >&2
+  exit 1
+fi
 api="$origin/api/healthlabs/v1"
 subject="release-plan-smoke-$(date -u +%Y%m%d%H%M%S)-$$"
 entry_id=$(uuidgen | tr '[:upper:]' '[:lower:]')

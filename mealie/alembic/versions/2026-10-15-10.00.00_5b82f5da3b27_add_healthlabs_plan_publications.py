@@ -101,11 +101,6 @@ def upgrade() -> None:
             name="healthlabs_plan_entry_position_nonnegative",
         ),
         sa.CheckConstraint(
-            "(recipe_id IS NULL AND recipe_revision_id IS NULL) OR "
-            "(recipe_id IS NOT NULL AND recipe_revision_id IS NOT NULL)",
-            name="healthlabs_plan_entry_recipe_revision_pair",
-        ),
-        sa.CheckConstraint(
             "servings IS NULL OR servings > 0",
             name="healthlabs_plan_entry_servings_positive",
         ),
@@ -123,11 +118,11 @@ def upgrade() -> None:
             ["healthlabs_plan_publications.id"],
             ondelete="CASCADE",
         ),
-        sa.ForeignKeyConstraint(["recipe_id"], ["recipes.id"], ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(["recipe_id"], ["recipes.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(
             ["recipe_revision_id"],
             ["healthlabs_recipe_revisions.id"],
-            ondelete="RESTRICT",
+            ondelete="SET NULL",
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(

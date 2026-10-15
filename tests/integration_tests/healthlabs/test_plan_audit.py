@@ -71,3 +71,52 @@ def test_cross_subject_plan_calls_require_bounded_reason_and_write_immutable_aud
         audits[0].reason = "rewritten"
         session.commit()
     session.rollback()
+
+
+def test_plan_publication_replay_is_audited_for_the_replaying_editor(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_set_capabilities: Callable,
+    healthlabs_plan_payload: Callable,
+    unfiltered_database: AllRepositories,
+) -> None:
+    subject, _ = healthlabs_provision()
+    first_editor, first_headers = healthlabs_provision()
+    replaying_editor, replaying_headers = healthlabs_provision()
+    healthlabs_set_capabilities(first_editor["userId"], HealthLabsCapability.PLANS_WRITE_ALL)
+    healthlabs_set_capabilities(replaying_editor["userId"], HealthLabsCapability.PLANS_WRITE_ALL)
+    path = f"/api/healthlabs/v1/subjects/{subject['externalSubjectId']}/plan-publications"
+    payload = healthlabs_plan_payload()
+    key = f"publish-{uuid4()}"
+    first = api_client.post(
+        path,
+        json=payload,
+        headers={
+            **first_headers,
+            "Idempotency-Key": key,
+            "X-HealthLabs-Access-Reason": "Initial publication",
+        },
+    )
+    replay = api_client.post(
+        path,
+        json=payload,
+        headers={
+            **replaying_headers,
+            "Idempotency-Key": key,
+            "X-HealthLabs-Access-Reason": "Verify publication",
+        },
+    )
+    assert first.status_code == 201
+    assert replay.status_code == 201
+    assert replay.json() == first.json()
+
+    audits = unfiltered_database.session.scalars(
+        sa.select(HealthLabsAccessAudit)
+        .where(HealthLabsAccessAudit.subject_external_id == subject["externalSubjectId"])
+        .where(HealthLabsAccessAudit.action == "plans.publish")
+        .order_by(HealthLabsAccessAudit.occurred_at)
+    ).all()
+    assert [(str(audit.actor_user_id), audit.reason) for audit in audits] == [
+        (first_editor["userId"], "Initial publication"),
+        (replaying_editor["userId"], "Verify publication"),
+    ]

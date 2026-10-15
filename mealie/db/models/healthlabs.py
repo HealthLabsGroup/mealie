@@ -10,6 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from mealie.db.models._model_base import BaseMixins, SqlAlchemyBase
 from mealie.db.models._model_utils.datetime import NaiveDateTime, get_utc_now
 from mealie.db.models._model_utils.guid import GUID
+from mealie.db.models.recipe.recipe import RecipeModel
 
 
 class HealthLabsCapabilityGrant(SqlAlchemyBase, BaseMixins):
@@ -217,11 +218,6 @@ class HealthLabsPlanPublicationEntry(SqlAlchemyBase, BaseMixins):
             "servings IS NULL OR servings > 0",
             name="healthlabs_plan_entry_servings_positive",
         ),
-        sa.CheckConstraint(
-            "(recipe_id IS NULL AND recipe_revision_id IS NULL) OR "
-            "(recipe_id IS NOT NULL AND recipe_revision_id IS NOT NULL)",
-            name="healthlabs_plan_entry_recipe_revision_pair",
-        ),
     )
 
     id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
@@ -237,12 +233,12 @@ class HealthLabsPlanPublicationEntry(SqlAlchemyBase, BaseMixins):
     servings: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
     recipe_id: Mapped[GUID | None] = mapped_column(
         GUID,
-        ForeignKey("recipes.id", ondelete="RESTRICT"),
+        ForeignKey("recipes.id", ondelete="SET NULL"),
         nullable=True,
     )
     recipe_revision_id: Mapped[GUID | None] = mapped_column(
         GUID,
-        ForeignKey("healthlabs_recipe_revisions.id", ondelete="RESTRICT"),
+        ForeignKey("healthlabs_recipe_revisions.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -267,6 +263,15 @@ def validate_plan_leftover_publication(_mapper: Any, connection: Any, target: An
 @event.listens_for(HealthLabsPlanPublicationEntry, "before_delete")
 def prevent_plan_publication_entry_mutation(*_args: Any) -> None:
     raise ValueError("HealthLabs plan publication entries are immutable")
+
+
+@event.listens_for(RecipeModel, "before_delete")
+def detach_deleted_recipe_from_plan_entries(_mapper: Any, connection: Any, target: RecipeModel) -> None:
+    # SQLite may not enforce FK actions, so preserve the same historical-plan state explicitly.
+    entry = HealthLabsPlanPublicationEntry.__table__
+    connection.execute(
+        sa.update(entry).where(entry.c.recipe_id == target.id).values(recipe_id=None, recipe_revision_id=None)
+    )
 
 
 class HealthLabsPlanEntryStatus(SqlAlchemyBase, BaseMixins):

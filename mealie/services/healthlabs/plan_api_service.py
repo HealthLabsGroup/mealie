@@ -74,7 +74,16 @@ class PlanApiService:
         if previous is not None:
             if previous.request_sha256 != request_sha256:
                 raise IdempotencyConflict("Idempotency key was already used for a different request")
-            return self._to_out(previous)
+            replay = self._to_out(previous)
+            self.policy.require_cross_subject(
+                HealthLabsCapability.PLANS_WRITE_ALL,
+                action="plans.publish",
+                reason=reason,
+                subject_external_id=external_subject_id,
+                resource_type="plan",
+            )
+            self.session.commit()
+            return replay
 
         def operation() -> tuple[int, dict[str, Any]]:
             publication = self._publish(

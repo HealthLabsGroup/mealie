@@ -45,6 +45,12 @@ def test_plan_migration_adds_publications_without_changing_native_rows() -> None
             assert inspector.has_table("healthlabs_plan_publications")
             assert inspector.has_table("healthlabs_plan_publication_entries")
             assert inspector.has_table("healthlabs_plan_entry_status")
+            recipe_links = {
+                tuple(foreign_key["constrained_columns"]): foreign_key["options"].get("ondelete")
+                for foreign_key in inspector.get_foreign_keys("healthlabs_plan_publication_entries")
+            }
+            assert recipe_links[("recipe_id",)] == "SET NULL"
+            assert recipe_links[("recipe_revision_id",)] == "SET NULL"
             assert {
                 "healthlabs_publication_entry_id",
                 "healthlabs_recipe_revision_id",

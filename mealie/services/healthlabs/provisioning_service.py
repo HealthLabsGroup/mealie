@@ -237,11 +237,10 @@ class HealthLabsProvisioningService:
         user: User,
         capabilities: frozenset[HealthLabsCapability],
     ) -> None:
-        active = set(
+        known = set(
             self.session.scalars(
                 sa.select(HealthLabsCapabilityGrant.capability).where(
                     HealthLabsCapabilityGrant.user_id == user.id,
-                    HealthLabsCapabilityGrant.revoked_at.is_(None),
                 )
             )
         )
@@ -253,7 +252,7 @@ class HealthLabsProvisioningService:
                     reason="HealthLabs managed-account provisioning",
                 )
                 for capability in capabilities
-                if capability.value not in active
+                if capability.value not in known
             ]
         )
 

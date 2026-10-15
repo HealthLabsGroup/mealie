@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Literal, Self
 
-from pydantic import UUID4, Field, model_validator
+from pydantic import UUID4, ConfigDict, Field, model_validator
 
 from mealie.schema._mealie import MealieModel
 
@@ -90,6 +90,12 @@ class HealthLabsPlanPublicationEntryOut(MealieModel):
     cooked: bool = False
     cooked_at: datetime | None = None
     version: int = 1
+
+
+class HealthLabsPlanEntryStatusPatch(MealieModel):
+    version: int = Field(ge=1)
+    cooked: bool
+    model_config = ConfigDict(extra="forbid")
 
 
 class HealthLabsPlanPublicationOut(MealieModel):

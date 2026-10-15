@@ -116,6 +116,7 @@ class HealthLabsRecipeOut(MealieModel):
     copied_from_recipe_id: UUID4 | None = None
     copied_from_revision_id: UUID4 | None = None
     copied_at: datetime | None = None
+    owner_external_subject_id: str | None = None
     servings: float = 0
     yield_quantity: float = 0
     yield_name: str | None = None

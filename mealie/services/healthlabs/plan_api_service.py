@@ -18,6 +18,7 @@ from mealie.db.models.recipe.recipe import HealthLabsRecipeRevision, RecipeModel
 from mealie.db.models.users import User
 from mealie.schema.healthlabs.identity import HealthLabsCapability
 from mealie.schema.healthlabs.plan import (
+    HealthLabsPlanEntryStatusPatch,
     HealthLabsPlanPublicationEntryOut,
     HealthLabsPlanPublicationOut,
     HealthLabsPlanPublicationWrite,
@@ -117,6 +118,64 @@ class PlanApiService:
             raise HealthLabsPlanNotFound("Plan subject not found")
         publication = self._current(self.user.external_subject_id)
         return self._to_out(publication) if publication is not None else None
+
+    def patch_own_entry(
+        self,
+        plan_id: UUID,
+        entry_id: UUID,
+        data: HealthLabsPlanEntryStatusPatch,
+        *,
+        idempotency_key: str,
+    ) -> HealthLabsPlanPublicationEntryOut:
+        self.policy.require(HealthLabsCapability.PLANS_MARK_COOKED_OWN)
+        if not self.user.external_subject_id or not idempotency_key or len(idempotency_key) > 255:
+            raise ValueError("Plan subject and a bounded idempotency key are required")
+        resource = f"/plans/{plan_id}/entries/{entry_id}"
+        payload = data.model_dump(mode="json", by_alias=True)
+        request_sha256 = IdempotencyService.request_hash("PATCH", resource, payload)
+
+        def operation() -> tuple[int, dict[str, Any]]:
+            row = self.session.execute(
+                sa.select(HealthLabsPlanPublicationEntry, HealthLabsPlanEntryStatus)
+                .join(
+                    HealthLabsPlanPublication,
+                    HealthLabsPlanPublication.id == HealthLabsPlanPublicationEntry.publication_id,
+                )
+                .join(
+                    HealthLabsPlanEntryStatus,
+                    HealthLabsPlanEntryStatus.publication_entry_id == HealthLabsPlanPublicationEntry.id,
+                )
+                .where(
+                    HealthLabsPlanPublication.id == plan_id,
+                    HealthLabsPlanPublication.external_subject_id == self.user.external_subject_id,
+                    HealthLabsPlanPublication.superseded_at.is_(None),
+                    HealthLabsPlanPublicationEntry.id == entry_id,
+                )
+                .with_for_update()
+            ).one_or_none()
+            if row is None:
+                raise HealthLabsPlanNotFound("Plan entry not found")
+            entry, entry_status = row
+            if entry_status.version != data.version:
+                raise HealthLabsPlanConflict("Plan entry version is stale")
+            entry_status.cooked_at = get_utc_now() if data.cooked else None
+            entry_status.updated_by_user_id = self.user.id
+            entry_status.version += 1
+            self.session.flush()
+            revision = (
+                self.session.get(HealthLabsRecipeRevision, entry.recipe_revision_id)
+                if entry.recipe_revision_id is not None
+                else None
+            )
+            body = self._entry_to_out(entry, revision, entry_status).model_dump(mode="json", by_alias=True)
+            return 200, body
+
+        result = IdempotencyService(self.session, self.user.id).execute_atomic(
+            idempotency_key=idempotency_key,
+            request_sha256=request_sha256,
+            operation=operation,
+        )
+        return HealthLabsPlanPublicationEntryOut.model_validate(result.body)
 
     def _publish(
         self,
@@ -295,24 +354,7 @@ class PlanApiService:
                 HealthLabsPlanPublicationEntry.id,
             )
         ).all()
-        entries = [
-            HealthLabsPlanPublicationEntryOut(
-                id=entry.id,
-                date=entry.date,
-                entry_type=entry.entry_type,
-                position=entry.position,
-                servings=entry.servings,
-                recipe_id=entry.recipe_id,
-                recipe_revision_id=entry.recipe_revision_id,
-                title=entry.title_snapshot,
-                leftover_of_entry_id=entry.leftover_of_entry_id,
-                recipe_snapshot=revision.snapshot if revision is not None else None,
-                cooked=status.cooked_at is not None if status is not None else False,
-                cooked_at=status.cooked_at if status is not None else None,
-                version=status.version if status is not None else 1,
-            )
-            for entry, revision, status in rows
-        ]
+        entries = [self._entry_to_out(entry, revision, status) for entry, revision, status in rows]
         return HealthLabsPlanPublicationOut(
             id=publication.id,
             publication_number=publication.publication_number,
@@ -322,4 +364,26 @@ class PlanApiService:
             published_at=publication.published_at,
             idempotency_key=publication.idempotency_key,
             entries=entries,
+        )
+
+    @staticmethod
+    def _entry_to_out(
+        entry: HealthLabsPlanPublicationEntry,
+        revision: HealthLabsRecipeRevision | None,
+        status: HealthLabsPlanEntryStatus | None,
+    ) -> HealthLabsPlanPublicationEntryOut:
+        return HealthLabsPlanPublicationEntryOut(
+            id=entry.id,
+            date=entry.date,
+            entry_type=entry.entry_type,
+            position=entry.position,
+            servings=entry.servings,
+            recipe_id=entry.recipe_id,
+            recipe_revision_id=entry.recipe_revision_id,
+            title=entry.title_snapshot,
+            leftover_of_entry_id=entry.leftover_of_entry_id,
+            recipe_snapshot=revision.snapshot if revision is not None else None,
+            cooked=status.cooked_at is not None if status is not None else False,
+            cooked_at=status.cooked_at if status is not None else None,
+            version=status.version if status is not None else 1,
         )

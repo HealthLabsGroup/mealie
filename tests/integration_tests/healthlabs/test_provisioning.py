@@ -50,6 +50,8 @@ def test_subject_provisioning_is_secret_authenticated_and_idempotent(
     assert body["token"]
     assert body["capabilities"] == [
         HealthLabsCapability.CATALOGUE_READ.value,
+        HealthLabsCapability.PLANS_MARK_COOKED_OWN.value,
+        HealthLabsCapability.PLANS_READ_OWN.value,
         HealthLabsCapability.RECIPES_READ_OWN.value,
         HealthLabsCapability.RECIPES_WRITE_OWN.value,
     ]
@@ -143,6 +145,8 @@ def test_provisioning_grants_are_active_and_exact(
     ).all()
     assert {grant.capability for grant in grants} == {
         HealthLabsCapability.CATALOGUE_READ.value,
+        HealthLabsCapability.PLANS_MARK_COOKED_OWN.value,
+        HealthLabsCapability.PLANS_READ_OWN.value,
         HealthLabsCapability.RECIPES_READ_OWN.value,
         HealthLabsCapability.RECIPES_WRITE_OWN.value,
     }

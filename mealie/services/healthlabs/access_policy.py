@@ -84,3 +84,32 @@ class RecipeAccessPolicy:
             )
         )
         self.session.flush()
+
+    def require_cross_subject(
+        self,
+        capability: HealthLabsCapability,
+        *,
+        action: str,
+        reason: str | None,
+        subject_external_id: str,
+        resource_type: str,
+        resource_id: str | None = None,
+        record: bool = True,
+    ) -> str:
+        self.require(capability)
+        clean_reason = (reason or "").strip()
+        if not clean_reason:
+            raise RecipeAccessDenied("Cross-subject access reason is required")
+        if record:
+            self.session.add(
+                HealthLabsAccessAudit(
+                    actor_user_id=self.user.id,
+                    subject_external_id=subject_external_id,
+                    action=action,
+                    reason=clean_reason,
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                )
+            )
+            self.session.flush()
+        return clean_reason

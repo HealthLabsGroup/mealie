@@ -101,15 +101,37 @@ class RecipeAccessPolicy:
         if not clean_reason:
             raise RecipeAccessDenied("Cross-subject access reason is required")
         if record:
-            self.session.add(
-                HealthLabsAccessAudit(
-                    actor_user_id=self.user.id,
-                    subject_external_id=subject_external_id,
-                    action=action,
-                    reason=clean_reason,
-                    resource_type=resource_type,
-                    resource_id=resource_id,
-                )
+            self.record_action(
+                action=action,
+                reason=clean_reason,
+                subject_external_id=subject_external_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
             )
-            self.session.flush()
+        return clean_reason
+
+    def record_action(
+        self,
+        *,
+        action: str,
+        reason: str | None,
+        subject_external_id: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+    ) -> str:
+        clean_reason = (reason or "").strip()
+        clean_action = action.strip()
+        if not clean_reason or not clean_action:
+            raise RecipeAccessDenied("Audited access requires an action and reason")
+        self.session.add(
+            HealthLabsAccessAudit(
+                actor_user_id=self.user.id,
+                subject_external_id=subject_external_id,
+                action=clean_action,
+                reason=clean_reason,
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
+        )
+        self.session.flush()
         return clean_reason

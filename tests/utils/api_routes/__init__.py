@@ -95,6 +95,10 @@ healthlabs_v1_catalogue = "/api/healthlabs/v1/catalogue"
 """`/api/healthlabs/v1/catalogue`"""
 healthlabs_v1_import_drafts = "/api/healthlabs/v1/import-drafts"
 """`/api/healthlabs/v1/import-drafts`"""
+healthlabs_v1_nutrition_foods = "/api/healthlabs/v1/nutrition/foods"
+"""`/api/healthlabs/v1/nutrition/foods`"""
+healthlabs_v1_nutrition_sources = "/api/healthlabs/v1/nutrition/sources"
+"""`/api/healthlabs/v1/nutrition/sources`"""
 healthlabs_v1_plans_current = "/api/healthlabs/v1/plans/current"
 """`/api/healthlabs/v1/plans/current`"""
 healthlabs_v1_recipes = "/api/healthlabs/v1/recipes"
@@ -385,6 +389,21 @@ def groups_reports_item_id(item_id):
 def healthlabs_v1_import_drafts_draft_id(draft_id):
     """`/api/healthlabs/v1/import-drafts/{draft_id}`"""
     return f"{prefix}/healthlabs/v1/import-drafts/{draft_id}"
+
+
+def healthlabs_v1_nutrition_foods_food_id(food_id):
+    """`/api/healthlabs/v1/nutrition/foods/{food_id}`"""
+    return f"{prefix}/healthlabs/v1/nutrition/foods/{food_id}"
+
+
+def healthlabs_v1_nutrition_foods_food_id_match(food_id):
+    """`/api/healthlabs/v1/nutrition/foods/{food_id}/match`"""
+    return f"{prefix}/healthlabs/v1/nutrition/foods/{food_id}/match"
+
+
+def healthlabs_v1_nutrition_foods_food_id_portions(food_id):
+    """`/api/healthlabs/v1/nutrition/foods/{food_id}/portions`"""
+    return f"{prefix}/healthlabs/v1/nutrition/foods/{food_id}/portions"
 
 
 def healthlabs_v1_operations_idempotency_key(idempotency_key):

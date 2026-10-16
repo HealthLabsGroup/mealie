@@ -116,12 +116,43 @@ export interface HealthLabsNutritionSourceOut {
   licenseUrl: string;
   attribution: string;
 }
+export interface HealthLabsFoodMatchWrite {
+  nutrientFoodId: string;
+  country: string;
+  confidence?: number;
+  foodGroup?: string | null;
+  plantId?: string | null;
+  allergens?: {
+    [k: string]: string;
+  } | null;
+  diets?: {
+    [k: string]: string;
+  } | null;
+}
+export interface HealthLabsFoodNutritionOut {
+  id: string;
+  name?: string | null;
+  pluralName?: string | null;
+  description?: string | null;
+  status: HealthLabsNutritionStatus;
+  nutrition?: HealthLabsFoodMatchOut | null;
+}
+export interface HealthLabsFoodNutritionPage {
+  items: HealthLabsFoodNutritionOut[];
+  total: number;
+}
 export interface HealthLabsFoodOut {
   id: string;
   name: string;
   pluralName?: string | null;
   description?: string;
   nutrition?: HealthLabsFoodMatchOut | null;
+}
+export interface HealthLabsFoodPortionCreate {
+  description: string;
+  amount: number;
+  unit: string;
+  grams: number;
 }
 export interface HealthLabsIdentity {
   externalSubjectId: string;
@@ -193,6 +224,17 @@ export interface HealthLabsUnitOut {
   pluralName?: string | null;
   abbreviation?: string;
   pluralAbbreviation?: string;
+}
+export interface HealthLabsNutritionSourceReleaseOut {
+  provider: string;
+  version: string;
+  country: string;
+  sourceUrl: string;
+  licenseUrl: string;
+  attribution: string;
+  id: string;
+  sha256: string;
+  importedAt: string;
 }
 export interface HealthLabsOperationOut {
   idempotencyKey: string;

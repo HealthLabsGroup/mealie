@@ -112,6 +112,155 @@ class HealthLabsImportDraft(SqlAlchemyBase, BaseMixins):
     expires_at: Mapped[datetime] = mapped_column(NaiveDateTime, nullable=False, index=True)
 
 
+class HealthLabsNutrientSourceRelease(SqlAlchemyBase, BaseMixins):
+    __tablename__ = "healthlabs_nutrient_source_releases"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "provider",
+            "version",
+            "country",
+            name="healthlabs_nutrient_source_identity_key",
+        ),
+        sa.UniqueConstraint(
+            "provider",
+            "sha256",
+            name="healthlabs_nutrient_source_checksum_key",
+        ),
+    )
+
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(100), nullable=False)
+    country: Mapped[str] = mapped_column(String(5), nullable=False)
+    source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    license_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    attribution: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    imported_at: Mapped[datetime] = mapped_column(
+        NaiveDateTime,
+        nullable=False,
+        default=get_utc_now,
+    )
+
+
+class HealthLabsNutrientFood(SqlAlchemyBase, BaseMixins):
+    __tablename__ = "healthlabs_nutrient_foods"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "source_release_id",
+            "source_food_id",
+            name="healthlabs_nutrient_food_source_key",
+        ),
+    )
+
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    source_release_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("healthlabs_nutrient_source_releases.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_food_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(500), nullable=False, index=True)
+    preparation_state: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    nutrient_values: Mapped[dict[str, Any]] = mapped_column(sa.JSON, nullable=False, default=dict)
+
+
+class HealthLabsFoodMatch(SqlAlchemyBase, BaseMixins):
+    __tablename__ = "healthlabs_food_matches"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "ingredient_food_id",
+            name="healthlabs_food_match_ingredient_key",
+        ),
+        sa.CheckConstraint(
+            "confidence >= 0 AND confidence <= 1",
+            name="healthlabs_food_match_confidence_valid",
+        ),
+        sa.CheckConstraint(
+            "(reviewed_by_user_id IS NULL AND reviewed_at IS NULL) OR "
+            "(reviewed_by_user_id IS NOT NULL AND reviewed_at IS NOT NULL)",
+            name="healthlabs_food_match_review_pair_valid",
+        ),
+    )
+
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    ingredient_food_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("ingredient_foods.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    nutrient_food_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("healthlabs_nutrient_foods.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    country: Mapped[str] = mapped_column(String(5), nullable=False)
+    match_method: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[float] = mapped_column(sa.Float, nullable=False)
+    food_group: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    plant_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    allergens: Mapped[dict[str, str] | None] = mapped_column(sa.JSON, nullable=True)
+    diets: Mapped[dict[str, str] | None] = mapped_column(sa.JSON, nullable=True)
+    reviewed_by_user_id: Mapped[GUID | None] = mapped_column(
+        GUID,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(NaiveDateTime, nullable=True)
+
+
+class HealthLabsFoodPortion(SqlAlchemyBase, BaseMixins):
+    __tablename__ = "healthlabs_food_portions"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "nutrient_food_id",
+            "description",
+            "amount",
+            "unit",
+            name="healthlabs_food_portion_identity_key",
+        ),
+        sa.CheckConstraint("amount > 0", name="healthlabs_food_portion_amount_positive"),
+        sa.CheckConstraint("grams > 0", name="healthlabs_food_portion_grams_positive"),
+    )
+
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    nutrient_food_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("healthlabs_nutrient_foods.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    description: Mapped[str] = mapped_column(String(255), nullable=False)
+    amount: Mapped[float] = mapped_column(sa.Float, nullable=False)
+    unit: Mapped[str] = mapped_column(String(64), nullable=False)
+    grams: Mapped[float] = mapped_column(sa.Float, nullable=False)
+
+
+class HealthLabsBrandedProduct(SqlAlchemyBase, BaseMixins):
+    __tablename__ = "healthlabs_branded_products"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "provider",
+            "barcode",
+            name="healthlabs_branded_product_provider_barcode_key",
+        ),
+    )
+
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    barcode: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    product_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    source_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    license_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    nutrient_values: Mapped[dict[str, Any]] = mapped_column(sa.JSON, nullable=False, default=dict)
+    payload: Mapped[dict[str, Any]] = mapped_column(sa.JSON, nullable=False, default=dict)
+
+
 class HealthLabsPlanPublication(SqlAlchemyBase, BaseMixins):
     __tablename__ = "healthlabs_plan_publications"
     __table_args__ = (

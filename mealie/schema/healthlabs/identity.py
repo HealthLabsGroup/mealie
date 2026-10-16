@@ -15,6 +15,7 @@ class HealthLabsCapability(StrEnum):
     PLANS_WRITE_ALL = "plans:write_all"
     CATALOGUE_READ = "catalogue:read"
     CATALOGUE_WRITE = "catalogue:write"
+    NUTRITION_WRITE = "nutrition:write"
 
 
 class HealthLabsIdentity(MealieModel):

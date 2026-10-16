@@ -77,7 +77,7 @@ tasks:
   dev:generate:
     desc: run code generators
     cmds:
-      - uv run python dev/code-generation/main.py {{ .CLI_ARGS }}
+      - PATH="{{.ROOT_DIR}}/frontend/node_modules/.bin:$PATH" uv run python dev/code-generation/main.py {{ .CLI_ARGS }}
       - task: py:format
 
   dev:services:

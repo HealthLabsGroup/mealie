@@ -13,8 +13,10 @@ export type HealthLabsCapability =
   | "plans:mark_cooked_own"
   | "plans:write_all"
   | "catalogue:read"
-  | "catalogue:write";
+  | "catalogue:write"
+  | "nutrition:write";
 export type HealthLabsRecipeScope = "personal" | "catalogue";
+export type HealthLabsPlanEntryType = "breakfast" | "lunch" | "dinner" | "snack";
 
 export interface HealthLabsAccessAuditOut {
   id: string;
@@ -144,6 +146,54 @@ export interface HealthLabsOperationOut {
   completedAt?: string | null;
   expiresAt: string;
 }
+export interface HealthLabsPlanEntryStatusPatch {
+  version: number;
+  cooked: boolean;
+}
+export interface HealthLabsPlanEntryWrite {
+  id: string;
+  date: string;
+  entryType: HealthLabsPlanEntryType;
+  position: number;
+  servings?: number | null;
+  recipeId?: string | null;
+  recipeRevisionId?: string | null;
+  title?: string | null;
+  leftoverOfEntryId?: string | null;
+}
+export interface HealthLabsPlanPublicationEntryOut {
+  id: string;
+  date: string;
+  entryType: HealthLabsPlanEntryType;
+  position: number;
+  servings?: number | null;
+  recipeId?: string | null;
+  recipeRevisionId?: string | null;
+  title: string;
+  leftoverOfEntryId?: string | null;
+  recipeSnapshot?: {
+    [k: string]: unknown;
+  } | null;
+  cooked?: boolean;
+  cookedAt?: string | null;
+  version?: number;
+}
+export interface HealthLabsPlanPublicationOut {
+  id: string;
+  publicationNumber: number;
+  contentSha256: string;
+  from: string;
+  days: 3 | 7 | 14;
+  publishedAt: string;
+  idempotencyKey: string;
+  entries: HealthLabsPlanPublicationEntryOut[];
+}
+export interface HealthLabsPlanPublicationWrite {
+  expectedPublicationId?: string | null;
+  from: string;
+  days: 3 | 7 | 14;
+  entries: HealthLabsPlanEntryWrite[];
+}
 export interface HealthLabsRecipeOut {
   id: string;
   slug: string;
@@ -155,6 +205,7 @@ export interface HealthLabsRecipeOut {
   copiedFromRecipeId?: string | null;
   copiedFromRevisionId?: string | null;
   copiedAt?: string | null;
+  ownerExternalSubjectId?: string | null;
   servings?: number;
   yieldQuantity?: number;
   yieldName?: string | null;
@@ -197,4 +248,42 @@ export interface HealthLabsRecipeWrite {
   authoring?: {
     [k: string]: boolean;
   };
+}
+export interface NutrientValue {
+  amount?: number | null;
+  unit: string;
+  sourceName?: string | null;
+}
+export interface NutritionImportResult {
+  sourceReleaseId: string;
+  createdRelease: boolean;
+  foodsImported: number;
+  portionsImported: number;
+}
+export interface SourceFoodRow {
+  sourceFoodId: string;
+  name: string;
+  preparationState?: string | null;
+  nutrientsPer100g: {
+    [k: string]: NutrientValue;
+  };
+  rawNutrients?: {
+    [k: string]: unknown;
+  };
+  portions?: SourcePortion[];
+}
+export interface SourcePortion {
+  description: string;
+  amount: number;
+  unit: string;
+  grams: number;
+}
+export interface SourceManifest {
+  provider: string;
+  version: string;
+  country: string;
+  sourceUrl: string;
+  licenseUrl: string;
+  attribution: string;
+  sha256: string;
 }

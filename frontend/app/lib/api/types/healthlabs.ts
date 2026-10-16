@@ -15,6 +15,7 @@ export type HealthLabsCapability =
   | "catalogue:read"
   | "catalogue:write"
   | "nutrition:write";
+export type HealthLabsNutritionStatus = "matched" | "review_required" | "unknown";
 export type HealthLabsRecipeScope = "personal" | "catalogue";
 export type HealthLabsPlanEntryType = "breakfast" | "lunch" | "dinner" | "snack";
 
@@ -67,11 +68,60 @@ export interface HealthLabsIngredientConfidence {
   food?: number | null;
   comment?: number | null;
 }
+export interface HealthLabsFoodMatchOut {
+  id?: string | null;
+  foodId: string;
+  nutrientFoodId: string;
+  sourceFoodId: string;
+  name: string;
+  preparationState?: string | null;
+  status: HealthLabsNutritionStatus;
+  country: string;
+  matchMethod: string;
+  confidence: number;
+  reviewed: boolean;
+  foodGroup?: string | null;
+  plantId?: string | null;
+  allergens?: {
+    [k: string]: string;
+  } | null;
+  diets?: {
+    [k: string]: string;
+  } | null;
+  reviewedByUserId?: string | null;
+  reviewedAt?: string | null;
+  nutrientsPer100g: HealthLabsNutritionValues;
+  portions?: HealthLabsFoodPortionOut[];
+  source: HealthLabsNutritionSourceOut;
+}
+export interface HealthLabsNutritionValues {
+  kcal?: number | null;
+  proteinG?: number | null;
+  fibreG?: number | null;
+  carbsG?: number | null;
+  fatG?: number | null;
+  waterMl?: number | null;
+}
+export interface HealthLabsFoodPortionOut {
+  description: string;
+  amount: number;
+  unit: string;
+  grams: number;
+}
+export interface HealthLabsNutritionSourceOut {
+  provider: string;
+  version: string;
+  country: string;
+  sourceUrl: string;
+  licenseUrl: string;
+  attribution: string;
+}
 export interface HealthLabsFoodOut {
   id: string;
   name: string;
   pluralName?: string | null;
   description?: string;
+  nutrition?: HealthLabsFoodMatchOut | null;
 }
 export interface HealthLabsIdentity {
   externalSubjectId: string;
@@ -119,6 +169,14 @@ export interface HealthLabsIngredientIn {
   originalText?: string | null;
   title?: string | null;
 }
+export interface HealthLabsIngredientNutrition {
+  status: HealthLabsNutritionStatus;
+  resolvedGrams?: number | null;
+  nutrients?: HealthLabsNutritionValues;
+  complete?: boolean;
+  missingReason?: string | null;
+  foodMatch?: HealthLabsFoodMatchOut | null;
+}
 export interface HealthLabsIngredientOut {
   referenceId: string;
   quantity?: number | null;
@@ -127,6 +185,7 @@ export interface HealthLabsIngredientOut {
   note?: string | null;
   originalText?: string | null;
   title?: string | null;
+  nutrition?: HealthLabsIngredientNutrition | null;
 }
 export interface HealthLabsUnitOut {
   id: string;
@@ -194,6 +253,13 @@ export interface HealthLabsPlanPublicationWrite {
   days: 3 | 7 | 14;
   entries: HealthLabsPlanEntryWrite[];
 }
+export interface HealthLabsRecipeNutrition {
+  totals?: HealthLabsNutritionValues;
+  perServing?: HealthLabsNutritionValues;
+  complete?: boolean;
+  missingIngredientReferences?: string[];
+  sourceVersions?: HealthLabsNutritionSourceOut[];
+}
 export interface HealthLabsRecipeOut {
   id: string;
   slug: string;
@@ -219,6 +285,7 @@ export interface HealthLabsRecipeOut {
   authoring?: {
     [k: string]: boolean;
   };
+  calculatedNutrition?: HealthLabsRecipeNutrition | null;
 }
 export interface HealthLabsRecipePage {
   items: HealthLabsRecipeOut[];

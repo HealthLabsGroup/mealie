@@ -32,6 +32,7 @@ from mealie.schema.recipe.recipe import HealthLabsRecipeScope as NativeRecipeSco
 from mealie.schema.recipe.recipe import Recipe
 from mealie.schema.user import PrivateUser
 from mealie.services.healthlabs.access_policy import RecipeAccessDenied, RecipeAccessPolicy
+from mealie.services.healthlabs.nutrition_service import NutritionService
 from mealie.services.recipe.recipe_service import RecipeService
 
 AUTHORING_EXTRAS_KEY = "healthlabs.ephra"
@@ -65,6 +66,7 @@ class RecipeApiService:
             raise RuntimeError("Managed recipe household is missing")
         self.native = RecipeService(self.repos, user, household, translator)
         self.unfiltered_recipes = get_repositories(session, group_id=None, household_id=None).recipes
+        self.nutrition = NutritionService(session)
         self._audit_pending = False
 
     def list_recipes(
@@ -219,6 +221,7 @@ class RecipeApiService:
                 .order_by(HealthLabsRecipeRevision.revision_number.desc())
                 .limit(1)
             )
+        calculated_nutrition = self.nutrition.calculate_recipe(recipe, "OTHER")
         ingredients = [self._ingredient_out(item) for item in recipe.recipe_ingredient]
         instructions = [
             HealthLabsInstruction(
@@ -262,6 +265,7 @@ class RecipeApiService:
             ingredients=ingredients,
             instructions=instructions,
             authoring=self._decode_authoring(recipe.extras or {}),
+            calculated_nutrition=calculated_nutrition,
         )
 
     def _native_write(self, data: HealthLabsRecipeWrite, *, scope: HealthLabsRecipeScope) -> Recipe:
@@ -329,8 +333,14 @@ class RecipeApiService:
             raise HealthLabsInvalidImage("Image content does not match its content type")
         return extension
 
-    @staticmethod
-    def _ingredient_out(item) -> HealthLabsIngredientOut:
+    def _ingredient_out(self, item) -> HealthLabsIngredientOut:
+        nutrition = None
+        if item.food is not None and item.food.id is not None:
+            nutrition = self.nutrition.food_facts(
+                item.food.id,
+                item.unit.id if item.unit is not None else None,
+                item.quantity,
+            )
         food = None
         if item.food is not None and item.food.id is not None and item.food.name is not None:
             food = HealthLabsFoodOut(
@@ -338,6 +348,7 @@ class RecipeApiService:
                 name=item.food.name,
                 plural_name=item.food.plural_name,
                 description=item.food.description or "",
+                nutrition=nutrition.food_match if nutrition is not None else None,
             )
         unit = None
         if item.unit is not None and item.unit.id is not None:
@@ -356,6 +367,7 @@ class RecipeApiService:
             note=item.note,
             original_text=item.original_text,
             title=item.title,
+            nutrition=nutrition,
         )
 
     @staticmethod

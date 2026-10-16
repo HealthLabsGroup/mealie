@@ -9,6 +9,11 @@ from uuid import UUID, uuid4
 from pydantic import UUID4, Field, field_validator
 
 from mealie.schema._mealie import MealieModel
+from mealie.schema.healthlabs.nutrition import (
+    HealthLabsFoodMatchOut,
+    HealthLabsIngredientNutrition,
+    HealthLabsRecipeNutrition,
+)
 
 
 class HealthLabsRecipeScope(StrEnum):
@@ -25,6 +30,7 @@ class HealthLabsFoodIn(MealieModel):
 
 class HealthLabsFoodOut(HealthLabsFoodIn):
     id: UUID4
+    nutrition: HealthLabsFoodMatchOut | None = None
 
 
 class HealthLabsUnitIn(MealieModel):
@@ -57,6 +63,7 @@ class HealthLabsIngredientOut(MealieModel):
     note: str | None = ""
     original_text: str | None = None
     title: str | None = None
+    nutrition: HealthLabsIngredientNutrition | None = None
 
 
 class HealthLabsIngredientConfidence(MealieModel):
@@ -128,6 +135,7 @@ class HealthLabsRecipeOut(MealieModel):
     ingredients: list[HealthLabsIngredientOut] = []
     instructions: list[HealthLabsInstruction] = []
     authoring: dict[str, bool] = {}
+    calculated_nutrition: HealthLabsRecipeNutrition | None = None
 
 
 class HealthLabsRecipePage(MealieModel):

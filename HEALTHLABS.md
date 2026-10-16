@@ -56,10 +56,13 @@ same release gates pass.
 
 ## Ephra integration boundary
 
-Mealie owns recipes, imports, recipe images, recipe organization, and recipe
-search. Ephra owns meal logs, normalized nutrition, planning, shopping,
-clinical safeguards, evidence, habits, and care workflows. The systems use
-documented HTTP/JSON APIs, separate processes, and separate databases.
+Mealie owns recipes, structured ingredients, food-source provenance, normalized
+food facts, ingredient conversions, calculated recipe nutrition, imports,
+images, organization, and search. Ephra owns health profiles and targets, saved
+meal-log facts, nutritionist plan drafts and private rationale, published-plan
+nutrition snapshots, clinical interpretation, evidence, habits, and care
+workflows. The systems use documented HTTP/JSON APIs, separate processes, and
+separate databases. See `docs/healthlabs/nutrition-service-v1.md`.
 
 The recipe-service interface is additive under `/api/healthlabs/v1`. It does
 not expose Mealie group or household identifiers in recipe responses, and it

@@ -17,8 +17,8 @@ Poland is blocked: the NIZP PZH full database is supplied under a purchased lice
 
 - USDA: the unzipped FoodData Central Foundation/FNDDS JSON document.
 - CoFID: UTF-8 CSV exported from the published workbook, preserving the published column headers.
-- CIQUAL: the official semicolon-delimited CSV.
-- BLS: UTF-8 semicolon-delimited CSV exported from the published workbook, preserving BLS component codes.
+- CIQUAL: UTF-8 CSV exported from the official workbook's `composition nutritionnelle` sheet.
+- BLS: UTF-8 CSV exported from the published workbook, preserving BLS component codes.
 
 Values such as `<0.5`, `trace`, blank, or `-` import as unknown (`null`), never zero. Original nutrient columns are retained under `_raw`; the canonical calculation keys are `kcal`, `protein_g`, `fibre_g`, `carbs_g`, `fat_g`, and `water_ml`.
 
@@ -51,3 +51,27 @@ uv run python scripts/healthlabs/import-nutrition-source.py manifest.json /absol
 ```
 
 The command verifies the bytes before parsing. Reusing a provider/version/country with different bytes fails. Re-importing identical bytes updates the same source-food rows and keeps reviewed Mealie food matches attached to their existing source-food IDs.
+
+Run exact/alias matching and produce an aggregate-only coverage report:
+
+```sh
+uv run python scripts/healthlabs/backfill-food-matches.py --country GB
+uv run python scripts/healthlabs/report-nutrition-coverage.py --external-subject-id <subject-uuid>
+```
+
+New automatic matches always require review. Ambiguous and fuzzy candidates remain unknown. The report contains counts and source provenance only; it excludes user identifiers, recipe text, and nutrient values.
+
+## Restored-data verification — 2026-10-17
+
+The four pinned inputs imported 13,874 authoritative food rows:
+
+| Provider | Version | Imported foods | SHA-256 |
+|---|---:|---:|---|
+| `usda` | `2026-04` | 363 | `27d1fe3fd89edfbe528ed915da5619320e1d004d4594603a1b19bdb1511590cc` |
+| `cofid` | `2021` | 2,887 | `7064c92d619b95a9db38f42258a18bfa23d2f524ae5422836c43a29045065f05` |
+| `ciqual` | `2025` | 3,484 | `860d9d9820fa0944062a2027aa25c83f48db07342d6a4fe726aada4364eebf5b` |
+| `bls` | `4.0-2025` | 7,140 | `7e6f3deacb6c5e495085b40b9b70d39a60191526783e73f25e10ec9f0e580156` |
+
+On a fresh copy of the running DEV database, the target workspace contained 5 recipes, 33 distinct foods, and 36 structured ingredient rows. Its classification was 0 reviewed matches, 3 review-required exact/alias candidates, and 30 unknown foods; a second global backfill created 0 matches, and the report found 0 mock source releases.
+
+The full migrated catalogue restore contained 2,736 recipes, 315 distinct foods, and 27,828 ingredient rows. Food classification was 0 reviewed matches, 12 review-required exact/alias candidates, and 303 unknown foods. Ingredient coverage was 4,788 structured rows (0 matched, 369 review-required, 4,419 unknown) plus 23,040 explicitly unparsed rows. A second backfill created 0 matches, and the report found 0 mock source releases.

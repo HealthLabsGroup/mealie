@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+import mealie.db.models._all_models  # noqa: F401
 from mealie.schema.healthlabs.nutrition_source import SourceManifest
 from mealie.services.healthlabs.nutrition_sources import parse_source_file, verify_source_checksum
 

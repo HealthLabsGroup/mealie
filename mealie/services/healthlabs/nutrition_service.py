@@ -6,6 +6,7 @@ from uuid import UUID
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
+from mealie.db.models._model_utils.datetime import get_utc_now
 from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
     HealthLabsFoodPortion,
@@ -14,16 +15,24 @@ from mealie.db.models.healthlabs import (
 )
 from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel
 from mealie.db.models.recipe.ingredient import IngredientFoodAliasModel
+from mealie.schema.healthlabs.identity import HealthLabsCapability
 from mealie.schema.healthlabs.nutrition import (
     HealthLabsFoodMatchOut,
+    HealthLabsFoodMatchWrite,
+    HealthLabsFoodNutritionOut,
+    HealthLabsFoodNutritionPage,
+    HealthLabsFoodPortionCreate,
     HealthLabsFoodPortionOut,
     HealthLabsIngredientNutrition,
     HealthLabsNutritionSourceOut,
+    HealthLabsNutritionSourceReleaseOut,
     HealthLabsNutritionStatus,
     HealthLabsNutritionValues,
     HealthLabsRecipeNutrition,
 )
 from mealie.schema.recipe import Recipe
+from mealie.schema.user import PrivateUser
+from mealie.services.healthlabs.access_policy import BreakGlassContext, RecipeAccessDenied, RecipeAccessPolicy
 
 CORE_NUTRIENTS = ("kcal", "protein_g", "fibre_g", "carbs_g", "fat_g", "water_ml")
 PUBLIC_QUANTUM = Decimal("0.001")
@@ -47,14 +56,178 @@ VOLUME_MILLILITRES = {
 }
 
 
+class NutritionFoodNotFound(LookupError):
+    pass
+
+
+class NutritionSourceNotFound(LookupError):
+    pass
+
+
+class NutritionConflict(RuntimeError):
+    pass
+
+
 class NutritionService:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, user: PrivateUser | None = None) -> None:
         self.session = session
+        self.user = user
+        self.policy = RecipeAccessPolicy(session, user) if user is not None else None
         self._food_facts_cache: dict[tuple[UUID, UUID | None, float | None], HealthLabsIngredientNutrition] = {}
         self._candidate_cache: dict[
             str,
             dict[str, list[tuple[HealthLabsNutrientFood, HealthLabsNutrientSourceRelease]]],
         ] = {}
+
+    def list_foods(
+        self,
+        *,
+        q: str | None,
+        country: str,
+        status: HealthLabsNutritionStatus | None,
+    ) -> HealthLabsFoodNutritionPage:
+        user = self._require_user()
+        query = sa.select(IngredientFoodModel).where(IngredientFoodModel.group_id == user.group_id)
+        if search := (q or "").strip():
+            pattern = f"%{search.casefold()}%"
+            query = query.where(
+                sa.or_(
+                    sa.func.lower(IngredientFoodModel.name).like(pattern),
+                    sa.func.lower(IngredientFoodModel.plural_name).like(pattern),
+                )
+            )
+        foods = self.session.scalars(query.order_by(IngredientFoodModel.name, IngredientFoodModel.id)).all()
+        items = [self._food_out(food, country) for food in foods]
+        if status is not None:
+            items = [item for item in items if item.status == status]
+        return HealthLabsFoodNutritionPage(items=items, total=len(items))
+
+    def get_food(self, food_id: UUID, country: str) -> HealthLabsFoodNutritionOut:
+        user = self._require_user()
+        food = self.session.get(IngredientFoodModel, food_id)
+        if food is None or food.group_id != user.group_id:
+            raise NutritionFoodNotFound
+        return self._food_out(food, country)
+
+    def set_match(
+        self,
+        food_id: UUID,
+        data: HealthLabsFoodMatchWrite,
+        *,
+        access_reason: str | None,
+        break_glass_reason: str | None,
+    ) -> HealthLabsFoodNutritionOut:
+        self._authorize_write(food_id, "nutrition.match.set", access_reason, break_glass_reason)
+        food = self._get_food_any_group(food_id)
+        nutrient_food = self.session.get(HealthLabsNutrientFood, data.nutrient_food_id)
+        if nutrient_food is None:
+            raise NutritionSourceNotFound
+        source = self.session.get(HealthLabsNutrientSourceRelease, nutrient_food.source_release_id)
+        country = data.country.upper()
+        if source is None or source.country.upper() not in {country, "OTHER"}:
+            raise NutritionSourceNotFound
+
+        match = self.session.scalar(
+            sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
+        )
+        if match is None:
+            match = HealthLabsFoodMatch(ingredient_food_id=food_id)
+            self.session.add(match)
+        match.nutrient_food_id = nutrient_food.id
+        match.country = country
+        match.match_method = "manual"
+        match.confidence = data.confidence
+        match.food_group = data.food_group
+        match.plant_id = data.plant_id
+        match.allergens = data.allergens
+        match.diets = data.diets
+        match.reviewed_by_user_id = self._require_user().id
+        match.reviewed_at = get_utc_now()
+        self.session.flush()
+        self._clear_cache()
+        return self._food_out(food, country)
+
+    def clear_match(
+        self,
+        food_id: UUID,
+        *,
+        country: str,
+        access_reason: str | None,
+        break_glass_reason: str | None,
+    ) -> HealthLabsFoodNutritionOut:
+        self._authorize_write(food_id, "nutrition.match.clear", access_reason, break_glass_reason)
+        food = self._get_food_any_group(food_id)
+        match = self.session.scalar(
+            sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
+        )
+        resolved_country = match.country if match is not None else country.upper()
+        if match is not None:
+            self.session.delete(match)
+            self.session.flush()
+        self._clear_cache()
+        return self._food_out(food, resolved_country)
+
+    def add_portion(
+        self,
+        food_id: UUID,
+        data: HealthLabsFoodPortionCreate,
+        *,
+        access_reason: str | None,
+        break_glass_reason: str | None,
+    ) -> HealthLabsFoodNutritionOut:
+        self._authorize_write(food_id, "nutrition.portion.create", access_reason, break_glass_reason)
+        food = self._get_food_any_group(food_id)
+        match = self.session.scalar(
+            sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
+        )
+        if match is None:
+            raise NutritionConflict("Food must have a reviewed match before adding portions")
+        duplicate = self.session.scalar(
+            sa.select(HealthLabsFoodPortion.id).where(
+                HealthLabsFoodPortion.nutrient_food_id == match.nutrient_food_id,
+                HealthLabsFoodPortion.description == data.description.strip(),
+                HealthLabsFoodPortion.amount == data.amount,
+                HealthLabsFoodPortion.unit == data.unit.strip(),
+            )
+        )
+        if duplicate is not None:
+            raise NutritionConflict("Food portion already exists")
+        self.session.add(
+            HealthLabsFoodPortion(
+                nutrient_food_id=match.nutrient_food_id,
+                description=data.description.strip(),
+                amount=data.amount,
+                unit=data.unit.strip(),
+                grams=data.grams,
+            )
+        )
+        self.session.flush()
+        self._clear_cache()
+        return self._food_out(food, match.country)
+
+    def list_sources(self) -> list[HealthLabsNutritionSourceReleaseOut]:
+        self._require_user()
+        sources = self.session.scalars(
+            sa.select(HealthLabsNutrientSourceRelease).order_by(
+                HealthLabsNutrientSourceRelease.provider,
+                HealthLabsNutrientSourceRelease.version,
+                HealthLabsNutrientSourceRelease.country,
+            )
+        ).all()
+        return [
+            HealthLabsNutritionSourceReleaseOut(
+                id=source.id,
+                provider=source.provider,
+                version=source.version,
+                country=source.country,
+                source_url=source.source_url,
+                license_url=source.license_url,
+                attribution=source.attribution,
+                sha256=source.sha256,
+                imported_at=source.imported_at,
+            )
+            for source in sources
+        ]
 
     def match_food(self, food_id: UUID, country: str) -> HealthLabsFoodMatchOut | None:
         existing = self.session.scalar(
@@ -109,6 +282,62 @@ class NutritionService:
                     confidence=1 if method == "exact" else 0.9,
                 )
         return None
+
+    def _food_out(self, food: IngredientFoodModel, country: str) -> HealthLabsFoodNutritionOut:
+        nutrition = self.match_food(food.id, country.upper())
+        return HealthLabsFoodNutritionOut(
+            id=food.id,
+            name=food.name,
+            plural_name=food.plural_name,
+            description=food.description,
+            status=nutrition.status if nutrition is not None else HealthLabsNutritionStatus.UNKNOWN,
+            nutrition=nutrition,
+        )
+
+    def _get_food_any_group(self, food_id: UUID) -> IngredientFoodModel:
+        food = self.session.get(IngredientFoodModel, food_id)
+        if food is None:
+            raise NutritionFoodNotFound
+        return food
+
+    def _authorize_write(
+        self,
+        food_id: UUID,
+        action: str,
+        access_reason: str | None,
+        break_glass_reason: str | None,
+    ) -> None:
+        policy = self.policy
+        if policy is None:
+            raise RecipeAccessDenied("Authenticated user required")
+        if policy.allows(HealthLabsCapability.NUTRITION_WRITE):
+            policy.record_action(
+                action=action,
+                reason=access_reason,
+                resource_type="ingredient_food",
+                resource_id=str(food_id),
+            )
+            return
+        policy.require(
+            HealthLabsCapability.NUTRITION_WRITE,
+            break_glass=BreakGlassContext(
+                action=action,
+                reason=break_glass_reason or "",
+                resource_type="ingredient_food",
+                resource_id=str(food_id),
+            )
+            if break_glass_reason is not None
+            else None,
+        )
+
+    def _require_user(self) -> PrivateUser:
+        if self.user is None:
+            raise RecipeAccessDenied("Authenticated user required")
+        return self.user
+
+    def _clear_cache(self) -> None:
+        self._food_facts_cache.clear()
+        self._candidate_cache.clear()
 
     def food_facts(
         self,

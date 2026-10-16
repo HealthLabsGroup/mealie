@@ -1,8 +1,9 @@
 from datetime import datetime
 from enum import StrEnum
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import UUID4, Field
+from pydantic import UUID4, Field, StringConstraints
 
 from mealie.schema._mealie import MealieModel
 
@@ -38,6 +39,26 @@ class HealthLabsFoodPortionOut(MealieModel):
     grams: float
 
 
+class HealthLabsFoodPortionCreate(MealieModel):
+    description: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
+    amount: float = Field(gt=0)
+    unit: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
+    grams: float = Field(gt=0)
+
+
+class HealthLabsFoodMatchWrite(MealieModel):
+    nutrient_food_id: UUID4
+    country: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, to_upper=True, min_length=2, max_length=5),
+    ]
+    confidence: float = Field(default=1, ge=0, le=1)
+    food_group: str | None = Field(default=None, max_length=32)
+    plant_id: str | None = Field(default=None, max_length=100)
+    allergens: dict[str, str] | None = None
+    diets: dict[str, str] | None = None
+
+
 class HealthLabsFoodMatchOut(MealieModel):
     id: UUID4 | None = None
     food_id: UUID4
@@ -59,6 +80,26 @@ class HealthLabsFoodMatchOut(MealieModel):
     nutrients_per_100g: HealthLabsNutritionValues
     portions: list[HealthLabsFoodPortionOut] = Field(default_factory=list)
     source: HealthLabsNutritionSourceOut
+
+
+class HealthLabsFoodNutritionOut(MealieModel):
+    id: UUID4
+    name: str | None = None
+    plural_name: str | None = None
+    description: str | None = None
+    status: HealthLabsNutritionStatus
+    nutrition: HealthLabsFoodMatchOut | None = None
+
+
+class HealthLabsFoodNutritionPage(MealieModel):
+    items: list[HealthLabsFoodNutritionOut]
+    total: int = Field(ge=0)
+
+
+class HealthLabsNutritionSourceReleaseOut(HealthLabsNutritionSourceOut):
+    id: UUID4
+    sha256: str
+    imported_at: datetime
 
 
 class HealthLabsIngredientNutrition(MealieModel):

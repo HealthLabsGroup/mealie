@@ -10,7 +10,11 @@ from mealie.app import app
 from mealie.core.config import get_app_settings
 from mealie.core.dependencies.dependencies import get_auth_token, get_current_user
 from mealie.db.db_setup import generate_session
-from mealie.db.models.healthlabs import HealthLabsCapabilityGrant
+from mealie.db.models.healthlabs import (
+    HealthLabsCapabilityGrant,
+    HealthLabsNutrientFood,
+    HealthLabsNutrientSourceRelease,
+)
 from mealie.db.models.users import User
 from mealie.repos.repository_factory import AllRepositories
 from mealie.schema.healthlabs.identity import HealthLabsCapability
@@ -98,6 +102,66 @@ def healthlabs_set_capabilities(
         session.commit()
 
     return set_capabilities
+
+
+@fixture
+def healthlabs_recipe_food(api_client: TestClient) -> Callable[[dict[str, str], str], tuple[dict, str]]:
+    def create(headers: dict[str, str], name: str) -> tuple[dict, str]:
+        response = api_client.post(
+            "/api/healthlabs/v1/recipes",
+            headers={**headers, "Idempotency-Key": f"food-{uuid4()}"},
+            json={
+                "name": f"Recipe for {name}",
+                "servings": 1,
+                "ingredients": [
+                    {
+                        "quantity": 100,
+                        "food": {"name": name},
+                        "unit": {"name": "gram", "abbreviation": "g"},
+                    }
+                ],
+            },
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        return body, body["ingredients"][0]["food"]["id"]
+
+    return create
+
+
+@fixture
+def healthlabs_nutrition_source(unfiltered_database: AllRepositories) -> Callable[..., tuple[str, str]]:
+    def create(*, name: str, country: str = "GB", provider: str | None = None) -> tuple[str, str]:
+        session = unfiltered_database.session
+        source = HealthLabsNutrientSourceRelease(
+            provider=provider or f"test-source-{uuid4()}",
+            version="2026-10",
+            country=country,
+            source_url="https://example.test/source",
+            license_url="https://example.test/licence",
+            attribution="Test source",
+            sha256=uuid4().hex.ljust(64, "0"),
+        )
+        session.add(source)
+        session.flush()
+        food = HealthLabsNutrientFood(
+            source_release_id=source.id,
+            source_food_id=str(uuid4()),
+            name=name,
+            nutrient_values={
+                "kcal": {"amount": 50, "unit": "kcal"},
+                "protein_g": {"amount": 10, "unit": "g"},
+                "fibre_g": {"amount": 2, "unit": "g"},
+                "carbs_g": {"amount": 5, "unit": "g"},
+                "fat_g": {"amount": 1, "unit": "g"},
+                "water_ml": {"amount": 80, "unit": "ml"},
+            },
+        )
+        session.add(food)
+        session.commit()
+        return str(source.id), str(food.id)
+
+    return create
 
 
 @fixture

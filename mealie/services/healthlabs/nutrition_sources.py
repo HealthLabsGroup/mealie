@@ -34,7 +34,7 @@ USDA_NUTRIENT_IDS = {
 class CsvSourceConfig(TypedDict):
     id: tuple[str, ...]
     name: tuple[str, ...]
-    nutrients: dict[str, str]
+    nutrients: dict[str, tuple[str, ...]]
 
 
 CSV_FIELDS: dict[str, CsvSourceConfig] = {
@@ -42,37 +42,36 @@ CSV_FIELDS: dict[str, CsvSourceConfig] = {
         "id": ("Food Code", "Food code"),
         "name": ("Food Name", "Food name"),
         "nutrients": {
-            "Energy (kcal)": "kcal",
-            "Protein (g)": "protein_g",
-            "AOAC fibre (g)": "fibre_g",
-            "Fibre (g)": "fibre_g",
-            "Carbohydrate (g)": "carbs_g",
-            "Fat (g)": "fat_g",
-            "Water (g)": "water_ml",
+            "kcal": ("Energy (kcal)",),
+            "protein_g": ("Protein (g)",),
+            "fibre_g": ("AOAC fibre (g)", "Fibre (g)"),
+            "carbs_g": ("Carbohydrate (g)",),
+            "fat_g": ("Fat (g)",),
+            "water_ml": ("Water (g)",),
         },
     },
     "ciqual": {
         "id": ("alim_code",),
         "name": ("alim_nom_fr",),
         "nutrients": {
-            "Energie, Règlement UE N° 1169/2011 (kcal/100 g)": "kcal",
-            "Protéines, N x facteur de Jones (g/100 g)": "protein_g",
-            "Fibres alimentaires (g/100 g)": "fibre_g",
-            "Glucides (g/100 g)": "carbs_g",
-            "Lipides (g/100 g)": "fat_g",
-            "Eau (g/100 g)": "water_ml",
+            "kcal": ("Energie, Règlement UE N° 1169 2011 (kcal",),
+            "protein_g": ("Protéines, N x facteur de Jones",),
+            "fibre_g": ("Fibres alimentaires",),
+            "carbs_g": ("Glucides",),
+            "fat_g": ("Lipides",),
+            "water_ml": ("Eau",),
         },
     },
     "bls": {
-        "id": ("BLS_CODE", "SBLS"),
-        "name": ("NAME", "ST"),
+        "id": ("BLS Code", "BLS_CODE", "SBLS"),
+        "name": ("Lebensmittelbezeichnung", "NAME", "ST"),
         "nutrients": {
-            "GCAL": "kcal",
-            "EWP": "protein_g",
-            "ZELL": "fibre_g",
-            "KHC": "carbs_g",
-            "FC": "fat_g",
-            "WASS": "water_ml",
+            "kcal": ("ENERCC Energie", "GCAL"),
+            "protein_g": ("PROT625 Protein", "EWP"),
+            "fibre_g": ("FIBT Ballaststoffe", "ZELL"),
+            "carbs_g": ("CHO Kohlenhydrate", "KHC"),
+            "fat_g": ("FAT Fett", "FC"),
+            "water_ml": ("WATER Wasser", "WASS"),
         },
     },
 }
@@ -140,6 +139,8 @@ def _parse_usda(path: Path) -> Iterator[SourceFoodRow]:
         )
 
     for source in foods:
+        if not isinstance(source, dict):
+            continue
         nutrients = _empty_core()
         raw: dict[str, Any] = {}
         for entry in source.get("foodNutrients", []):
@@ -182,6 +183,14 @@ def _first(row: Mapping[str, str | None], names: tuple[str, ...]) -> str:
     return next((str(row[name]).strip() for name in names if row.get(name)), "")
 
 
+def _header(row: Mapping[str, str | None], prefixes: tuple[str, ...]) -> str | None:
+    for header in row:
+        normalized = re.sub(r"[/\s]+", " ", header).strip()
+        if any(normalized.startswith(prefix) for prefix in prefixes):
+            return header
+    return None
+
+
 def _unit_from_header(header: str, code: str | None = None) -> str:
     match = re.search(r"\((kcal|kJ|µg|ug|mg|g|ml)(?:/100\s*g)?\)", header, flags=re.IGNORECASE)
     if match:
@@ -195,11 +204,20 @@ def _parse_csv(provider: str, path: Path) -> Iterator[SourceFoodRow]:
         sample = source.read(4096)
         source.seek(0)
         dialect = csv.Sniffer().sniff(sample, delimiters=",;")
-        for row in csv.DictReader(source, dialect=dialect):
+        source_id_counts: dict[str, int] = {}
+        for row in csv.DictReader(source, delimiter=dialect.delimiter, quotechar='"', doublequote=True):
+            source_food_id = _first(row, config["id"])
+            name = _first(row, config["name"])
+            if not source_food_id or not name:
+                continue
+            occurrence = source_id_counts.get(source_food_id, 0) + 1
+            source_id_counts[source_food_id] = occurrence
+            if occurrence > 1:
+                suffix = f"#{occurrence}"
+                source_food_id = f"{source_food_id[: 255 - len(suffix)]}{suffix}"
             nutrients = _empty_core()
-            nutrient_fields: dict[str, str] = config["nutrients"]
-            for header, code in nutrient_fields.items():
-                if header in row:
+            for code, prefixes in config["nutrients"].items():
+                if header := _header(row, prefixes):
                     nutrients[code] = NutrientValue(
                         amount=_number(row[header]),
                         unit=CORE_UNITS[code],
@@ -212,9 +230,8 @@ def _parse_csv(provider: str, path: Path) -> Iterator[SourceFoodRow]:
                 for header, value in row.items()
                 if header not in excluded and value not in (None, "")
             }
-            name = _first(row, config["name"])
             yield SourceFoodRow(
-                source_food_id=_first(row, config["id"]),
+                source_food_id=source_food_id,
                 name=name,
                 preparation_state=_preparation_state(name),
                 nutrients_per_100g=nutrients,

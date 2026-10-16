@@ -1,3 +1,4 @@
+import csv
 import json
 from pathlib import Path
 
@@ -22,6 +23,7 @@ def test_usda_fooddata_central_json_maps_core_and_preserves_other_nutrients(tmp_
         json.dumps(
             {
                 "FoundationFoods": [
+                    None,
                     {
                         "fdcId": 172420,
                         "description": "Lentils, mature seeds, cooked, boiled",
@@ -45,7 +47,7 @@ def test_usda_fooddata_central_json_maps_core_and_preserves_other_nutrients(tmp_
                                 "measureUnit": {"name": "cup"},
                             }
                         ],
-                    }
+                    },
                 ]
             }
         ),
@@ -70,7 +72,7 @@ def test_usda_fooddata_central_json_maps_core_and_preserves_other_nutrients(tmp_
             [
                 "Food Code",
                 "Food Name",
-                "Energy (kcal)",
+                "Energy (kcal) (kcal)",
                 "Protein (g)",
                 "AOAC fibre (g)",
                 "Carbohydrate (g)",
@@ -87,12 +89,12 @@ def test_usda_fooddata_central_json_maps_core_and_preserves_other_nutrients(tmp_
             [
                 "alim_code",
                 "alim_nom_fr",
-                "Energie, Règlement UE N° 1169/2011 (kcal/100 g)",
-                "Protéines, N x facteur de Jones (g/100 g)",
-                "Fibres alimentaires (g/100 g)",
-                "Glucides (g/100 g)",
-                "Lipides (g/100 g)",
-                "Eau (g/100 g)",
+                "Energie,\nRèglement\nUE N°\n1169\n2011 (kcal\n100 g)",
+                "Protéines,\nN x\nfacteur de\nJones (g\n100 g)",
+                "Fibres\nalimentaires\n(g\n100 g)",
+                "Glucides\n(g\n100 g)",
+                "Lipides\n(g\n100 g)",
+                "Eau\n(g\n100\ng)",
                 "Calcium (mg/100 g)",
             ],
             ["20591", "Lentille verte cuite", "116,0", "9,02", "7,9", "20,13", "0,38", "69,64", "19,0"],
@@ -101,9 +103,19 @@ def test_usda_fooddata_central_json_maps_core_and_preserves_other_nutrients(tmp_
         (
             "bls",
             ";",
-            ["BLS_CODE", "NAME", "GCAL", "EWP", "ZELL", "KHC", "FC", "WASS", "CA"],
+            [
+                "BLS Code",
+                "Lebensmittelbezeichnung",
+                "ENERCC Energie (Kilokalorien) [kcal/100g]",
+                "PROT625 Protein (Nx6,25) [g/100g]",
+                "FIBT Ballaststoffe, gesamt [g/100g]",
+                "CHO Kohlenhydrate, verfügbar [g/100g]",
+                "FAT Fett [g/100g]",
+                "WATER Wasser [g/100g]",
+                "CA Calcium [mg/100g]",
+            ],
             ["H640100", "Linsen gegart", "116", "9.02", "7.9", "20.13", "0.38", "69.64", "19"],
-            "CA",
+            "CA Calcium [mg/100g]",
         ),
     ],
 )
@@ -116,10 +128,10 @@ def test_national_csv_maps_all_core_nutrients_and_preserves_extra_columns(
     extra_name: str,
 ) -> None:
     source = tmp_path / f"{provider}.csv"
-    source.write_text(
-        delimiter.join(headers) + "\n" + delimiter.join(values) + "\n",
-        encoding="utf-8",
-    )
+    with source.open("w", encoding="utf-8", newline="") as output:
+        writer = csv.writer(output, delimiter=delimiter)
+        writer.writerow(headers)
+        writer.writerow(values)
 
     amounts, raw = _amounts(source, provider)
 
@@ -133,6 +145,48 @@ def test_national_csv_maps_all_core_nutrients_and_preserves_extra_columns(
         "water_ml": 69.64,
     }
     assert extra_name in raw
+
+
+def test_cofid_published_secondary_header_rows_are_skipped(tmp_path: Path) -> None:
+    source = tmp_path / "cofid.csv"
+    source.write_text(
+        "Food Code,Food Name,Energy (kcal) (kcal),Protein (g)\n"
+        ",,KCALS,PROT\n"
+        ",,kcal,Protein\n"
+        "11-001,Lentils boiled,116,9.02\n",
+        encoding="utf-8",
+    )
+
+    rows = list(parse_source_file("cofid", source))
+
+    assert [(row.source_food_id, row.name) for row in rows] == [("11-001", "Lentils boiled")]
+
+
+def test_csv_escaped_quotes_after_sniffer_sample_are_preserved(tmp_path: Path) -> None:
+    source = tmp_path / "cofid.csv"
+    rows = '11-001,"Ackee, canned, drained",151,2.9\n' * 150
+    source.write_text(
+        "Food Code,Food Name,Energy (kcal) (kcal),Protein (g)\n"
+        f'{rows}11-884,"Rice, ready-cooked, ""plain"", re-heated",161,4.1\n',
+        encoding="utf-8",
+    )
+
+    parsed = list(parse_source_file("cofid", source))
+
+    assert parsed[-1].name == 'Rice, ready-cooked, "plain", re-heated'
+    assert parsed[-1].nutrients_per_100g["kcal"].amount == 161
+
+
+def test_published_duplicate_csv_ids_are_disambiguated_by_occurrence(tmp_path: Path) -> None:
+    source = tmp_path / "cofid.csv"
+    source.write_text(
+        "Food Code,Food Name,Energy (kcal) (kcal)\n13-669,Aubergine roasted,62\n13-669,Watercress raw,10\n",
+        encoding="utf-8",
+    )
+
+    rows = list(parse_source_file("cofid", source))
+
+    assert [row.source_food_id for row in rows] == ["13-669", "13-669#2"]
 
 
 def test_non_numeric_or_less_than_values_stay_unknown(tmp_path: Path) -> None:

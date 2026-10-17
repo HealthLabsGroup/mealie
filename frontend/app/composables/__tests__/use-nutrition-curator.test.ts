@@ -380,6 +380,28 @@ describe("useNutritionCurator", () => {
     expect(curator.loadingFoods.value).toBe(false);
   });
 
+  test("keeps a confirmed mutation in a newer matching queue snapshot", async () => {
+    let resolveMatch!: (value: unknown) => void;
+    let resolveLoad!: (value: unknown) => void;
+    nutritionApi.setMatch.mockReturnValueOnce(new Promise(resolve => resolveMatch = resolve));
+    const { useNutritionCurator } = await import("../use-nutrition-curator");
+    const curator = useNutritionCurator();
+    await curator.loadFoods();
+    await curator.selectFood(unmatchedFood);
+
+    const mutation = curator.approveSource(candidate);
+    curator.queueQuery.value = "apple";
+    nutritionApi.getFoods.mockReturnValueOnce(new Promise(resolve => resolveLoad = resolve));
+    const newerLoad = curator.loadFoods();
+    resolveMatch({ data: matchedFood, error: null });
+    await mutation;
+    resolveLoad({ data: { items: [unmatchedFood], total: 1 }, error: null });
+    await newerLoad;
+
+    expect(curator.foods.value).toEqual([matchedFood]);
+    expect(curator.selectedFood.value).toEqual(matchedFood);
+  });
+
   test("loads the unfiltered queue after the clearable search becomes null", async () => {
     const { useNutritionCurator } = await import("../use-nutrition-curator");
     const curator = useNutritionCurator();

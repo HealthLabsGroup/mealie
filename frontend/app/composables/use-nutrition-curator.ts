@@ -24,6 +24,7 @@ export function useNutritionCurator() {
   const foodError = ref<string | null>(null);
   const sourceError = ref<string | null>(null);
   const actionError = ref<string | null>(null);
+  let foodLoadId = 0;
   let sourceSearchId = 0;
 
   const visibleFoods = computed(() => foods.value.filter((food) => {
@@ -37,16 +38,22 @@ export function useNutritionCurator() {
   }));
 
   async function loadFoods() {
+    const loadId = ++foodLoadId;
+    const loadCountry = country.value;
+    const q = queueQuery.value.trim();
     loadingFoods.value = true;
     foodError.value = null;
     try {
       const { data, error } = await api.getFoods({
-        country: country.value,
-        q: queueQuery.value.trim() || undefined,
+        country: loadCountry,
+        q: q || undefined,
       });
+      if (loadId !== foodLoadId || country.value !== loadCountry || queueQuery.value.trim() !== q) {
+        return false;
+      }
       if (error || !data) {
         foodError.value = "Unable to load foods.";
-        return;
+        return false;
       }
       foods.value = data.items;
       total.value = data.total;
@@ -54,9 +61,12 @@ export function useNutritionCurator() {
       if (refreshedSelection) {
         selectedFood.value = refreshedSelection;
       }
+      return true;
     }
     finally {
-      loadingFoods.value = false;
+      if (loadId === foodLoadId) {
+        loadingFoods.value = false;
+      }
     }
   }
 
@@ -105,12 +115,14 @@ export function useNutritionCurator() {
     }
   }
 
-  function applyFoodUpdate(updated: HealthLabsFoodNutritionOut) {
-    const index = foods.value.findIndex(food => food.id === updated.id);
+  function applyFoodUpdate(updated: HealthLabsFoodNutritionOut, targetFoodId: string) {
+    const index = foods.value.findIndex(food => food.id === targetFoodId);
     if (index !== -1) {
       foods.value.splice(index, 1, updated);
     }
-    selectedFood.value = updated;
+    if (selectedFood.value?.id === targetFoodId) {
+      selectedFood.value = updated;
+    }
   }
 
   async function approveNutrientFood(nutrientFoodId: string) {
@@ -118,11 +130,12 @@ export function useNutritionCurator() {
       actionError.value = "Select a food first.";
       return false;
     }
+    const targetFoodId = selectedFood.value.id;
     saving.value = true;
     actionError.value = null;
     try {
       const { data, error } = await api.setMatch(
-        selectedFood.value.id,
+        targetFoodId,
         { nutrientFoodId, country: country.value, confidence: 1 },
         crypto.randomUUID(),
       );
@@ -130,7 +143,7 @@ export function useNutritionCurator() {
         actionError.value = "Unable to save this source match.";
         return false;
       }
-      applyFoodUpdate(data);
+      applyFoodUpdate(data, targetFoodId);
       return true;
     }
     finally {
@@ -156,11 +169,12 @@ export function useNutritionCurator() {
       actionError.value = "Select a food first.";
       return false;
     }
+    const targetFoodId = selectedFood.value.id;
     saving.value = true;
     actionError.value = null;
     try {
       const { data, error } = await api.clearMatch(
-        selectedFood.value.id,
+        targetFoodId,
         country.value,
         crypto.randomUUID(),
       );
@@ -168,7 +182,7 @@ export function useNutritionCurator() {
         actionError.value = "Unable to clear this source match.";
         return;
       }
-      applyFoodUpdate(data);
+      applyFoodUpdate(data, targetFoodId);
     }
     finally {
       saving.value = false;
@@ -180,11 +194,12 @@ export function useNutritionCurator() {
       actionError.value = "Select a food first.";
       return;
     }
+    const targetFoodId = selectedFood.value.id;
     saving.value = true;
     actionError.value = null;
     try {
       const { data, error } = await api.addPortion(
-        selectedFood.value.id,
+        targetFoodId,
         payload,
         crypto.randomUUID(),
       );
@@ -192,7 +207,7 @@ export function useNutritionCurator() {
         actionError.value = "Unable to add this portion.";
         return false;
       }
-      applyFoodUpdate(data);
+      applyFoodUpdate(data, targetFoodId);
       return true;
     }
     finally {

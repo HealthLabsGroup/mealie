@@ -94,3 +94,26 @@ def test_nutrition_read_and_write_capabilities_are_independent(
         },
     )
     assert break_glass.status_code == 200, break_glass.text
+
+
+def test_worker_status_and_review_queue_require_nutrition_write(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_set_capabilities: Callable,
+) -> None:
+    ordinary, ordinary_headers = healthlabs_provision()
+    editor, editor_headers = healthlabs_provision()
+    healthlabs_set_capabilities(editor["userId"], HealthLabsCapability.NUTRITION_WRITE)
+
+    for resource in ("worker-status", "work"):
+        assert api_client.get(f"/api/healthlabs/v1/nutrition/{resource}", headers=ordinary_headers).status_code == 403
+        allowed = api_client.get(f"/api/healthlabs/v1/nutrition/{resource}", headers=editor_headers)
+        assert allowed.status_code == 200
+        if resource == "worker-status":
+            assert allowed.json()["counts"] == {
+                "pending": 0,
+                "running": 0,
+                "review_required": 0,
+                "completed": 0,
+                "failed": 0,
+            }

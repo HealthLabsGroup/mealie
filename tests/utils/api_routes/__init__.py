@@ -103,6 +103,10 @@ healthlabs_v1_nutrition_source_foods = "/api/healthlabs/v1/nutrition/source-food
 """`/api/healthlabs/v1/nutrition/source-foods`"""
 healthlabs_v1_nutrition_sources = "/api/healthlabs/v1/nutrition/sources"
 """`/api/healthlabs/v1/nutrition/sources`"""
+healthlabs_v1_nutrition_work = "/api/healthlabs/v1/nutrition/work"
+"""`/api/healthlabs/v1/nutrition/work`"""
+healthlabs_v1_nutrition_worker_status = "/api/healthlabs/v1/nutrition/worker-status"
+"""`/api/healthlabs/v1/nutrition/worker-status`"""
 healthlabs_v1_plans_current = "/api/healthlabs/v1/plans/current"
 """`/api/healthlabs/v1/plans/current`"""
 healthlabs_v1_recipes = "/api/healthlabs/v1/recipes"
@@ -408,6 +412,11 @@ def healthlabs_v1_nutrition_foods_food_id_match(food_id):
 def healthlabs_v1_nutrition_foods_food_id_portions(food_id):
     """`/api/healthlabs/v1/nutrition/foods/{food_id}/portions`"""
     return f"{prefix}/healthlabs/v1/nutrition/foods/{food_id}/portions"
+
+
+def healthlabs_v1_nutrition_work_work_id_approve(work_id):
+    """`/api/healthlabs/v1/nutrition/work/{work_id}/approve`"""
+    return f"{prefix}/healthlabs/v1/nutrition/work/{work_id}/approve"
 
 
 def healthlabs_v1_operations_idempotency_key(idempotency_key):

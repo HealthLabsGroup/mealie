@@ -4,6 +4,8 @@ import type {
   HealthLabsFoodNutritionOut,
   HealthLabsFoodPortionCreate,
   HealthLabsNutrientFoodOut,
+  HealthLabsNutritionWorkerStatus,
+  HealthLabsNutritionWorkOut,
 } from "~/lib/api/types/healthlabs";
 
 export type NutritionQueueFilter = "needs-review" | "matched" | "all";
@@ -14,6 +16,8 @@ export function useNutritionCurator() {
   const total = ref(0);
   const selectedFood = ref<HealthLabsFoodNutritionOut | null>(null);
   const candidates = ref<HealthLabsNutrientFoodOut[]>([]);
+  const workerStatus = ref<HealthLabsNutritionWorkerStatus | null>(null);
+  const reviewWork = ref<HealthLabsNutritionWorkOut[]>([]);
   const country = ref("GB");
   const queueQuery = ref<string | null>("");
   const sourceQuery = ref("");
@@ -21,9 +25,11 @@ export function useNutritionCurator() {
   const loadingFoods = ref(false);
   const searchingSources = ref(false);
   const saving = ref(false);
+  const loadingWork = ref(false);
   const foodError = ref<string | null>(null);
   const sourceError = ref<string | null>(null);
   const actionError = ref<string | null>(null);
+  const workError = ref<string | null>(null);
   let foodLoadId = 0;
   let sourceSearchId = 0;
   let confirmedCountry = country.value;
@@ -81,6 +87,67 @@ export function useNutritionCurator() {
         loadingFoods.value = false;
       }
     }
+  }
+
+  async function loadWorker() {
+    loadingWork.value = true;
+    workError.value = null;
+    try {
+      const [statusResponse, workResponse] = await Promise.all([
+        api.getWorkerStatus(),
+        api.getWork({ state: "review_required" }),
+      ]);
+      if (statusResponse.data) {
+        workerStatus.value = statusResponse.data;
+      }
+      if (workResponse.data) {
+        reviewWork.value = workResponse.data;
+      }
+      if (statusResponse.error || workResponse.error || !statusResponse.data || !workResponse.data) {
+        workError.value = "Unable to refresh background nutrition work.";
+        return false;
+      }
+      return true;
+    }
+    finally {
+      loadingWork.value = false;
+    }
+  }
+
+  async function approveIngredientWork(workId: string) {
+    saving.value = true;
+    actionError.value = null;
+    try {
+      const { data, error } = await api.approveWork(workId, crypto.randomUUID());
+      if (error || !data) {
+        actionError.value = "Unable to approve this ingredient suggestion.";
+        return false;
+      }
+      await Promise.all([loadWorker(), loadFoods()]);
+      return true;
+    }
+    finally {
+      saving.value = false;
+    }
+  }
+
+  async function openWork(work: HealthLabsNutritionWorkOut) {
+    const foodId = typeof work.result?.food_id === "string" ? work.result.food_id : null;
+    if (!foodId) {
+      actionError.value = "This review item no longer has a food target.";
+      return false;
+    }
+    let food = foods.value.find(item => item.id === foodId);
+    if (!food) {
+      await loadFoods();
+      food = foods.value.find(item => item.id === foodId);
+    }
+    if (!food) {
+      actionError.value = "The food for this review item is not in the current queue.";
+      return false;
+    }
+    await selectFood(food);
+    return true;
   }
 
   async function selectFood(food: HealthLabsFoodNutritionOut) {
@@ -253,6 +320,8 @@ export function useNutritionCurator() {
     visibleFoods,
     selectedFood,
     candidates,
+    workerStatus,
+    reviewWork,
     country,
     queueQuery,
     sourceQuery,
@@ -260,10 +329,15 @@ export function useNutritionCurator() {
     loadingFoods,
     searchingSources,
     saving,
+    loadingWork,
     foodError,
     sourceError,
     actionError,
+    workError,
     loadFoods,
+    loadWorker,
+    approveIngredientWork,
+    openWork,
     selectFood,
     searchSources,
     approveSource,

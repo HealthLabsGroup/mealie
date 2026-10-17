@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from mealie.core.config import get_app_settings
 from mealie.core.dependencies.dependencies import get_current_user
 from mealie.db.db_setup import generate_session
 from mealie.schema.healthlabs.nutrition import (
@@ -17,6 +18,10 @@ from mealie.schema.healthlabs.nutrition import (
     HealthLabsNutrientFoodOut,
     HealthLabsNutritionSourceReleaseOut,
     HealthLabsNutritionStatus,
+    HealthLabsNutritionWorkerStatus,
+    HealthLabsNutritionWorkKind,
+    HealthLabsNutritionWorkOut,
+    HealthLabsNutritionWorkState,
 )
 from mealie.schema.user import PrivateUser
 from mealie.services.healthlabs.access_policy import RecipeAccessDenied
@@ -31,6 +36,11 @@ from mealie.services.healthlabs.nutrition_service import (
     NutritionService,
     NutritionSourceNotFound,
 )
+from mealie.services.healthlabs.nutrition_worker import (
+    NutritionWorkConflict,
+    NutritionWorkNotFound,
+    NutritionWorkService,
+)
 
 router = APIRouter(prefix="/nutrition", tags=["HealthLabs: Nutrition"])
 
@@ -39,14 +49,24 @@ def _service(session: Session, user: PrivateUser) -> NutritionService:
     return NutritionService(session, user)
 
 
+def _work_service(session: Session, user: PrivateUser) -> NutritionWorkService:
+    return NutritionWorkService(
+        session,
+        user,
+        provider_daily_request_limit=get_app_settings().HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT,
+    )
+
+
 def _raise_http(exc: Exception) -> None:
     if isinstance(exc, NutritionFoodNotFound):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Food not found") from exc
     if isinstance(exc, NutritionSourceNotFound):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Nutrition source not found") from exc
+    if isinstance(exc, NutritionWorkNotFound):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Nutrition work not found") from exc
     if isinstance(exc, RecipeAccessDenied):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-    if isinstance(exc, IdempotencyConflict | NutritionConflict):
+    if isinstance(exc, IdempotencyConflict | NutritionConflict | NutritionWorkConflict):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if isinstance(exc, IdempotencyInProgress):
         raise HTTPException(
@@ -226,3 +246,66 @@ def list_sources(
     user: PrivateUser = Depends(get_current_user),
 ) -> list[HealthLabsNutritionSourceReleaseOut]:
     return _service(session, user).list_sources()
+
+
+@router.get("/worker-status", response_model=HealthLabsNutritionWorkerStatus)
+def get_worker_status(
+    session: Session = Depends(generate_session),
+    user: PrivateUser = Depends(get_current_user),
+) -> HealthLabsNutritionWorkerStatus:
+    try:
+        return _work_service(session, user).status()
+    except Exception as exc:
+        _raise_http(exc)
+        raise
+
+
+@router.get("/work", response_model=list[HealthLabsNutritionWorkOut])
+def list_work(
+    work_state: HealthLabsNutritionWorkState = Query(
+        default=HealthLabsNutritionWorkState.REVIEW_REQUIRED,
+        alias="state",
+    ),
+    kind: HealthLabsNutritionWorkKind | None = Query(default=None),
+    session: Session = Depends(generate_session),
+    user: PrivateUser = Depends(get_current_user),
+) -> list[HealthLabsNutritionWorkOut]:
+    try:
+        return _work_service(session, user).list_work(state=work_state, kind=kind)
+    except Exception as exc:
+        _raise_http(exc)
+        raise
+
+
+@router.post("/work/{work_id}/approve", response_model=HealthLabsNutritionWorkOut)
+def approve_work(
+    work_id: UUID,
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=1, max_length=255),
+    access_reason: str | None = Header(default=None, alias="X-HealthLabs-Access-Reason", max_length=500),
+    session: Session = Depends(generate_session),
+    user: PrivateUser = Depends(get_current_user),
+) -> JSONResponse:
+    resource = f"/nutrition/work/{work_id}/approve"
+
+    def operation() -> tuple[int, dict]:
+        body = (
+            _work_service(session, user)
+            .approve(
+                work_id,
+                access_reason=access_reason,
+            )
+            .model_dump(mode="json", by_alias=True)
+        )
+        return status.HTTP_200_OK, body
+
+    try:
+        return _idempotent_json(
+            session=session,
+            user=user,
+            idempotency_key=idempotency_key,
+            request_sha256=IdempotencyService.request_hash("POST", resource, {}),
+            operation=operation,
+        )
+    except Exception as exc:
+        _raise_http(exc)
+        raise

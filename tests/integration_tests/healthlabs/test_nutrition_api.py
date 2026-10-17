@@ -1,11 +1,24 @@
+import asyncio
 from collections.abc import Callable
 from uuid import UUID, uuid4
 
+import sqlalchemy as sa
 from fastapi.testclient import TestClient
+from pytest import MonkeyPatch
 
-from mealie.db.models.healthlabs import HealthLabsFoodPortion
+from mealie.core.config import get_app_settings
+from mealie.db.models._model_utils.datetime import get_utc_now
+from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
+from mealie.db.models.healthlabs import (
+    HealthLabsAccessAudit,
+    HealthLabsFoodPortion,
+    HealthLabsNutritionProviderUsage,
+    HealthLabsNutritionWork,
+)
+from mealie.db.models.recipe import RecipeIngredientModel
 from mealie.repos.repository_factory import AllRepositories
 from mealie.schema.healthlabs.identity import HealthLabsCapability
+from mealie.services.healthlabs.nutrition_worker import NutritionReconciliationWorker
 
 
 def test_food_search_detail_match_replace_portion_and_clear(
@@ -392,3 +405,189 @@ def test_nutrition_mutations_require_headers_and_reject_stale_source(
         },
     )
     assert stale.status_code == 404
+
+
+def test_worker_status_review_queue_and_idempotent_ingredient_approval_are_group_scoped(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_set_capabilities: Callable,
+    healthlabs_recipe_food: Callable,
+    unfiltered_database: AllRepositories,
+) -> None:
+    editor, editor_headers = healthlabs_provision()
+    outsider, outsider_headers = healthlabs_provision()
+    for identity in (editor, outsider):
+        healthlabs_set_capabilities(
+            identity["userId"],
+            HealthLabsCapability.RECIPES_WRITE_OWN,
+            HealthLabsCapability.NUTRITION_WRITE,
+        )
+
+    token = uuid4().hex
+    food_name = f"approved food {token}"
+    healthlabs_recipe_food(editor_headers, food_name)
+    recipe = api_client.post(
+        "/api/healthlabs/v1/recipes",
+        headers={**editor_headers, "Idempotency-Key": f"worker-recipe-{uuid4()}"},
+        json={
+            "name": f"Worker review {token}",
+            "ingredients": [{"originalText": f"provider only {token}"}],
+        },
+    )
+    assert recipe.status_code == 201, recipe.text
+
+    session = unfiltered_database.session
+    ingredient = session.scalar(
+        sa.select(RecipeIngredientModel).where(RecipeIngredientModel.recipe_id == UUID(recipe.json()["id"]))
+    )
+    assert ingredient is not None
+    asyncio.run(NutritionReconciliationWorker(session, provider_daily_request_limit=0).run())
+    work = session.scalar(
+        sa.select(HealthLabsNutritionWork).where(
+            HealthLabsNutritionWork.kind == "ingredient_structure",
+            HealthLabsNutritionWork.target_id == str(ingredient.id),
+        )
+    )
+    assert work is not None
+    work.state = "review_required"
+    work.result = {
+        "reason": "ingredient_suggestion",
+        "suggestion": {"quantity": 2, "unit": "gram", "food": food_name, "note": ""},
+    }
+    session.commit()
+
+    status_response = api_client.get("/api/healthlabs/v1/nutrition/worker-status", headers=editor_headers)
+    queue_response = api_client.get(
+        "/api/healthlabs/v1/nutrition/work",
+        params={"state": "review_required", "kind": "ingredient_structure"},
+        headers=editor_headers,
+    )
+    outsider_queue = api_client.get("/api/healthlabs/v1/nutrition/work", headers=outsider_headers)
+
+    assert status_response.status_code == 200, status_response.text
+    assert status_response.json()["counts"]["review_required"] >= 1
+    assert status_response.json()["providerEnabled"] is False
+    assert status_response.json()["providerBudgetExhausted"] is False
+    assert [item["id"] for item in queue_response.json()] == [str(work.id)]
+    assert queue_response.json()[0]["result"] == work.result
+    assert outsider_queue.status_code == 200
+    assert outsider_queue.json() == []
+
+    resource = f"/api/healthlabs/v1/nutrition/work/{work.id}/approve"
+    request_headers = {
+        **editor_headers,
+        "Idempotency-Key": f"approve-work-{uuid4()}",
+        "X-HealthLabs-Access-Reason": "Approve exact ingredient structure",
+    }
+    approved = api_client.post(resource, headers=request_headers)
+    replay = api_client.post(resource, headers=request_headers)
+    denied_cross_group = api_client.post(
+        resource,
+        headers={
+            **outsider_headers,
+            "Idempotency-Key": f"cross-group-{uuid4()}",
+            "X-HealthLabs-Access-Reason": "Attempt foreign approval",
+        },
+    )
+
+    assert approved.status_code == 200, approved.text
+    assert replay.json() == approved.json()
+    assert approved.json()["state"] == "completed"
+    assert denied_cross_group.status_code == 404
+    session.expire_all()
+    assert session.get(RecipeIngredientModel, ingredient.id).quantity == 2
+    assert session.get(RecipeIngredientModel, ingredient.id).food.name == food_name
+    assert (
+        session.scalar(
+            sa.select(sa.func.count())
+            .select_from(HealthLabsAccessAudit)
+            .where(
+                HealthLabsAccessAudit.actor_user_id == UUID(editor["userId"]),
+                HealthLabsAccessAudit.action == "nutrition.work.approve",
+                HealthLabsAccessAudit.resource_id == str(work.id),
+            )
+        )
+        == 1
+    )
+
+
+def test_worker_approval_rejects_stale_ingredient_input(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_set_capabilities: Callable,
+    unfiltered_database: AllRepositories,
+) -> None:
+    editor, headers = healthlabs_provision()
+    healthlabs_set_capabilities(editor["userId"], HealthLabsCapability.NUTRITION_WRITE)
+    session = unfiltered_database.session
+    work = HealthLabsNutritionWork(
+        group_id=UUID(editor["groupId"]),
+        kind="ingredient_structure",
+        target_id="2147483647",
+        input_sha256="0" * 64,
+        state="review_required",
+        result={
+            "reason": "ingredient_suggestion",
+            "suggestion": {"quantity": 1, "unit": "gram", "food": "missing", "note": ""},
+        },
+    )
+    session.add(work)
+    session.commit()
+
+    response = api_client.post(
+        f"/api/healthlabs/v1/nutrition/work/{work.id}/approve",
+        headers={
+            **headers,
+            "Idempotency-Key": f"stale-work-{uuid4()}",
+            "X-HealthLabs-Access-Reason": "Approve stale structure",
+        },
+    )
+
+    assert response.status_code == 409
+
+
+def test_worker_status_reports_configured_exhausted_provider_without_exposing_other_groups(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_set_capabilities: Callable,
+    unfiltered_database: AllRepositories,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    editor, headers = healthlabs_provision()
+    healthlabs_set_capabilities(editor["userId"], HealthLabsCapability.NUTRITION_WRITE)
+    monkeypatch.setattr(get_app_settings(), "HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT", 1)
+    session = unfiltered_database.session
+    settings = session.scalar(
+        sa.select(AIProviderSettings).where(AIProviderSettings.group_id == UUID(editor["groupId"]))
+    )
+    assert settings is not None
+    provider = AIProvider(
+        session=session,
+        settings_id=settings.id,
+        name=f"status-provider-{uuid4()}",
+        base_url="https://openrouter.example/api/v1",
+        api_key="test-runtime-key",
+        model="qwen/test",
+        timeout=30,
+    )
+    session.add(provider)
+    session.flush()
+    settings.default_provider_id = provider.id
+    usage = session.scalar(
+        sa.select(HealthLabsNutritionProviderUsage).where(
+            HealthLabsNutritionProviderUsage.usage_date == get_utc_now().date()
+        )
+    )
+    if usage is None:
+        usage = HealthLabsNutritionProviderUsage(usage_date=get_utc_now().date(), request_count=1)
+        session.add(usage)
+    else:
+        usage.request_count = 1
+    session.commit()
+
+    response = api_client.get("/api/healthlabs/v1/nutrition/worker-status", headers=headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["providerEnabled"] is True
+    assert response.json()["providerBudgetExhausted"] is True
+    assert "providerRequestsToday" not in response.json()

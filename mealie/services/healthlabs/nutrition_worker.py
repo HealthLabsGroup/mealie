@@ -22,12 +22,31 @@ from mealie.db.models.healthlabs import (
 from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel, RecipeIngredientModel, RecipeModel
 from mealie.db.models.recipe.ingredient import IngredientFoodAliasModel, IngredientUnitAliasModel
 from mealie.lang.providers import get_locale_provider
+from mealie.schema.healthlabs.identity import HealthLabsCapability
+from mealie.schema.healthlabs.nutrition import (
+    HealthLabsNutritionWorkerStatus,
+    HealthLabsNutritionWorkKind,
+    HealthLabsNutritionWorkOut,
+    HealthLabsNutritionWorkState,
+)
 from mealie.schema.recipe import IngredientFood, IngredientUnit, RecipeIngredient
+from mealie.schema.recipe.recipe_ingredient import CreateIngredientFood, CreateIngredientUnit
+from mealie.schema.user import PrivateUser
+from mealie.services.healthlabs.access_policy import RecipeAccessPolicy
 from mealie.services.healthlabs.ingredient_structure_service import IngredientStructureService
 from mealie.services.healthlabs.nutrition_service import NutritionService
 from mealie.services.parser_services.openai.parser import OpenAIParser
 
 RETRY_DELAYS = (timedelta(minutes=5), timedelta(minutes=30))
+WORK_STATES = tuple(state.value for state in HealthLabsNutritionWorkState)
+
+
+class NutritionWorkNotFound(LookupError):
+    pass
+
+
+class NutritionWorkConflict(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -125,13 +144,7 @@ class NutritionReconciliationWorker:
             .order_by(RecipeIngredientModel.id)
         )
         for ingredient, group_id in rows:
-            source = (ingredient.original_text or "").strip() or (ingredient.note or "").strip()
-            fingerprint = self._hash(
-                source,
-                self._catalogue_hash(group_id),
-                self.provider_daily_request_limit > 0,
-                self._provider_fingerprint(group_id),
-            )
+            fingerprint = self.ingredient_fingerprint(ingredient, group_id)
             changed += self._upsert("ingredient_structure", str(ingredient.id), group_id, fingerprint)
             if changed == limit:
                 break
@@ -520,6 +533,15 @@ class NutritionReconciliationWorker:
         self._catalogue_hashes[group_id] = value
         return value
 
+    def ingredient_fingerprint(self, ingredient: RecipeIngredientModel, group_id: UUID) -> str:
+        source = (ingredient.original_text or "").strip() or (ingredient.note or "").strip()
+        return self._hash(
+            source,
+            self._catalogue_hash(group_id),
+            self.provider_daily_request_limit > 0,
+            self._provider_fingerprint(group_id),
+        )
+
     def _provider_fingerprint(self, group_id: UUID) -> str:
         settings = self.session.scalar(sa.select(AIProviderSettings).where(AIProviderSettings.group_id == group_id))
         if settings is None or settings.default_provider_id is None:
@@ -617,3 +639,149 @@ class NutritionReconciliationWorker:
     def _hash(*values: object) -> str:
         payload = json.dumps(values, default=str, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode()).hexdigest()
+
+
+class NutritionWorkService:
+    def __init__(
+        self,
+        session: Session,
+        user: PrivateUser,
+        *,
+        provider_daily_request_limit: int,
+    ) -> None:
+        self.session = session
+        self.user = user
+        self.provider_daily_request_limit = provider_daily_request_limit
+        self.policy = RecipeAccessPolicy(session, user)
+
+    def status(self) -> HealthLabsNutritionWorkerStatus:
+        self._require_write()
+        counts = dict.fromkeys(WORK_STATES, 0)
+        counts.update(
+            dict(
+                self.session.execute(
+                    sa.select(HealthLabsNutritionWork.state, sa.func.count())
+                    .where(HealthLabsNutritionWork.group_id == self.user.group_id)
+                    .group_by(HealthLabsNutritionWork.state)
+                ).all()
+            )
+        )
+        requests_today = (
+            self.session.scalar(
+                sa.select(HealthLabsNutritionProviderUsage.request_count).where(
+                    HealthLabsNutritionProviderUsage.usage_date == get_utc_now().date()
+                )
+            )
+            or 0
+        )
+        provider_enabled = self.provider_daily_request_limit > 0 and self._provider_available()
+        return HealthLabsNutritionWorkerStatus(
+            counts=counts,
+            provider_enabled=provider_enabled,
+            provider_budget_exhausted=(provider_enabled and requests_today >= self.provider_daily_request_limit),
+            last_updated_at=self.session.scalar(
+                sa.select(sa.func.max(HealthLabsNutritionWork.update_at)).where(
+                    HealthLabsNutritionWork.group_id == self.user.group_id
+                )
+            ),
+        )
+
+    def list_work(
+        self,
+        *,
+        state: HealthLabsNutritionWorkState,
+        kind: HealthLabsNutritionWorkKind | None,
+    ) -> list[HealthLabsNutritionWorkOut]:
+        self._require_write()
+        query = sa.select(HealthLabsNutritionWork).where(
+            HealthLabsNutritionWork.group_id == self.user.group_id,
+            HealthLabsNutritionWork.state == state.value,
+        )
+        if kind is not None:
+            query = query.where(HealthLabsNutritionWork.kind == kind.value)
+        rows = self.session.scalars(
+            query.order_by(HealthLabsNutritionWork.kind, HealthLabsNutritionWork.target_id)
+        ).all()
+        return [self._out(row) for row in rows]
+
+    def approve(self, work_id: UUID, *, access_reason: str | None) -> HealthLabsNutritionWorkOut:
+        self._require_write()
+        work = self.session.scalar(
+            sa.select(HealthLabsNutritionWork).where(
+                HealthLabsNutritionWork.id == work_id,
+                HealthLabsNutritionWork.group_id == self.user.group_id,
+            )
+        )
+        if work is None:
+            raise NutritionWorkNotFound
+        if work.kind != HealthLabsNutritionWorkKind.INGREDIENT_STRUCTURE.value:
+            raise NutritionWorkConflict("This work item uses its existing nutrition editor action")
+        if work.state == HealthLabsNutritionWorkState.COMPLETED.value:
+            return self._out(work)
+        suggestion = (work.result or {}).get("suggestion")
+        if work.state != HealthLabsNutritionWorkState.REVIEW_REQUIRED.value or not isinstance(suggestion, dict):
+            raise NutritionWorkConflict("Ingredient suggestion is not available for approval")
+
+        worker = NutritionReconciliationWorker(
+            self.session,
+            provider_daily_request_limit=self.provider_daily_request_limit,
+        )
+        ingredient = worker._ingredient(work)
+        if ingredient is None or worker.ingredient_fingerprint(ingredient, work.group_id) != work.input_sha256:
+            raise NutritionWorkConflict("Ingredient suggestion is stale")
+        try:
+            parsed = RecipeIngredient(
+                quantity=suggestion["quantity"],
+                unit=CreateIngredientUnit(name=suggestion["unit"]),
+                food=CreateIngredientFood(name=suggestion["food"]),
+                note=suggestion.get("note") or "",
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise NutritionWorkConflict("Ingredient suggestion is invalid") from exc
+        value = RecipeIngredient(
+            quantity=ingredient.quantity,
+            note=ingredient.note,
+            original_text=ingredient.original_text,
+            title=ingredient.title,
+        )
+        service = IngredientStructureService(self.session, work.group_id, get_locale_provider())
+        if not service.apply_exact(value, parsed):
+            raise NutritionWorkConflict("Ingredient suggestion no longer resolves exactly")
+
+        self.policy.record_action(
+            action="nutrition.work.approve",
+            reason=access_reason,
+            resource_type="nutrition_work",
+            resource_id=str(work.id),
+        )
+        worker._apply_ingredient(ingredient, value)
+        work.state = HealthLabsNutritionWorkState.COMPLETED.value
+        work.result = None
+        work.last_error = None
+        self.session.flush()
+        return self._out(work)
+
+    def _provider_available(self) -> bool:
+        settings = self.session.scalar(
+            sa.select(AIProviderSettings).where(AIProviderSettings.group_id == self.user.group_id)
+        )
+        if settings is None or settings.default_provider_id is None:
+            return False
+        provider = self.session.get(AIProvider, settings.default_provider_id)
+        return provider is not None and provider.settings_id == settings.id
+
+    def _require_write(self) -> None:
+        self.policy.require(HealthLabsCapability.NUTRITION_WRITE)
+
+    @staticmethod
+    def _out(work: HealthLabsNutritionWork) -> HealthLabsNutritionWorkOut:
+        return HealthLabsNutritionWorkOut(
+            id=work.id,
+            kind=work.kind,
+            target_id=work.target_id,
+            state=work.state,
+            attempt_count=work.attempt_count,
+            result=work.result,
+            last_error=work.last_error,
+            updated_at=work.update_at,
+        )

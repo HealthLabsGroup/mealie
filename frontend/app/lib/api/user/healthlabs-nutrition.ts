@@ -8,6 +8,10 @@ import type {
   HealthLabsFoodPortionCreate,
   HealthLabsNutrientFoodOut,
   HealthLabsNutritionStatus,
+  HealthLabsNutritionWorkerStatus,
+  HealthLabsNutritionWorkKind,
+  HealthLabsNutritionWorkOut,
+  HealthLabsNutritionWorkState,
 } from "~/lib/api/types/healthlabs";
 
 const baseRoute = "/api/healthlabs/v1";
@@ -67,6 +71,27 @@ export class HealthLabsNutritionApi extends BaseAPI {
       `${nutritionRoute}/foods/${foodId}/portions`,
       payload,
       writeConfig(idempotencyKey, "Nutrition curator measured portion"),
+    );
+  }
+
+  async getWorkerStatus() {
+    return await this.requests.get<HealthLabsNutritionWorkerStatus>(`${nutritionRoute}/worker-status`);
+  }
+
+  async getWork(params: { state: HealthLabsNutritionWorkState; kind?: HealthLabsNutritionWorkKind }) {
+    return await this.requests.get<HealthLabsNutritionWorkOut[]>(
+      route(`${nutritionRoute}/work`, {
+        state: params.state,
+        ...(params.kind ? { kind: params.kind } : {}),
+      }),
+    );
+  }
+
+  async approveWork(workId: string, idempotencyKey: string) {
+    return await this.requests.post<HealthLabsNutritionWorkOut>(
+      `${nutritionRoute}/work/${workId}/approve`,
+      {},
+      writeConfig(idempotencyKey, "Nutrition curator ingredient review"),
     );
   }
 }

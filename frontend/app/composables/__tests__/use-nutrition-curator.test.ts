@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import type {
   HealthLabsFoodNutritionOut,
   HealthLabsNutrientFoodOut,
+  HealthLabsNutritionWorkerStatus,
+  HealthLabsNutritionWorkOut,
 } from "~/lib/api/types/healthlabs";
 import type { ApiRequestInstance } from "~/lib/api/types/non-generated";
 
@@ -11,6 +13,9 @@ const nutritionApi = vi.hoisted(() => ({
   setMatch: vi.fn(),
   clearMatch: vi.fn(),
   addPortion: vi.fn(),
+  getWorkerStatus: vi.fn(),
+  getWork: vi.fn(),
+  approveWork: vi.fn(),
 }));
 
 vi.mock("~/composables/api", () => ({
@@ -94,6 +99,34 @@ const secondCandidate: HealthLabsNutrientFoodOut = {
   name: "Banana, raw",
 };
 
+const workerStatus: HealthLabsNutritionWorkerStatus = {
+  counts: { pending: 1, running: 0, review_required: 1, completed: 3, failed: 0 },
+  providerEnabled: false,
+  providerBudgetExhausted: false,
+  lastUpdatedAt: "2026-10-17T12:00:00Z",
+};
+
+const ingredientWork: HealthLabsNutritionWorkOut = {
+  id: "88888888-8888-4888-8888-888888888888",
+  kind: "ingredient_structure",
+  targetId: "42",
+  state: "review_required",
+  attemptCount: 0,
+  result: {
+    reason: "ingredient_suggestion",
+    suggestion: { quantity: 2, unit: "cup", food: "oats", note: "" },
+  },
+  updatedAt: "2026-10-17T12:00:00Z",
+};
+
+const portionWork: HealthLabsNutritionWorkOut = {
+  ...ingredientWork,
+  id: "99999999-9999-4999-8999-999999999999",
+  kind: "portion_resolution",
+  targetId: "43",
+  result: { reason: "conversion_missing", food_id: existingMatchedFood.id },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   nutritionApi.getFoods.mockResolvedValue({
@@ -111,6 +144,12 @@ beforeEach(() => {
         portions: [{ description: "medium", amount: 1, unit: "item", grams: 182 }],
       },
     },
+    error: null,
+  });
+  nutritionApi.getWorkerStatus.mockResolvedValue({ data: workerStatus, error: null });
+  nutritionApi.getWork.mockResolvedValue({ data: [ingredientWork], error: null });
+  nutritionApi.approveWork.mockResolvedValue({
+    data: { ...ingredientWork, state: "completed", result: null },
     error: null,
   });
   vi.spyOn(crypto, "randomUUID").mockReturnValue("44444444-4444-4444-8444-444444444444");
@@ -137,6 +176,9 @@ describe("HealthLabsNutritionApi", () => {
       { description: "medium", amount: 1, unit: "item", grams: 182 },
       "portion-key",
     );
+    await api.getWorkerStatus();
+    await api.getWork({ state: "review_required" });
+    await api.approveWork(ingredientWork.id, "work-key");
 
     expect(requests.get).toHaveBeenNthCalledWith(
       1,
@@ -160,10 +202,66 @@ describe("HealthLabsNutritionApi", () => {
       { description: "medium", amount: 1, unit: "item", grams: 182 },
       { headers: { "Idempotency-Key": "portion-key", "X-HealthLabs-Access-Reason": "Nutrition curator measured portion" } },
     );
+    expect(requests.get).toHaveBeenCalledWith("/api/healthlabs/v1/nutrition/worker-status");
+    expect(requests.get).toHaveBeenCalledWith(
+      "/api/healthlabs/v1/nutrition/work?state=review_required",
+    );
+    expect(requests.post).toHaveBeenCalledWith(
+      `/api/healthlabs/v1/nutrition/work/${ingredientWork.id}/approve`,
+      {},
+      { headers: { "Idempotency-Key": "work-key", "X-HealthLabs-Access-Reason": "Nutrition curator ingredient review" } },
+    );
   });
 });
 
 describe("useNutritionCurator", () => {
+  test("loads worker status and review work without hiding previous data on an API error", async () => {
+    const { useNutritionCurator } = await import("../use-nutrition-curator");
+    const curator = useNutritionCurator();
+
+    await curator.loadWorker();
+    expect(curator.workerStatus.value).toEqual(workerStatus);
+    expect(curator.reviewWork.value).toEqual([ingredientWork]);
+
+    nutritionApi.getWorkerStatus.mockResolvedValueOnce({ data: null, error: new Error("offline") });
+    nutritionApi.getWork.mockResolvedValueOnce({ data: null, error: new Error("offline") });
+    await curator.loadWorker();
+
+    expect(curator.workerStatus.value).toEqual(workerStatus);
+    expect(curator.reviewWork.value).toEqual([ingredientWork]);
+    expect(curator.workError.value).toBeTruthy();
+  });
+
+  test("approves exact ingredient work and refreshes both queues", async () => {
+    const { useNutritionCurator } = await import("../use-nutrition-curator");
+    const curator = useNutritionCurator();
+    await curator.loadWorker();
+
+    await expect(curator.approveIngredientWork(ingredientWork.id)).resolves.toBe(true);
+
+    expect(nutritionApi.approveWork).toHaveBeenCalledWith(
+      ingredientWork.id,
+      "44444444-4444-4444-8444-444444444444",
+    );
+    expect(nutritionApi.getWorkerStatus).toHaveBeenCalledTimes(2);
+    expect(nutritionApi.getFoods).toHaveBeenCalledOnce();
+  });
+
+  test("opens portion work in the existing food and measured-portion editor", async () => {
+    const { useNutritionCurator } = await import("../use-nutrition-curator");
+    const curator = useNutritionCurator();
+    await curator.loadFoods();
+
+    await expect(curator.openWork(portionWork)).resolves.toBe(true);
+
+    expect(curator.selectedFood.value).toEqual(existingMatchedFood);
+    expect(nutritionApi.searchSourceFoods).toHaveBeenCalledWith({
+      q: "Pear",
+      country: "GB",
+      limit: 20,
+    });
+  });
+
   test("loads the queue, filters it, and keeps source nutrient nulls intact", async () => {
     const { useNutritionCurator } = await import("../use-nutrition-curator");
     const curator = useNutritionCurator();

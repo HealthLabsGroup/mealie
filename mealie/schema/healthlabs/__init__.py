@@ -13,6 +13,10 @@ from .nutrition import (
     HealthLabsNutritionSourceReleaseOut,
     HealthLabsNutritionStatus,
     HealthLabsNutritionValues,
+    HealthLabsNutritionWorkerStatus,
+    HealthLabsNutritionWorkKind,
+    HealthLabsNutritionWorkOut,
+    HealthLabsNutritionWorkState,
     HealthLabsRecipeNutrition,
 )
 from .nutrition_source import NutrientValue, NutritionImportResult, SourceFoodRow, SourceManifest, SourcePortion
@@ -69,6 +73,10 @@ __all__ = [
     "HealthLabsNutritionSourceReleaseOut",
     "HealthLabsNutritionStatus",
     "HealthLabsNutritionValues",
+    "HealthLabsNutritionWorkKind",
+    "HealthLabsNutritionWorkOut",
+    "HealthLabsNutritionWorkState",
+    "HealthLabsNutritionWorkerStatus",
     "HealthLabsRecipeNutrition",
     "HealthLabsDraftIngredient",
     "HealthLabsFoodIn",

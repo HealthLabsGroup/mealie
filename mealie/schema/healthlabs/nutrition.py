@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from pydantic import UUID4, Field, StringConstraints
@@ -12,6 +12,38 @@ class HealthLabsNutritionStatus(StrEnum):
     MATCHED = "matched"
     REVIEW_REQUIRED = "review_required"
     UNKNOWN = "unknown"
+
+
+class HealthLabsNutritionWorkKind(StrEnum):
+    INGREDIENT_STRUCTURE = "ingredient_structure"
+    FOOD_MATCH = "food_match"
+    PORTION_RESOLUTION = "portion_resolution"
+
+
+class HealthLabsNutritionWorkState(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    REVIEW_REQUIRED = "review_required"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class HealthLabsNutritionWorkerStatus(MealieModel):
+    counts: dict[str, int]
+    provider_enabled: bool
+    provider_budget_exhausted: bool
+    last_updated_at: datetime | None = None
+
+
+class HealthLabsNutritionWorkOut(MealieModel):
+    id: UUID4
+    kind: HealthLabsNutritionWorkKind
+    target_id: str
+    state: HealthLabsNutritionWorkState
+    attempt_count: int = Field(ge=0)
+    result: dict[str, Any] | None = None
+    last_error: str | None = None
+    updated_at: datetime | None = None
 
 
 class HealthLabsNutritionValues(MealieModel):

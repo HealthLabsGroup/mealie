@@ -93,17 +93,24 @@ export function useNutritionCurator() {
     loadingWork.value = true;
     workError.value = null;
     try {
-      const [statusResponse, workResponse] = await Promise.all([
+      const [statusResponse, ingredientResponse, foodResponse, portionResponse] = await Promise.all([
         api.getWorkerStatus(),
-        api.getWork({ state: "review_required" }),
+        api.getWork({ state: "review_required", kind: "ingredient_structure" }),
+        api.getWork({ state: "review_required", kind: "food_match" }),
+        api.getWork({ state: "review_required", kind: "portion_resolution" }),
       ]);
+      const workResponses = [ingredientResponse, foodResponse, portionResponse];
       if (statusResponse.data) {
         workerStatus.value = statusResponse.data;
       }
-      if (workResponse.data) {
-        reviewWork.value = workResponse.data;
+      if (workResponses.every(response => response.data && !response.error)) {
+        reviewWork.value = workResponses.flatMap(response => response.data ?? []);
       }
-      if (statusResponse.error || workResponse.error || !statusResponse.data || !workResponse.data) {
+      if (
+        statusResponse.error
+        || !statusResponse.data
+        || workResponses.some(response => response.error || !response.data)
+      ) {
         workError.value = "Unable to refresh background nutrition work.";
         return false;
       }

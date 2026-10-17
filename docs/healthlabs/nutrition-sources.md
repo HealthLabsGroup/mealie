@@ -51,6 +51,7 @@ uv run python scripts/healthlabs/import-nutrition-source.py manifest.json /absol
 ```
 
 The command verifies the bytes before parsing. Reusing a provider/version/country with different bytes fails. Re-importing identical bytes updates the same source-food rows and keeps reviewed Mealie food matches attached to their existing source-food IDs.
+Source-managed portions are refreshed while nutrition-editor portions remain unchanged.
 
 Run exact/alias matching and produce an aggregate-only coverage report:
 

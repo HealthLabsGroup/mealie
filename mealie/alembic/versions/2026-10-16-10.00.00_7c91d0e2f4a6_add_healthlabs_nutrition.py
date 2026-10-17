@@ -156,6 +156,7 @@ def upgrade() -> None:
         sa.Column("amount", sa.Float(), nullable=False),
         sa.Column("unit", sa.String(length=64), nullable=False),
         sa.Column("grams", sa.Float(), nullable=False),
+        sa.Column("source_managed", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.CheckConstraint("amount > 0", name="healthlabs_food_portion_amount_positive"),
         sa.CheckConstraint("grams > 0", name="healthlabs_food_portion_grams_positive"),
         sa.ForeignKeyConstraint(

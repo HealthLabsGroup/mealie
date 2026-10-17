@@ -33,6 +33,8 @@ def test_nutrition_migration_adds_and_removes_catalog_tables() -> None:
 
             inspector = sa.inspect(connection)
             assert TABLES <= set(inspector.get_table_names())
+            portion_columns = {column["name"]: column for column in inspector.get_columns("healthlabs_food_portions")}
+            assert portion_columns["source_managed"]["nullable"] is False
             match_foreign_keys = {
                 tuple(foreign_key["constrained_columns"]): (
                     foreign_key["referred_table"],

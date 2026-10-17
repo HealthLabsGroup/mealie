@@ -1,6 +1,7 @@
+from fractions import Fraction
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from ._base import OpenAIBase
 
@@ -36,6 +37,11 @@ class OpenAIIngredient(OpenAIBase):
 
     @field_validator("quantity", mode="before")
     def coerce_none_float(cls, v: Any) -> Any:
+        if isinstance(v, str) and "/" in v:
+            try:
+                return float(Fraction(v))
+            except ValueError, ZeroDivisionError:
+                pass
         return v or 0
 
 
@@ -44,3 +50,8 @@ class OpenAIIngredients(OpenAIBase):
         default_factory=list,
         description="List of parsed ingredients.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def wrap_root_array(cls, value: Any) -> Any:
+        return {"ingredients": value} if isinstance(value, list) else value

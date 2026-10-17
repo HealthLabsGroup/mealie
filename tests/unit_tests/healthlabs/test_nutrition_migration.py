@@ -24,6 +24,11 @@ def _portion_scope_migration():
     return import_file("scope_editor_portions_to_groups", path)
 
 
+def _worker_migration():
+    path = next(ALEMBIC_MIGRATIONS.glob("*9e13f4a6b8c0*.py"))
+    return import_file("add_healthlabs_nutrition_work", path)
+
+
 def _prepare_legacy_portion(connection, *, matched_groups: int) -> tuple[str, tuple[str, ...]]:
     connection.execute(sa.text("PRAGMA foreign_keys=ON"))
     connection.execute(sa.text("CREATE TABLE users (id CHAR(32) PRIMARY KEY)"))
@@ -120,6 +125,58 @@ def test_nutrition_migration_adds_and_removes_catalog_tables() -> None:
                 migration.downgrade()
 
             assert TABLES.isdisjoint(sa.inspect(connection).get_table_names())
+    finally:
+        engine.dispose()
+
+
+def test_worker_migration_adds_and_removes_persisted_work_tables() -> None:
+    migration = _worker_migration()
+    engine = sa.create_engine("sqlite://")
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(sa.text("PRAGMA foreign_keys=ON"))
+            connection.execute(sa.text("CREATE TABLE groups (id CHAR(32) PRIMARY KEY)"))
+
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.upgrade()
+
+            inspector = sa.inspect(connection)
+            assert {"healthlabs_nutrition_work", "healthlabs_nutrition_provider_usage"} <= set(
+                inspector.get_table_names()
+            )
+            assert {index["name"] for index in inspector.get_indexes("healthlabs_nutrition_work")} >= {
+                "healthlabs_nutrition_work_due_idx",
+                "ix_healthlabs_nutrition_work_group_id",
+            }
+            assert {
+                constraint["name"] for constraint in inspector.get_check_constraints("healthlabs_nutrition_work")
+            } >= {
+                "healthlabs_nutrition_work_attempt_nonnegative",
+                "healthlabs_nutrition_work_kind_valid",
+                "healthlabs_nutrition_work_state_valid",
+            }
+            assert inspector.get_foreign_keys("healthlabs_nutrition_work")[0]["options"]["ondelete"] == "CASCADE"
+
+            connection.execute(sa.text("INSERT INTO groups (id) VALUES ('11111111111111111111111111111111')"))
+            connection.execute(
+                sa.text(
+                    "INSERT INTO healthlabs_nutrition_work "
+                    "(id, group_id, kind, target_id, input_sha256, state, attempt_count, next_attempt_at) "
+                    "VALUES ('22222222222222222222222222222222', '11111111111111111111111111111111', "
+                    "'food_match', '33333333333333333333333333333333', :sha256, 'pending', 0, '2026-10-17')"
+                ),
+                {"sha256": "a" * 64},
+            )
+            connection.execute(sa.text("DELETE FROM groups WHERE id = '11111111111111111111111111111111'"))
+            assert connection.scalar(sa.text("SELECT COUNT(*) FROM healthlabs_nutrition_work")) == 0
+
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.downgrade()
+
+            assert {"healthlabs_nutrition_work", "healthlabs_nutrition_provider_usage"}.isdisjoint(
+                sa.inspect(connection).get_table_names()
+            )
     finally:
         engine.dispose()
 

@@ -55,6 +55,15 @@ def test_get_prompt_default_only(settings_stub):
     assert out == "DEFAULT PROMPT"
 
 
+def test_ingredient_parser_prompt_declares_json_output():
+    svc = OpenAIService(_make_mock_repos())
+
+    prompt = svc.get_prompt("recipes.parse-recipe-ingredients")
+
+    assert "json object" in prompt.casefold()
+    assert "`ingredients` array" in prompt.casefold()
+
+
 def test_get_prompt_custom_dir_used(settings_stub, tmp_path):
     custom_dir = tmp_path / "custom"
     (custom_dir / "recipes").mkdir(parents=True)

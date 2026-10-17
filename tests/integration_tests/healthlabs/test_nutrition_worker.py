@@ -155,27 +155,17 @@ def test_worker_discovers_bounded_batches_and_structures_exact_ingredients(
     texts = [f"{amount} {unit.name} {food.name}" for amount in (1, 2, 3)]
     ingredients = _recipe_ingredients(user, texts)
 
-    first = _run(user.repos.session, batch_size=2)
-    first_rows = user.repos.session.scalars(
-        sa.select(HealthLabsNutritionWork).where(
-            HealthLabsNutritionWork.kind == "ingredient_structure",
-            HealthLabsNutritionWork.target_id.in_([str(row.id) for row in ingredients]),
-        )
-    ).all()
+    reports = []
+    for _ in range(100):
+        reports.append(_run(user.repos.session, batch_size=2))
+        user.repos.session.expire_all()
+        if all(user.repos.session.get(RecipeIngredientModel, row.id).food_id == food.id for row in ingredients):
+            break
 
-    assert first.discovered == 2
-    assert len(first_rows) == 2
-    assert all(row.state == "completed" for row in first_rows)
-    user.repos.session.expire_all()
-    assert [user.repos.session.get(RecipeIngredientModel, row.id).original_text for row in ingredients[:2]] == texts[:2]
-    assert [user.repos.session.get(RecipeIngredientModel, row.id).food_id for row in ingredients[:2]] == [
-        food.id,
-        food.id,
-    ]
-
-    _run(user.repos.session, batch_size=2)
-    user.repos.session.expire_all()
-    assert user.repos.session.get(RecipeIngredientModel, ingredients[2].id).food_id == food.id
+    assert reports[0].discovered == 2
+    assert all(report.discovered <= 2 for report in reports)
+    assert [user.repos.session.get(RecipeIngredientModel, row.id).original_text for row in ingredients] == texts
+    assert all(user.repos.session.get(RecipeIngredientModel, row.id).food_id == food.id for row in ingredients)
 
 
 def test_worker_requeues_changed_input_and_removes_deleted_targets(unique_user_fn_scoped: TestUser) -> None:

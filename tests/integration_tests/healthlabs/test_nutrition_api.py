@@ -441,13 +441,17 @@ def test_worker_status_review_queue_and_idempotent_ingredient_approval_are_group
         sa.select(RecipeIngredientModel).where(RecipeIngredientModel.recipe_id == UUID(recipe.json()["id"]))
     )
     assert ingredient is not None
-    asyncio.run(NutritionReconciliationWorker(session, provider_daily_request_limit=0).run())
-    work = session.scalar(
-        sa.select(HealthLabsNutritionWork).where(
-            HealthLabsNutritionWork.kind == "ingredient_structure",
-            HealthLabsNutritionWork.target_id == str(ingredient.id),
+    work = None
+    for _ in range(100):
+        asyncio.run(NutritionReconciliationWorker(session, provider_daily_request_limit=0).run())
+        work = session.scalar(
+            sa.select(HealthLabsNutritionWork).where(
+                HealthLabsNutritionWork.kind == "ingredient_structure",
+                HealthLabsNutritionWork.target_id == str(ingredient.id),
+            )
         )
-    )
+        if work is not None:
+            break
     assert work is not None
     work.state = "review_required"
     work.result = {

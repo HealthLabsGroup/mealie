@@ -1,8 +1,21 @@
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { useUnitSystem } from "../use-unit-system";
+
+const values = new Map<string, string>();
+const storage: Storage = {
+  get length() {
+    return values.size;
+  },
+  clear: () => values.clear(),
+  getItem: key => values.get(key) ?? null,
+  key: index => [...values.keys()][index] ?? null,
+  removeItem: key => values.delete(key),
+  setItem: (key, value) => values.set(key, value),
+};
 
 describe("useUnitSystem", () => {
   beforeEach(() => {
+    vi.stubGlobal("localStorage", storage);
     localStorage.clear();
   });
 

@@ -8,7 +8,7 @@ from typing import Annotated, Literal, NamedTuple
 from urllib.parse import urlparse
 
 from dateutil.tz import tzlocal
-from pydantic import PlainSerializer, field_validator
+from pydantic import Field, PlainSerializer, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from mealie.core.settings.themes import Theme
@@ -172,6 +172,9 @@ class AppSettings(AppLoggingSettings):
     SESSION_SECRET: str
     HEALTHLABS_PROVISIONING_SECRET: MaskedNoneString = None
     """Shared secret accepted only by the private HealthLabs provisioning API."""
+
+    HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT: Annotated[int, Field(ge=0)] = 0
+    """Maximum paid nutrition-provider requests per UTC day; zero disables them."""
 
     GIT_COMMIT_HASH: str = "unknown"
 

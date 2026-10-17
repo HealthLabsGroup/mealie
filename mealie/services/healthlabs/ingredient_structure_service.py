@@ -32,6 +32,10 @@ class _ExactDataMatcher:
             IngredientUnitModel.normalize,
         )
 
+    @property
+    def units_by_alias(self) -> dict[str, Any | None]:
+        return self.units
+
     @staticmethod
     def _unique_map(
         items: Iterable[Any], names: Callable[[Any], Iterable[str | None]], normalize: Callable[[str], str]

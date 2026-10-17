@@ -28,6 +28,17 @@ def test_non_default_settings(monkeypatch):
     assert app_settings.DOCS_URL is None
 
 
+def test_nutrition_provider_daily_request_limit_defaults_off_and_rejects_negative(monkeypatch):
+    monkeypatch.delenv("HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT", raising=False)
+    get_app_settings.cache_clear()
+    assert get_app_settings().HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT == 0
+
+    monkeypatch.setenv("HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT", "-1")
+    get_app_settings.cache_clear()
+    with pytest.raises(ValidationError):
+        get_app_settings()
+
+
 def test_allowed_iframe_hosts_defaults(monkeypatch):
     monkeypatch.delenv("ALLOWED_IFRAME_HOSTS", raising=False)
     get_app_settings.cache_clear()

@@ -5,6 +5,7 @@ from .purge_expired_share_tokens import purge_expired_tokens
 from .purge_group_exports import purge_group_data_exports
 from .purge_password_reset import purge_password_reset_tokens
 from .purge_registration import purge_group_registration
+from .reconcile_healthlabs_nutrition import reconcile_healthlabs_nutrition
 from .reset_locked_users import locked_user_reset
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "purge_password_reset_tokens",
     "purge_group_data_exports",
     "purge_group_registration",
+    "reconcile_healthlabs_nutrition",
     "locked_user_reset",
 ]
 

@@ -149,7 +149,9 @@ def test_reimport_preserves_reviewed_food_match(unique_user_fn_scoped: TestUser)
     session.commit()
 
 
-def test_reimport_preserves_editor_portion(unique_user_fn_scoped: TestUser) -> None:
+def test_reimport_preserves_editor_portions_and_skips_overlapping_source(
+    unique_user_fn_scoped: TestUser,
+) -> None:
     session = unique_user_fn_scoped.repos.session
     service = NutritionImportService(session)
     manifest = _manifest()
@@ -157,6 +159,11 @@ def test_reimport_preserves_editor_portion(unique_user_fn_scoped: TestUser) -> N
     nutrient_food = session.scalars(
         select(HealthLabsNutrientFood).where(HealthLabsNutrientFood.source_release_id == result.source_release_id)
     ).one()
+    overlapping_portion = session.scalars(
+        select(HealthLabsFoodPortion).where(HealthLabsFoodPortion.nutrient_food_id == nutrient_food.id)
+    ).one()
+    overlapping_portion.source_managed = False
+    overlapping_portion.grams = 205
     editor_portion = HealthLabsFoodPortion(
         nutrient_food_id=nutrient_food.id,
         description="measured scoop",
@@ -167,9 +174,16 @@ def test_reimport_preserves_editor_portion(unique_user_fn_scoped: TestUser) -> N
     )
     session.add(editor_portion)
     session.commit()
+    overlapping_portion_id = overlapping_portion.id
     editor_portion_id = editor_portion.id
 
-    service.import_release(manifest, [_row()])
+    updated_row = _row()
+    updated_row.portions.append(
+        updated_row.portions[0].model_copy(
+            update={"description": "tablespoon", "amount": 1, "unit": "tbsp", "grams": 12}
+        )
+    )
+    reimported = service.import_release(manifest, [updated_row])
     portions = list(
         session.scalars(
             select(HealthLabsFoodPortion)
@@ -178,10 +192,12 @@ def test_reimport_preserves_editor_portion(unique_user_fn_scoped: TestUser) -> N
         )
     )
 
-    assert [(portion.description, portion.source_managed) for portion in portions] == [
-        ("cup", True),
-        ("measured scoop", False),
+    assert [(portion.description, portion.grams, portion.source_managed) for portion in portions] == [
+        ("cup", 205, False),
+        ("measured scoop", 42, False),
+        ("tablespoon", 12, True),
     ]
+    assert reimported.portions_imported == 1
+    assert portions[0].id == overlapping_portion_id
     assert portions[1].id == editor_portion_id
-    assert portions[1].grams == 42
     session.commit()

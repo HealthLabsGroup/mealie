@@ -55,3 +55,36 @@ test("clears cached capabilities on logout", async () => {
 
   expect(access.canWriteNutrition.value).toBe(false);
 });
+
+test("discards an older capability response for the same user", async () => {
+  let resolveFirst!: (value: unknown) => void;
+  let resolveSecond!: (value: unknown) => void;
+  getCapabilities
+    .mockReturnValueOnce(new Promise(resolve => resolveFirst = resolve))
+    .mockReturnValueOnce(new Promise(resolve => resolveSecond = resolve));
+  const { useHealthLabsCapabilities } = await import("../use-healthlabs-capabilities");
+  const access = useHealthLabsCapabilities();
+
+  const firstLoad = access.load();
+  const secondLoad = access.load(true);
+  resolveSecond({ data: [], error: null });
+  await secondLoad;
+  resolveFirst({ data: ["nutrition:write"], error: null });
+  await firstLoad;
+
+  expect(access.canWriteNutrition.value).toBe(false);
+});
+
+test("discards a capability response started before logout", async () => {
+  let resolveLoad!: (value: unknown) => void;
+  getCapabilities.mockReturnValueOnce(new Promise(resolve => resolveLoad = resolve));
+  const { resetHealthLabsCapabilities, useHealthLabsCapabilities } = await import("../use-healthlabs-capabilities");
+  const access = useHealthLabsCapabilities();
+
+  const pendingLoad = access.load();
+  resetHealthLabsCapabilities();
+  resolveLoad({ data: ["nutrition:write"], error: null });
+  await pendingLoad;
+
+  expect(access.canWriteNutrition.value).toBe(false);
+});

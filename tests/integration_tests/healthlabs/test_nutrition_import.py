@@ -149,7 +149,7 @@ def test_reimport_preserves_reviewed_food_match(unique_user_fn_scoped: TestUser)
     session.commit()
 
 
-def test_reimport_preserves_editor_portions_and_skips_overlapping_source(
+def test_reimport_preserves_editor_portions_alongside_source_portions(
     unique_user_fn_scoped: TestUser,
 ) -> None:
     session = unique_user_fn_scoped.repos.session
@@ -163,9 +163,11 @@ def test_reimport_preserves_editor_portions_and_skips_overlapping_source(
         select(HealthLabsFoodPortion).where(HealthLabsFoodPortion.nutrient_food_id == nutrient_food.id)
     ).one()
     overlapping_portion.source_managed = False
+    overlapping_portion.group_id = unique_user_fn_scoped.group_id
     overlapping_portion.grams = 205
     editor_portion = HealthLabsFoodPortion(
         nutrient_food_id=nutrient_food.id,
+        group_id=unique_user_fn_scoped.group_id,
         description="measured scoop",
         amount=1,
         unit="scoop",
@@ -194,10 +196,11 @@ def test_reimport_preserves_editor_portions_and_skips_overlapping_source(
 
     assert [(portion.description, portion.grams, portion.source_managed) for portion in portions] == [
         ("cup", 205, False),
+        ("cup", 198, True),
         ("measured scoop", 42, False),
         ("tablespoon", 12, True),
     ]
-    assert reimported.portions_imported == 1
+    assert reimported.portions_imported == 2
     assert portions[0].id == overlapping_portion_id
-    assert portions[1].id == editor_portion_id
+    assert portions[2].id == editor_portion_id
     session.commit()

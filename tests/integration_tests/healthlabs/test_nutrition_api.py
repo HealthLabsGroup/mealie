@@ -145,6 +145,104 @@ def test_nutrition_mutations_reject_foods_from_another_workspace(
     assert portion.status_code == 404
 
 
+def test_editor_portions_are_visible_and_calculated_only_in_their_workspace(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_set_capabilities: Callable,
+    healthlabs_nutrition_source: Callable,
+) -> None:
+    first, first_headers = healthlabs_provision()
+    second, second_headers = healthlabs_provision()
+    healthlabs_set_capabilities(
+        first["userId"],
+        HealthLabsCapability.RECIPES_READ_OWN,
+        HealthLabsCapability.RECIPES_WRITE_OWN,
+        HealthLabsCapability.NUTRITION_WRITE,
+    )
+    healthlabs_set_capabilities(
+        second["userId"],
+        HealthLabsCapability.RECIPES_READ_OWN,
+        HealthLabsCapability.RECIPES_WRITE_OWN,
+        HealthLabsCapability.NUTRITION_WRITE,
+    )
+    token = uuid4().hex
+    unit_name = f"scoop-{token}"
+
+    def create_recipe(headers: dict[str, str], food_name: str) -> tuple[str, str]:
+        response = api_client.post(
+            "/api/healthlabs/v1/recipes",
+            headers={**headers, "Idempotency-Key": f"recipe-{uuid4()}"},
+            json={
+                "name": f"Recipe for {food_name}",
+                "servings": 1,
+                "ingredients": [
+                    {
+                        "quantity": 2,
+                        "food": {"name": food_name},
+                        "unit": {"name": unit_name, "abbreviation": unit_name},
+                    }
+                ],
+            },
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        return body["id"], body["ingredients"][0]["food"]["id"]
+
+    first_recipe_id, first_food_id = create_recipe(first_headers, f"First food {token}")
+    second_recipe_id, second_food_id = create_recipe(second_headers, f"Second food {token}")
+    _, nutrient_food_id = healthlabs_nutrition_source(name=f"Shared source {token}")
+
+    for headers, food_id in ((first_headers, first_food_id), (second_headers, second_food_id)):
+        response = api_client.put(
+            f"/api/healthlabs/v1/nutrition/foods/{food_id}/match",
+            json={"nutrientFoodId": nutrient_food_id, "country": "GB"},
+            headers={
+                **headers,
+                "Idempotency-Key": f"match-{uuid4()}",
+                "X-HealthLabs-Access-Reason": "Match shared source",
+            },
+        )
+        assert response.status_code == 200, response.text
+
+    first_portion = api_client.post(
+        f"/api/healthlabs/v1/nutrition/foods/{first_food_id}/portions",
+        json={"description": "scoop", "amount": 1, "unit": unit_name, "grams": 40},
+        headers={
+            **first_headers,
+            "Idempotency-Key": f"portion-{uuid4()}",
+            "X-HealthLabs-Access-Reason": "Measure first workspace portion",
+        },
+    )
+    assert first_portion.status_code == 201, first_portion.text
+
+    first_detail = api_client.get(f"/api/healthlabs/v1/nutrition/foods/{first_food_id}", headers=first_headers).json()
+    second_detail = api_client.get(
+        f"/api/healthlabs/v1/nutrition/foods/{second_food_id}", headers=second_headers
+    ).json()
+    assert [portion["grams"] for portion in first_detail["nutrition"]["portions"]] == [40]
+    assert second_detail["nutrition"]["portions"] == []
+
+    second_before = api_client.get(f"/api/healthlabs/v1/recipes/{second_recipe_id}", headers=second_headers)
+    assert second_before.status_code == 200, second_before.text
+    assert second_before.json()["ingredients"][0]["nutrition"]["resolvedGrams"] is None
+
+    second_portion = api_client.post(
+        f"/api/healthlabs/v1/nutrition/foods/{second_food_id}/portions",
+        json={"description": "scoop", "amount": 1, "unit": unit_name, "grams": 30},
+        headers={
+            **second_headers,
+            "Idempotency-Key": f"portion-{uuid4()}",
+            "X-HealthLabs-Access-Reason": "Measure second workspace portion",
+        },
+    )
+    assert second_portion.status_code == 201, second_portion.text
+
+    first_recipe = api_client.get(f"/api/healthlabs/v1/recipes/{first_recipe_id}", headers=first_headers).json()
+    second_recipe = api_client.get(f"/api/healthlabs/v1/recipes/{second_recipe_id}", headers=second_headers).json()
+    assert first_recipe["ingredients"][0]["nutrition"]["resolvedGrams"] == 80
+    assert second_recipe["ingredients"][0]["nutrition"]["resolvedGrams"] == 60
+
+
 def test_source_food_search_is_tokenized_country_scoped_and_stable(
     api_client: TestClient,
     healthlabs_provision: Callable,
@@ -220,7 +318,7 @@ def test_source_food_search_normalizes_accents_and_hides_editor_portions(
     healthlabs_nutrition_source: Callable,
     unfiltered_database: AllRepositories,
 ) -> None:
-    _, headers = healthlabs_provision()
+    owner, headers = healthlabs_provision()
     token = uuid4().hex[:10]
     _, food_id = healthlabs_nutrition_source(
         name=f"Crème fraîche {token}",
@@ -239,6 +337,7 @@ def test_source_food_search_normalizes_accents_and_hides_editor_portions(
             ),
             HealthLabsFoodPortion(
                 nutrient_food_id=UUID(food_id),
+                group_id=UUID(owner["groupId"]),
                 description="editor scoop",
                 amount=1,
                 unit="scoop",

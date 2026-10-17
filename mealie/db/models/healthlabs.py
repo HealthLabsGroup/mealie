@@ -216,15 +216,33 @@ class HealthLabsFoodMatch(SqlAlchemyBase, BaseMixins):
 class HealthLabsFoodPortion(SqlAlchemyBase, BaseMixins):
     __tablename__ = "healthlabs_food_portions"
     __table_args__ = (
-        sa.UniqueConstraint(
+        sa.Index(
+            "healthlabs_food_portion_source_key",
             "nutrient_food_id",
             "description",
             "amount",
             "unit",
-            name="healthlabs_food_portion_identity_key",
+            unique=True,
+            sqlite_where=sa.text("source_managed = 1"),
+            postgresql_where=sa.text("source_managed IS TRUE"),
+        ),
+        sa.Index(
+            "healthlabs_food_portion_group_key",
+            "group_id",
+            "nutrient_food_id",
+            "description",
+            "amount",
+            "unit",
+            unique=True,
+            sqlite_where=sa.text("source_managed = 0"),
+            postgresql_where=sa.text("source_managed IS FALSE"),
         ),
         sa.CheckConstraint("amount > 0", name="healthlabs_food_portion_amount_positive"),
         sa.CheckConstraint("grams > 0", name="healthlabs_food_portion_grams_positive"),
+        sa.CheckConstraint(
+            "(source_managed AND group_id IS NULL) OR (NOT source_managed AND group_id IS NOT NULL)",
+            name="healthlabs_food_portion_owner_valid",
+        ),
     )
 
     id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
@@ -232,6 +250,12 @@ class HealthLabsFoodPortion(SqlAlchemyBase, BaseMixins):
         GUID,
         ForeignKey("healthlabs_nutrient_foods.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
+    )
+    group_id: Mapped[GUID | None] = mapped_column(
+        GUID,
+        ForeignKey("groups.id", ondelete="CASCADE"),
+        nullable=True,
         index=True,
     )
     description: Mapped[str] = mapped_column(String(255), nullable=False)

@@ -38,6 +38,7 @@ from mealie.schema.recipe.request_helpers import RecipeDuplicate
 from mealie.schema.user.user import PrivateUser, UserRatingCreate
 from mealie.services._base_service import BaseService
 from mealie.services.healthlabs.access_policy import RecipeAccessDenied, RecipeAccessPolicy
+from mealie.services.healthlabs.ingredient_structure_service import IngredientStructureService
 from mealie.services.healthlabs.revision_service import RecipeRevisionService
 from mealie.services.household_services.household_service import HouseholdService
 from mealie.services.parser_services._base import DataMatcher
@@ -60,6 +61,7 @@ class RecipeServiceBase(BaseService):
             raise Exception("household ids do not match")
 
         self._data_matcher: DataMatcher | None = None
+        self._ingredient_structure_service: IngredientStructureService | None = None
         self.group_recipes = get_repositories(repos.session, group_id=repos.group_id, household_id=None).recipes
         """Recipes repo without a Household filter"""
 
@@ -70,6 +72,16 @@ class RecipeServiceBase(BaseService):
 
 
 class RecipeService(RecipeServiceBase):
+    def _structure_plain_ingredients(self, recipe: Recipe) -> None:
+        for ingredient in recipe.recipe_ingredient:
+            if not IngredientStructureService.is_candidate(ingredient):
+                continue
+            if self._ingredient_structure_service is None:
+                self._ingredient_structure_service = IngredientStructureService(
+                    self.repos.session, self.user.group_id, self.translator
+                )
+            self._ingredient_structure_service.structure(ingredient)
+
     @property
     def revision_service(self) -> RecipeRevisionService:
         return RecipeRevisionService(self.repos.session)
@@ -274,6 +286,9 @@ class RecipeService(RecipeServiceBase):
         self._require_create_scope(create_data.healthlabs_scope)
         if create_data.name is None:
             create_data.name = "New Recipe"
+
+        if isinstance(create_data, Recipe):
+            self._structure_plain_ingredients(create_data)
 
         create_payload = create_data.model_dump()
         create_payload.update(
@@ -821,6 +836,7 @@ class RecipeService(RecipeServiceBase):
         if not update_data.name:
             raise exceptions.MissingRequiredData("Recipe name is required")
 
+        self._structure_plain_ingredients(update_data)
         update_data = self._preserve_omitted_image(recipe, update_data)
         update_data = self._remove_non_existent_ingredient_references(update_data)
         update_data = self._remove_non_existent_note_references(update_data)
@@ -859,6 +875,7 @@ class RecipeService(RecipeServiceBase):
     def patch_one(self, slug_or_id: str | UUID, patch_data: Recipe) -> Recipe:
         recipe: Recipe = self._pre_update_check(slug_or_id, patch_data)
 
+        self._structure_plain_ingredients(patch_data)
         new_data = self.group_recipes.patch(recipe.slug, patch_data.model_dump(exclude_unset=True))
 
         self.check_assets(new_data, recipe.slug)

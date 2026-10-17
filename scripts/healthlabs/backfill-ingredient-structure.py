@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import sys
-from collections.abc import Iterable
-from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
@@ -15,77 +12,8 @@ from sqlalchemy.orm import Session
 import mealie.db.models._all_models  # noqa: F401
 from mealie.db.models.recipe import RecipeIngredientModel, RecipeModel
 from mealie.lang.providers import get_locale_provider
-from mealie.schema.recipe import CreateIngredientFood, CreateIngredientUnit, IngredientFood, IngredientUnit
-from mealie.schema.response.pagination import PaginationQuery
-from mealie.services.parser_services.ingredient_parser import BruteForceParser
-
-
-class _ExactDataMatcher:
-    def __init__(self, parser: BruteForceParser) -> None:
-        query = PaginationQuery(page=1, per_page=-1)
-        self.foods = self._unique_map(
-            parser.repos.ingredient_foods.page_all(query).items,
-            lambda item: (item.name, item.plural_name, *(alias.name for alias in item.aliases or [])),
-            parser.repos.ingredient_foods.model.normalize,
-        )
-        self.units = self._unique_map(
-            parser.repos.ingredient_units.page_all(query).items,
-            lambda item: (
-                item.name,
-                item.plural_name,
-                item.abbreviation,
-                item.plural_abbreviation,
-                *(alias.name for alias in item.aliases or []),
-            ),
-            parser.repos.ingredient_units.model.normalize,
-        )
-
-    @staticmethod
-    def _unique_map(items: Iterable[Any], names: Any, normalize: Any) -> dict[str, Any | None]:
-        result: dict[str, Any | None] = {}
-        for item in items:
-            for name in names(item):
-                if not name:
-                    continue
-                key = normalize(name)
-                current = result.get(key)
-                if key not in result:
-                    result[key] = item
-                elif current is not None and current.id != item.id:
-                    result[key] = None
-        return result
-
-    def find_food_match(self, food: IngredientFood | CreateIngredientFood | str) -> IngredientFood | None:
-        name = food if isinstance(food, str) else food.name
-        return self.foods.get(type(self)._normalize_food(name))
-
-    def find_unit_match(self, unit: IngredientUnit | CreateIngredientUnit | str) -> IngredientUnit | None:
-        name = unit if isinstance(unit, str) else unit.name
-        return self.units.get(type(self)._normalize_unit(name))
-
-    @staticmethod
-    def _normalize_food(value: str) -> str:
-        from mealie.db.models.recipe import IngredientFoodModel
-
-        return IngredientFoodModel.normalize(value)
-
-    @staticmethod
-    def _normalize_unit(value: str) -> str:
-        from mealie.db.models.recipe import IngredientUnitModel
-
-        return IngredientUnitModel.normalize(value)
-
-
-async def _parse_batch(
-    rows: list[tuple[RecipeIngredientModel, BruteForceParser]],
-) -> list[tuple[RecipeIngredientModel, Any | None]]:
-    parsed = []
-    for row, parser in rows:
-        try:
-            parsed.append((row, await parser.parse_one(row.original_text or "")))
-        except IndexError, TypeError, ValueError:
-            parsed.append((row, None))
-    return parsed
+from mealie.schema.recipe import IngredientFood, IngredientUnit, RecipeIngredient
+from mealie.services.healthlabs.ingredient_structure_service import IngredientStructureService
 
 
 def backfill_ingredient_structure(
@@ -102,12 +30,8 @@ def backfill_ingredient_structure(
         "examined": 0,
         "candidates": 0,
         "updated": 0,
-        "no_positive_quantity": 0,
-        "no_exact_unit": 0,
-        "no_exact_food": 0,
-        "parse_errors": 0,
     }
-    parsers: dict[object, BruteForceParser] = {}
+    services: dict[object, IngredientStructureService] = {}
     last_id = 0
     while batch := session.execute(
         sa.select(RecipeIngredientModel, RecipeModel.group_id)
@@ -118,42 +42,44 @@ def backfill_ingredient_structure(
             RecipeIngredientModel.unit_id.is_(None),
             RecipeIngredientModel.referenced_recipe_id.is_(None),
             RecipeIngredientModel.title.is_(None),
-            RecipeIngredientModel.original_text.is_not(None),
-            sa.func.trim(RecipeIngredientModel.original_text) != "",
+            ~RecipeIngredientModel.substitutions.any(),
+            sa.or_(
+                sa.and_(
+                    RecipeIngredientModel.original_text.is_not(None),
+                    sa.func.trim(RecipeIngredientModel.original_text) != "",
+                ),
+                sa.and_(
+                    RecipeIngredientModel.note.is_not(None),
+                    sa.func.trim(RecipeIngredientModel.note) != "",
+                ),
+            ),
         )
         .order_by(RecipeIngredientModel.id)
         .limit(batch_size)
     ).all():
-        pending = []
         for row, group_id in batch:
-            parser = parsers.get(group_id)
-            if parser is None:
-                parser = BruteForceParser(group_id, session, get_locale_provider())
-                parser.data_matcher = _ExactDataMatcher(parser)  # type: ignore[assignment]
-                parsers[group_id] = parser
-            pending.append((row, parser))
-
-        for row, parsed in asyncio.run(_parse_batch(pending)):
             counts["examined"] += 1
-            if parsed is None:
-                counts["parse_errors"] += 1
-                continue
-            ingredient = parsed.ingredient
-            if ingredient.quantity is None or ingredient.quantity <= 0:
-                counts["no_positive_quantity"] += 1
-                continue
-            if not isinstance(ingredient.unit, IngredientUnit):
-                counts["no_exact_unit"] += 1
-                continue
-            if not isinstance(ingredient.food, IngredientFood):
-                counts["no_exact_food"] += 1
+            service = services.get(group_id)
+            if service is None:
+                service = IngredientStructureService(session, group_id, get_locale_provider())
+                services[group_id] = service
+            ingredient = RecipeIngredient(
+                quantity=0,
+                note=row.note,
+                original_text=row.original_text,
+            )
+            if not service.structure(ingredient):
                 continue
 
             counts["candidates"] += 1
             if apply:
                 row.quantity = ingredient.quantity
+                assert isinstance(ingredient.unit, IngredientUnit)
+                assert isinstance(ingredient.food, IngredientFood)
                 row.unit_id = ingredient.unit.id
                 row.food_id = ingredient.food.id
+                row.note = ingredient.note
+                row.original_text = ingredient.original_text
                 counts["updated"] += 1
 
         last_id = batch[-1][0].id

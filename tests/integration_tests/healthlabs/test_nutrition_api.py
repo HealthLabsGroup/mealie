@@ -165,6 +165,52 @@ def test_source_food_search_is_tokenized_country_scoped_and_stable(
     assert too_large.status_code == 422
 
 
+def test_source_food_search_normalizes_accents_and_hides_editor_portions(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_nutrition_source: Callable,
+    unfiltered_database: AllRepositories,
+) -> None:
+    _, headers = healthlabs_provision()
+    token = uuid4().hex[:10]
+    _, food_id = healthlabs_nutrition_source(
+        name=f"Crème fraîche {token}",
+        country="FR",
+        provider=f"ciqual-{token}",
+    )
+    unfiltered_database.session.add_all(
+        [
+            HealthLabsFoodPortion(
+                nutrient_food_id=UUID(food_id),
+                description="source cup",
+                amount=1,
+                unit="cup",
+                grams=240,
+                source_managed=True,
+            ),
+            HealthLabsFoodPortion(
+                nutrient_food_id=UUID(food_id),
+                description="editor scoop",
+                amount=1,
+                unit="scoop",
+                grams=42,
+                source_managed=False,
+            ),
+        ]
+    )
+    unfiltered_database.session.commit()
+
+    response = api_client.get(
+        "/api/healthlabs/v1/nutrition/source-foods",
+        params={"q": f"fraiche creme {token}", "country": "FR"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert [item["id"] for item in response.json()] == [food_id]
+    assert [portion["description"] for portion in response.json()[0]["portions"]] == ["source cup"]
+
+
 def test_nutrition_mutations_require_headers_and_reject_stale_source(
     api_client: TestClient,
     healthlabs_provision: Callable,

@@ -47,7 +47,7 @@
 
 - [x] **Step 1: Write failing API tests.** Add `test_source_food_search_is_tokenized_country_scoped_and_stable` with GB, OTHER, and FR rows; assert `olive oil` returns GB then OTHER, excludes FR, includes nutrients/portions/provenance, honors limit, and returns `[]` for punctuation-only input. Extend the capability test to prove an ordinary authenticated user can search while match writes remain denied.
 - [x] **Step 2: Run the focused tests.** Run `task py:test -- tests/integration_tests/healthlabs/test_nutrition_api.py tests/integration_tests/healthlabs/test_nutrition_capability_matrix.py -q`; expect the source-food route assertions to fail with HTTP 404.
-- [x] **Step 3: Implement the minimal schema, service query, and route.** Normalize query tokens, AND them against lower-cased source names, filter country to requested plus `OTHER`, rank requested-country rows first, then shortest name, case-insensitive name, and ID, and cap `limit` at 50.
+- [x] **Step 3: Implement the minimal schema, service query, and route.** Normalize query tokens and source names, filter country to requested plus `OTHER`, rank requested-country rows first, then shortest name, case-insensitive name, and ID, and cap `limit` at 50.
 - [x] **Step 4: Generate exports.** Run `task dev:generate`; retain only generated schema/type/route changes caused by the new response and route.
 - [x] **Step 5: Document the endpoint.** Add the exact route, permission boundary, country scope, and no-auto-approval rule to `docs/healthlabs/nutrition-service-v1.md`.
 - [x] **Step 6: Verify.** Run the focused API/capability tests, `tests/unit_tests/healthlabs/test_nutrition_calculation.py`, Ruff formatting/linting for touched Python files, and generated-file checks; expect PASS.
@@ -56,4 +56,4 @@
 ## Final verification
 
 - [x] Run the complete backend test suite.
-- [ ] Review the branch for authorization regression, country leakage, unbounded query behavior, and fabricated facts.
+- [x] Review the branch for authorization regression, country leakage, unbounded query behavior, and fabricated facts.

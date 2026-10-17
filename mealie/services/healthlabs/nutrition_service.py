@@ -240,23 +240,29 @@ class NutritionService:
         country = country.upper()
         countries = [country] if country == "OTHER" else [country, "OTHER"]
         source_country = sa.func.upper(HealthLabsNutrientSourceRelease.country)
-        source_name = sa.func.lower(HealthLabsNutrientFood.name)
         statement = (
             sa.select(HealthLabsNutrientFood, HealthLabsNutrientSourceRelease)
             .join(
                 HealthLabsNutrientSourceRelease,
                 HealthLabsNutrientSourceRelease.id == HealthLabsNutrientFood.source_release_id,
             )
-            .where(source_country.in_(countries), *(source_name.contains(term) for term in terms))
-            .order_by(
-                sa.case((source_country == country, 0), else_=1),
-                sa.func.length(HealthLabsNutrientFood.name),
-                source_name,
-                HealthLabsNutrientFood.id,
-            )
-            .limit(limit)
+            .where(source_country.in_(countries))
         )
-        return [self._source_food_out(food, source) for food, source in self.session.execute(statement)]
+        # shortcut: scan the low-tens-of-thousands country catalogue, persist normalized names when it outgrows that.
+        matches = [
+            (food, source)
+            for food, source in self.session.execute(statement)
+            if all(term in IngredientFoodModel.normalize(food.name) for term in terms)
+        ]
+        matches.sort(
+            key=lambda item: (
+                0 if item[1].country.upper() == country else 1,
+                len(item[0].name),
+                item[0].name.casefold(),
+                str(item[0].id),
+            )
+        )
+        return [self._source_food_out(food, source, source_only_portions=True) for food, source in matches[:limit]]
 
     def match_food(self, food_id: UUID, country: str) -> HealthLabsFoodMatchOut | None:
         existing = self.session.scalar(
@@ -580,11 +586,16 @@ class NutritionService:
         self,
         nutrient_food: HealthLabsNutrientFood,
         source: HealthLabsNutrientSourceRelease,
+        *,
+        source_only_portions: bool = False,
     ) -> HealthLabsNutrientFoodOut:
+        portions_statement = sa.select(HealthLabsFoodPortion).where(
+            HealthLabsFoodPortion.nutrient_food_id == nutrient_food.id
+        )
+        if source_only_portions:
+            portions_statement = portions_statement.where(HealthLabsFoodPortion.source_managed.is_(True))
         portions = self.session.scalars(
-            sa.select(HealthLabsFoodPortion)
-            .where(HealthLabsFoodPortion.nutrient_food_id == nutrient_food.id)
-            .order_by(HealthLabsFoodPortion.description, HealthLabsFoodPortion.id)
+            portions_statement.order_by(HealthLabsFoodPortion.description, HealthLabsFoodPortion.id)
         ).all()
         return HealthLabsNutrientFoodOut(
             id=nutrient_food.id,

@@ -96,7 +96,7 @@ def _source_food(user: TestUser, name: str) -> tuple[HealthLabsNutrientSourceRel
 
 
 def _run(
-    session: Session,
+    user: TestUser,
     *,
     batch_size: int = 20,
     provider_daily_request_limit: int = 0,
@@ -104,7 +104,8 @@ def _run(
 ):
     return asyncio.run(
         NutritionReconciliationWorker(
-            session,
+            user.repos.session,
+            group_id=user.group_id,
             batch_size=batch_size,
             provider_daily_request_limit=provider_daily_request_limit,
             now=now,
@@ -157,7 +158,7 @@ def test_worker_discovers_bounded_batches_and_structures_exact_ingredients(
 
     reports = []
     for _ in range(100):
-        reports.append(_run(user.repos.session, batch_size=2))
+        reports.append(_run(user, batch_size=2))
         user.repos.session.expire_all()
         if all(user.repos.session.get(RecipeIngredientModel, row.id).food_id == food.id for row in ingredients):
             break
@@ -174,7 +175,7 @@ def test_discovery_scans_at_most_one_batch_of_unchanged_ingredients(
 ) -> None:
     user = unique_user_fn_scoped
     _recipe_ingredients(user, [f"unchanged-{uuid4()}" for _ in range(5)])
-    worker = NutritionReconciliationWorker(user.repos.session, batch_size=2, now=NOW)
+    worker = NutritionReconciliationWorker(user.repos.session, group_id=user.group_id, batch_size=2, now=NOW)
     scanned: list[int] = []
 
     monkeypatch.setattr(worker, "ingredient_fingerprint", lambda ingredient, _group_id: str(ingredient.id))
@@ -207,7 +208,9 @@ def test_stale_cleanup_is_bounded_to_one_batch(unique_user_fn_scoped: TestUser) 
     user.repos.session.commit()
     stale_ids = [row.id for row in stale]
 
-    NutritionReconciliationWorker(user.repos.session, batch_size=2, now=NOW)._delete_stale_work()
+    NutritionReconciliationWorker(
+        user.repos.session, group_id=user.group_id, batch_size=2, now=NOW
+    )._delete_stale_work()
     user.repos.session.commit()
 
     remaining = user.repos.session.scalar(
@@ -245,7 +248,9 @@ def test_cleanup_removes_work_when_existing_targets_are_no_longer_eligible(
     user.repos.session.commit()
     work_ids = [row.id for row in work]
 
-    NutritionReconciliationWorker(user.repos.session, batch_size=20, now=NOW)._delete_stale_work()
+    NutritionReconciliationWorker(
+        user.repos.session, group_id=user.group_id, batch_size=20, now=NOW
+    )._delete_stale_work()
     user.repos.session.commit()
 
     assert (
@@ -274,7 +279,9 @@ def test_existing_changed_ingredient_is_scanned_before_new_backlog(unique_user_f
     user.repos.session.commit()
     _recipe_ingredients(user, [f"new-{uuid4()}" for _ in range(5)])
 
-    NutritionReconciliationWorker(user.repos.session, batch_size=3, now=NOW)._discover_ingredients(1)
+    NutritionReconciliationWorker(
+        user.repos.session, group_id=user.group_id, batch_size=3, now=NOW
+    )._discover_ingredients(1)
     user.repos.session.commit()
 
     assert work.input_sha256 != "0" * 64
@@ -298,7 +305,7 @@ def test_quantity_only_ingredient_work_is_ineligible_and_removed(unique_user_fn_
     user.repos.session.commit()
     work_id = work.id
 
-    worker = NutritionReconciliationWorker(user.repos.session, batch_size=20, now=NOW)
+    worker = NutritionReconciliationWorker(user.repos.session, group_id=user.group_id, batch_size=20, now=NOW)
     assert not worker._ingredient_needs_structure(ingredient)
     worker._discover_ingredients(20)
     worker._delete_stale_work()
@@ -323,7 +330,9 @@ def test_discovery_preserves_an_active_changed_claim(unique_user_fn_scoped: Test
     user.repos.session.add(work)
     user.repos.session.commit()
 
-    NutritionReconciliationWorker(user.repos.session, batch_size=20, now=NOW)._discover_ingredients(20)
+    NutritionReconciliationWorker(
+        user.repos.session, group_id=user.group_id, batch_size=20, now=NOW
+    )._discover_ingredients(20)
     user.repos.session.commit()
     user.repos.session.refresh(work)
 
@@ -349,7 +358,9 @@ def test_stale_cleanup_preserves_an_active_claim(unique_user_fn_scoped: TestUser
     ingredient.quantity = 2
     user.repos.session.commit()
 
-    NutritionReconciliationWorker(user.repos.session, batch_size=20, now=NOW)._delete_stale_work()
+    NutritionReconciliationWorker(
+        user.repos.session, group_id=user.group_id, batch_size=20, now=NOW
+    )._delete_stale_work()
     user.repos.session.commit()
 
     assert user.repos.session.get(HealthLabsNutritionWork, work.id) is not None
@@ -382,7 +393,7 @@ def test_worker_requeues_changed_input_and_removes_deleted_targets(unique_user_f
     reports = []
     work = None
     for _ in range(100):
-        reports.append(_run(user.repos.session))
+        reports.append(_run(user))
         work = user.repos.session.scalar(
             sa.select(HealthLabsNutritionWork).where(
                 HealthLabsNutritionWork.kind == "ingredient_structure",
@@ -395,13 +406,13 @@ def test_worker_requeues_changed_input_and_removes_deleted_targets(unique_user_f
     first_fingerprint = work.input_sha256
     assert work.state == "review_required"
 
-    second = _run(user.repos.session)
+    second = _run(user)
     assert second.processed == 0
 
     ingredient.original_text = f"2 {unit.name} {food.name}"
     user.repos.session.commit()
     for _ in range(100):
-        _run(user.repos.session)
+        _run(user)
         user.repos.session.refresh(work)
         if work.state == "completed":
             break
@@ -411,7 +422,7 @@ def test_worker_requeues_changed_input_and_removes_deleted_targets(unique_user_f
     work_id = work.id
     user.repos.session.delete(ingredient)
     user.repos.session.commit()
-    _run(user.repos.session)
+    _run(user)
     assert user.repos.session.get(HealthLabsNutritionWork, work_id) is None
     assert any(report.processed >= 1 for report in reports)
 
@@ -427,8 +438,9 @@ def test_worker_does_not_resolve_ingredient_from_another_group(
     unit = other.repos.ingredient_units.create(SaveIngredientUnit(group_id=other.group_id, name=f"jar-{token}"))
     food = other.repos.ingredient_foods.create(SaveIngredientFood(group_id=other.group_id, name=f"beans-{token}"))
     ingredient = _recipe_ingredients(owner, [f"1 {unit.name} {food.name}"])[0]
+    other_ingredient = _recipe_ingredients(other, [f"1 {unit.name} {food.name}"])[0]
 
-    _run(session)
+    _run(owner)
     session.expire_all()
     work = session.scalar(
         sa.select(HealthLabsNutritionWork).where(
@@ -441,6 +453,15 @@ def test_worker_does_not_resolve_ingredient_from_another_group(
     assert str(work.group_id) == owner.group_id
     assert work.state == "review_required"
     assert session.get(RecipeIngredientModel, ingredient.id).food_id is None
+    assert (
+        session.scalar(
+            sa.select(HealthLabsNutritionWork).where(
+                HealthLabsNutritionWork.kind == "ingredient_structure",
+                HealthLabsNutritionWork.target_id == str(other_ingredient.id),
+            )
+        )
+        is None
+    )
 
 
 def test_worker_creates_only_unreviewed_unique_source_matches(unique_user_fn_scoped: TestUser) -> None:
@@ -459,7 +480,7 @@ def test_worker_creates_only_unreviewed_unique_source_matches(unique_user_fn_sco
     unknown = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"unknown-{token}"))
     user.repos.session.commit()
 
-    _run(user.repos.session)
+    _run(user)
     matches = user.repos.session.scalars(
         sa.select(HealthLabsFoodMatch).where(
             HealthLabsFoodMatch.ingredient_food_id.in_([exact.id, alias.id, unknown.id])
@@ -479,7 +500,7 @@ def test_worker_creates_only_unreviewed_unique_source_matches(unique_user_fn_sco
     assert all(row.reviewed_at is None and row.reviewed_by_user_id is None for row in matches)
     assert len(works) == 3
     assert all(row.state == "review_required" for row in works)
-    assert _run(user.repos.session).processed == 0
+    assert _run(user).processed == 0
     assert user.repos.session.scalar(sa.select(sa.func.count()).select_from(HealthLabsFoodMatch)) >= 2
 
 
@@ -508,7 +529,7 @@ def test_worker_tracks_only_unresolved_authoritative_portions(unique_user_fn_sco
         quantity=2,
     )[0]
 
-    _run(user.repos.session)
+    _run(user)
     work = user.repos.session.scalar(
         sa.select(HealthLabsNutritionWork).where(
             HealthLabsNutritionWork.kind == "portion_resolution",
@@ -529,7 +550,7 @@ def test_worker_tracks_only_unresolved_authoritative_portions(unique_user_fn_sco
         )
     )
     user.repos.session.commit()
-    _run(user.repos.session)
+    _run(user)
     user.repos.session.refresh(work)
 
     assert work.state == "completed"
@@ -568,7 +589,7 @@ def test_discovery_reserves_capacity_for_each_work_kind(unique_user_fn_scoped: T
 
     kinds: set[str] = set()
     for _ in range(100):
-        NutritionReconciliationWorker(user.repos.session, batch_size=3, now=NOW)._discover()
+        NutritionReconciliationWorker(user.repos.session, group_id=user.group_id, batch_size=3, now=NOW)._discover()
         user.repos.session.commit()
         kinds = set(
             user.repos.session.scalars(
@@ -602,7 +623,7 @@ def test_worker_commits_each_target_and_continues_after_one_failure(
 
     works = {}
     for _ in range(100):
-        _run(user.repos.session)
+        _run(user)
         works = {
             row.target_id: row
             for row in user.repos.session.scalars(
@@ -633,7 +654,7 @@ def test_worker_processes_due_rows_in_stable_order_and_reclaims_expired_leases(
         for index in range(2)
     ]
     user.repos.session.commit()
-    _run(user.repos.session)
+    _run(user)
     works = list(
         user.repos.session.scalars(
             sa.select(HealthLabsNutritionWork)
@@ -651,12 +672,12 @@ def test_worker_processes_due_rows_in_stable_order_and_reclaims_expired_leases(
         work.lease_expires_at = NOW + timedelta(minutes=1)
     user.repos.session.commit()
 
-    assert _run(user.repos.session, batch_size=1).processed == 0
+    assert _run(user, batch_size=1).processed == 0
 
     for work in works:
         work.lease_expires_at = NOW - timedelta(seconds=1)
     user.repos.session.commit()
-    _run(user.repos.session, batch_size=1)
+    _run(user, batch_size=1)
     user.repos.session.refresh(works[0])
     user.repos.session.refresh(works[1])
 
@@ -697,7 +718,7 @@ def test_provider_is_disabled_by_default_without_spending(
         raise AssertionError("provider must remain disabled")
 
     monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", unexpected_call)
-    _run(user.repos.session)
+    _run(user)
     work = user.repos.session.scalar(
         sa.select(HealthLabsNutritionWork).where(
             HealthLabsNutritionWork.kind == "ingredient_structure",
@@ -744,7 +765,7 @@ def test_provider_configuration_wakes_waiting_work_and_applies_only_exact_result
     monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.asyncio.timeout", timeout)
     waiting = None
     for _ in range(100):
-        _run(user.repos.session, provider_daily_request_limit=1, now=wake_now)
+        _run(user, provider_daily_request_limit=1, now=wake_now)
         waiting = user.repos.session.scalar(
             sa.select(HealthLabsNutritionWork).where(
                 HealthLabsNutritionWork.kind == "ingredient_structure",
@@ -759,7 +780,7 @@ def test_provider_configuration_wakes_waiting_work_and_applies_only_exact_result
 
     _configure_provider(user)
     for _ in range(100):
-        _run(user.repos.session, provider_daily_request_limit=1, now=wake_now)
+        _run(user, provider_daily_request_limit=1, now=wake_now)
         user.repos.session.refresh(ingredient)
         if ingredient.food_id == food.id:
             break
@@ -828,7 +849,7 @@ def test_provider_result_does_not_overwrite_a_concurrent_ingredient_edit(
     monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
     for _ in range(100):
         _run(
-            user.repos.session,
+            user,
             provider_daily_request_limit=1,
             now=datetime(2031, 10, 17, 12, tzinfo=UTC),
         )
@@ -1107,7 +1128,7 @@ def test_provider_allowance_defers_without_attempt_and_resets_next_utc_day(
     monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
     works = []
     for _ in range(100):
-        _run(user.repos.session, provider_daily_request_limit=1, now=budget_now)
+        _run(user, provider_daily_request_limit=1, now=budget_now)
         works = list(
             user.repos.session.scalars(
                 sa.select(HealthLabsNutritionWork).where(
@@ -1125,7 +1146,7 @@ def test_provider_allowance_defers_without_attempt_and_resets_next_utc_day(
     assert deferred.next_attempt_at == datetime(2026, 10, 21, tzinfo=UTC)
 
     _run(
-        user.repos.session,
+        user,
         provider_daily_request_limit=1,
         now=datetime(2026, 10, 21, tzinfo=UTC),
     )

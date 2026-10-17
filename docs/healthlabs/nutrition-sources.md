@@ -78,6 +78,15 @@ source text, reject fuzzy and ambiguous names, and never create foods, units,
 nutrient values, or gram conversions. Existing mass metadata and source-backed
 food portions remain the only conversion inputs.
 
+The running service now performs the same exact-only checks automatically every
+five minutes. It also discovers source-match and portion-conversion gaps and
+keeps their group-scoped progress across restarts. The scripts remain diagnostic
+and recovery tools; normal operation does not require an operator to run them.
+Provider parsing is limited to ingredient structure, defaults off through
+`HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT=0`, and can never provide
+nutrient values or grams. Source releases and nutrition-editor-reviewed portions
+remain authoritative for those values.
+
 New automatic matches always require review. Ambiguous and fuzzy candidates remain unknown. The report contains counts and source provenance only; it excludes user identifiers, recipe text, and nutrient values.
 
 ## Restored-data verification — 2026-10-17

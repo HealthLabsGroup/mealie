@@ -63,11 +63,11 @@
 - Consumes: existing `HealthLabsFoodNutritionPage`, `HealthLabsNutrientFoodOut`, `HealthLabsFoodMatchWrite`, and `HealthLabsFoodPortionCreate` types.
 - Produces: queue/search state plus `loadFoods`, `selectFood`, `searchSources`, `approveSource`, `clearMatch`, and `addPortion` actions.
 
-- [ ] **Step 1: Write failing composable tests.** Assert real endpoint-facing calls, null-preserving candidate data, audited/idempotent writes, in-place selected-food refresh, and error-state preservation.
-- [ ] **Step 2: Run the focused test.** Expect failure because the client and composable do not exist.
-- [ ] **Step 3: Implement the smallest client and composable.** Use the existing request abstraction; keep all queue derivation client-side for the current workspace response.
-- [ ] **Step 4: Rerun the focused test.** Expect PASS.
-- [ ] **Step 5: Commit.** Commit as `feat(healthlabs): add nutrition curator workflow`.
+- [x] **Step 1: Write failing composable tests.** Assert real endpoint-facing calls, null-preserving candidate data, audited/idempotent writes, in-place selected-food refresh, and error-state preservation.
+- [x] **Step 2: Run the focused test.** Expect failure because the client and composable do not exist.
+- [x] **Step 3: Implement the smallest client and composable.** Use the existing request abstraction; keep all queue derivation client-side for the current workspace response.
+- [x] **Step 4: Rerun the focused test.** Expect PASS.
+- [x] **Step 5: Commit.** Commit as `feat(healthlabs): add nutrition curator workflow`.
 
 ### Task 3: Build the native Mealie curator page
 

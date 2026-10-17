@@ -38,7 +38,7 @@ class BruteForceParser(ABCIngredientParser):
     Brute force ingredient parser.
     """
 
-    async def parse_one(self, ingredient_string: str) -> ParsedIngredient:
+    def parse_one_sync(self, ingredient_string: str) -> ParsedIngredient:
         bfi = brute.parse(ingredient_string, self)
 
         parsed_ingredient = ParsedIngredient(
@@ -74,6 +74,9 @@ class BruteForceParser(ABCIngredientParser):
         )
 
         return matched_ingredient
+
+    async def parse_one(self, ingredient_string: str) -> ParsedIngredient:
+        return self.parse_one_sync(ingredient_string)
 
     async def parse(self, ingredients: list[str]) -> list[ParsedIngredient]:
         return [await self.parse_one(ingredient) for ingredient in ingredients]

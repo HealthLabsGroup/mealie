@@ -15,7 +15,7 @@ from mealie.db.models.healthlabs import (
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
 )
-from mealie.db.models.recipe import RecipeIngredientModel
+from mealie.db.models.recipe import RecipeIngredientModel, RecipeIngredientSubstitutionModel
 from mealie.db.models.recipe.ingredient import IngredientFoodAliasModel, IngredientFoodModel
 from mealie.db.models.users import User
 from mealie.repos.all_repositories import get_repositories
@@ -230,6 +230,7 @@ def test_structure_backfill_requires_exact_complete_parse(
         f"1 {unit_name} Exact aple {token}",
         food_name,
         f"1 scooop{token} {food_name}",
+        f"3 {unit_name} {food_name}",
     ]
     created = api_client.post(
         "/api/healthlabs/v1/recipes",
@@ -242,6 +243,20 @@ def test_structure_backfill_requires_exact_complete_parse(
     )
     assert created.status_code == 201, created.text
     recipe_id = UUID(created.json()["id"])
+    legacy_rows = list(
+        session.scalars(
+            sa.select(RecipeIngredientModel)
+            .where(RecipeIngredientModel.recipe_id == recipe_id)
+            .order_by(RecipeIngredientModel.position)
+        )
+    )
+    legacy_rows[0].unit_id = None
+    legacy_rows[0].food_id = None
+    legacy_rows[-1].quantity = 0
+    legacy_rows[-1].unit_id = None
+    legacy_rows[-1].food_id = None
+    session.add(RecipeIngredientSubstitutionModel(ingredient_id=legacy_rows[-1].id, note="preserve"))
+    session.commit()
     backfill = _script("backfill-ingredient-structure.py")["backfill_ingredient_structure"]
 
     dry_run = backfill(session, apply=False, batch_size=2)
@@ -282,7 +297,7 @@ def test_structure_backfill_requires_exact_complete_parse(
     assert repeated["updated"] == 0
 
 
-def test_structure_backfill_enables_source_portion_calculation(
+def test_runtime_recipe_writes_structure_exact_ingredients_and_calculate_portions(
     api_client: TestClient,
     healthlabs_provision: Callable,
     unfiltered_database: AllRepositories,
@@ -295,8 +310,18 @@ def test_structure_backfill_enables_source_portion_calculation(
     token = uuid4().hex
     unit_name = f"measure{token}"
     food_name = f"Portioned oats {token}"
+    ambiguous_name = f"ambiguous-runtime-{token}"
     repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=unit_name))
     food = repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=food_name))
+    ambiguous_foods = [
+        repos.ingredient_foods.create(
+            SaveIngredientFood(group_id=user.group_id, name=f"Runtime ambiguous food {index} {token}")
+        )
+        for index in range(2)
+    ]
+    session.add_all(
+        [IngredientFoodAliasModel(session=session, food_id=row.id, name=ambiguous_name) for row in ambiguous_foods]
+    )
     _, source_foods = _source(session, [food_name])
     nutrient_food = source_foods[0]
     session.add_all(
@@ -326,17 +351,41 @@ def test_structure_backfill_enables_source_portion_calculation(
         json={
             "name": f"Portion structure {token}",
             "servings": 1,
-            "ingredients": [{"originalText": f"2 {unit_name} {food_name}"}],
+            "ingredients": [
+                {"originalText": f"2 {unit_name} {food_name}"},
+                {"originalText": f"1 {unit_name} Portioned oat {token}"},
+                {"originalText": f"1 {unit_name} {ambiguous_name}"},
+            ],
         },
     )
     assert created.status_code == 201, created.text
-    backfill = _script("backfill-ingredient-structure.py")["backfill_ingredient_structure"]
-
-    result = backfill(session, apply=True)
-    current = api_client.get(f"/api/healthlabs/v1/recipes/{created.json()['id']}", headers=headers)
-
-    assert result["updated"] == 1
-    assert current.status_code == 200, current.text
-    ingredient = current.json()["ingredients"][0]
+    body = created.json()
+    ingredient = body["ingredients"][0]
+    assert ingredient["food"] is not None
+    assert ingredient["unit"] is not None
     assert ingredient["nutrition"]["resolvedGrams"] == 100
-    assert current.json()["calculatedNutrition"]["totals"]["kcal"] == 10
+    assert ingredient["nutrition"]["nutrients"]["kcal"] == 10
+    assert body["calculatedNutrition"]["totals"]["kcal"] is None
+    assert body["ingredients"][1]["food"] is None
+    assert body["ingredients"][2]["food"] is None
+
+    source_text = f"3 {unit_name} {food_name}, toasted"
+    updated = api_client.put(
+        f"/api/healthlabs/v1/recipes/{body['id']}",
+        headers={**headers, "Idempotency-Key": f"runtime-update-{uuid4()}"},
+        json={
+            "name": body["name"],
+            "servings": 1,
+            "ingredients": [{"note": source_text}],
+        },
+    )
+
+    assert updated.status_code == 200, updated.text
+    updated_ingredient = updated.json()["ingredients"][0]
+    assert updated_ingredient["quantity"] == 3
+    assert updated_ingredient["food"]["id"] == str(food.id)
+    assert updated_ingredient["unit"] is not None
+    assert updated_ingredient["note"] == "toasted"
+    assert updated_ingredient["originalText"] == source_text
+    assert updated_ingredient["nutrition"]["resolvedGrams"] == 150
+    assert updated.json()["calculatedNutrition"]["totals"]["kcal"] == 15

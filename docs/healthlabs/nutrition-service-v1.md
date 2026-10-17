@@ -176,6 +176,7 @@ HealthLabs adds:
 ```text
 GET /api/healthlabs/v1/nutrition/foods?q=&country=&status=
 GET /api/healthlabs/v1/nutrition/foods/{food_id}
+GET /api/healthlabs/v1/nutrition/source-foods?q=&country=&limit=
 PUT /api/healthlabs/v1/nutrition/foods/{food_id}/match
 DELETE /api/healthlabs/v1/nutrition/foods/{food_id}/match
 POST /api/healthlabs/v1/nutrition/foods/{food_id}/portions
@@ -186,6 +187,12 @@ Write routes require `nutrition:write`, an idempotency key, and an access
 reason. Reads obey existing recipe visibility and tenant boundaries. Provider
 IDs, source IDs, and provenance may be returned; credentials and unrelated
 workspace data may not.
+
+Source-food search is available to authenticated users because it returns only
+public licensed catalogue facts. It matches every normalized query token,
+returns only the requested country plus country-neutral `OTHER` records, and
+never creates or approves a match. Editors pass a selected source-food ID to
+the existing audited match route.
 
 ## Ephra consumption and snapshots
 

@@ -225,6 +225,15 @@ export interface HealthLabsUnitOut {
   abbreviation?: string;
   pluralAbbreviation?: string;
 }
+export interface HealthLabsNutrientFoodOut {
+  id: string;
+  sourceFoodId: string;
+  name: string;
+  preparationState?: string | null;
+  nutrientsPer100g: HealthLabsNutritionValues;
+  portions?: HealthLabsFoodPortionOut[];
+  source: HealthLabsNutritionSourceReleaseOut;
+}
 export interface HealthLabsNutritionSourceReleaseOut {
   provider: string;
   version: string;

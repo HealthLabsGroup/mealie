@@ -181,12 +181,27 @@ PUT /api/healthlabs/v1/nutrition/foods/{food_id}/match
 DELETE /api/healthlabs/v1/nutrition/foods/{food_id}/match
 POST /api/healthlabs/v1/nutrition/foods/{food_id}/portions
 GET /api/healthlabs/v1/nutrition/sources
+GET /api/healthlabs/v1/capabilities
 ```
 
 Write routes require `nutrition:write`, an idempotency key, and an access
 reason. Reads obey existing recipe visibility and tenant boundaries. Provider
 IDs, source IDs, and provenance may be returned; credentials and unrelated
 workspace data may not.
+
+## Native curator UI
+
+Editors with an active `nutrition:write` grant can open `/nutrition` in Mealie.
+The navigation link and route use the authenticated capability endpoint; the
+existing backend checks remain authoritative for every write.
+
+The page reads the current workspace's foods and imported source records from
+the running database. It does not use fixtures or mock nutrition data. An
+editor can filter the queue, search a selected country's source records,
+approve or replace a match, clear a match, and add a positive measured portion.
+Nullable source values stay unavailable in the UI, while source-reported zero
+remains visible as zero. All mutations use idempotency keys and fixed,
+operation-specific audit reasons.
 
 Source-food search is available to authenticated users because it returns only
 public licensed catalogue facts. It matches every normalized query token,

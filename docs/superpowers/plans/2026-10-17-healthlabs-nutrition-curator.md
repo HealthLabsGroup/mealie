@@ -82,12 +82,12 @@
 - Consumes: `useNutritionCurator` and `useHealthLabsCapabilities`.
 - Produces: `/nutrition`, visible only to `nutrition:write` editors.
 
-- [ ] **Step 1: Write a failing page test.** Assert the three queue states, candidate provenance/core nutrients, unavailable-vs-zero rendering, approve action, and measured-portion form labels.
-- [ ] **Step 2: Run the page test.** Expect failure because the page is absent.
-- [ ] **Step 3: Implement the responsive two-column page and conditional navigation link.** Use existing Vuetify/theme primitives and exact active-voice copy from the spec.
-- [ ] **Step 4: Update English copy and service documentation.** Document the UI route, capability discovery, and real-data-only workflow. Other locales remain Crowdin-managed.
-- [ ] **Step 5: Run focused frontend tests and lint.** Expect PASS with no accessibility or type/lint errors.
-- [ ] **Step 6: Commit.** Commit as `feat(healthlabs): add nutrition curator page`.
+- [x] **Step 1: Write a failing page test.** Assert the three queue states, candidate provenance/core nutrients, unavailable-vs-zero rendering, approve action, and measured-portion form labels.
+- [x] **Step 2: Run the page test.** Expect failure because the page is absent.
+- [x] **Step 3: Implement the responsive two-column page and conditional navigation link.** Use existing Vuetify/theme primitives and exact active-voice copy from the spec.
+- [x] **Step 4: Update English copy and service documentation.** Document the UI route, capability discovery, and real-data-only workflow. Other locales remain Crowdin-managed.
+- [x] **Step 5: Run focused frontend tests and lint.** Expect PASS with no accessibility or type/lint errors.
+- [x] **Step 6: Commit.** Commit as `feat(healthlabs): add nutrition curator page`.
 
 ## Final verification
 

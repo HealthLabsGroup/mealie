@@ -5,6 +5,11 @@ import type { HealthLabsCapability } from "~/lib/api/types/healthlabs";
 const capabilities = ref<HealthLabsCapability[]>([]);
 const loadedUserId = ref<string | null>(null);
 
+export function resetHealthLabsCapabilities() {
+  capabilities.value = [];
+  loadedUserId.value = null;
+}
+
 export function useHealthLabsCapabilities() {
   const auth = useMealieAuth();
   const api = useUserApi();
@@ -32,7 +37,11 @@ export function useHealthLabsCapabilities() {
 
   return {
     capabilities,
-    canWriteNutrition: computed(() => capabilities.value.includes("nutrition:write")),
+    canWriteNutrition: computed(() => (
+      loadedUserId.value !== null
+      && loadedUserId.value === auth.user.value?.id
+      && capabilities.value.includes("nutrition:write")
+    )),
     load,
   };
 }

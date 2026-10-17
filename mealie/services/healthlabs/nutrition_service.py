@@ -104,11 +104,7 @@ class NutritionService:
         return HealthLabsFoodNutritionPage(items=items, total=len(items))
 
     def get_food(self, food_id: UUID, country: str) -> HealthLabsFoodNutritionOut:
-        user = self._require_user()
-        food = self.session.get(IngredientFoodModel, food_id)
-        if food is None or food.group_id != user.group_id:
-            raise NutritionFoodNotFound
-        return self._food_out(food, country)
+        return self._food_out(self._get_food_for_user(food_id), country)
 
     def set_match(
         self,
@@ -118,8 +114,8 @@ class NutritionService:
         access_reason: str | None,
         break_glass_reason: str | None,
     ) -> HealthLabsFoodNutritionOut:
+        food = self._get_food_for_user(food_id)
         self._authorize_write(food_id, "nutrition.match.set", access_reason, break_glass_reason)
-        food = self._get_food_any_group(food_id)
         nutrient_food = self.session.get(HealthLabsNutrientFood, data.nutrient_food_id)
         if nutrient_food is None:
             raise NutritionSourceNotFound
@@ -156,8 +152,8 @@ class NutritionService:
         access_reason: str | None,
         break_glass_reason: str | None,
     ) -> HealthLabsFoodNutritionOut:
+        food = self._get_food_for_user(food_id)
         self._authorize_write(food_id, "nutrition.match.clear", access_reason, break_glass_reason)
-        food = self._get_food_any_group(food_id)
         match = self.session.scalar(
             sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
         )
@@ -176,8 +172,8 @@ class NutritionService:
         access_reason: str | None,
         break_glass_reason: str | None,
     ) -> HealthLabsFoodNutritionOut:
+        food = self._get_food_for_user(food_id)
         self._authorize_write(food_id, "nutrition.portion.create", access_reason, break_glass_reason)
-        food = self._get_food_any_group(food_id)
         match = self.session.scalar(
             sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
         )
@@ -329,8 +325,14 @@ class NutritionService:
             nutrition=nutrition,
         )
 
-    def _get_food_any_group(self, food_id: UUID) -> IngredientFoodModel:
-        food = self.session.get(IngredientFoodModel, food_id)
+    def _get_food_for_user(self, food_id: UUID) -> IngredientFoodModel:
+        user = self._require_user()
+        food = self.session.scalar(
+            sa.select(IngredientFoodModel).where(
+                IngredientFoodModel.id == food_id,
+                IngredientFoodModel.group_id == user.group_id,
+            )
+        )
         if food is None:
             raise NutritionFoodNotFound
         return food

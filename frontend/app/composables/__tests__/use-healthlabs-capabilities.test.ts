@@ -28,6 +28,7 @@ test("reloads capabilities when the signed-in user changes", async () => {
   expect(access.canWriteNutrition.value).toBe(true);
 
   user.value = { id: "user-2" };
+  expect(access.canWriteNutrition.value).toBe(false);
   await access.load();
 
   expect(access.canWriteNutrition.value).toBe(false);
@@ -40,6 +41,17 @@ test("does not grant access when capability discovery fails", async () => {
 
   const access = useHealthLabsCapabilities();
   await access.load();
+
+  expect(access.canWriteNutrition.value).toBe(false);
+});
+
+test("clears cached capabilities on logout", async () => {
+  getCapabilities.mockResolvedValue({ data: ["nutrition:write"], error: null });
+  const { resetHealthLabsCapabilities, useHealthLabsCapabilities } = await import("../use-healthlabs-capabilities");
+  const access = useHealthLabsCapabilities();
+  await access.load();
+
+  resetHealthLabsCapabilities();
 
   expect(access.canWriteNutrition.value).toBe(false);
 });

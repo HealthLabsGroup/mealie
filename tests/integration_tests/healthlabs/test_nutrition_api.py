@@ -16,8 +16,11 @@ def test_food_search_detail_match_replace_portion_and_clear(
     healthlabs_nutrition_source: Callable,
 ) -> None:
     owner, owner_headers = healthlabs_provision()
-    editor, editor_headers = healthlabs_provision()
-    healthlabs_set_capabilities(editor["userId"], HealthLabsCapability.NUTRITION_WRITE)
+    healthlabs_set_capabilities(
+        owner["userId"],
+        HealthLabsCapability.RECIPES_WRITE_OWN,
+        HealthLabsCapability.NUTRITION_WRITE,
+    )
     food_name = f"Nutrition API food {uuid4()}"
     _, food_id = healthlabs_recipe_food(owner_headers, food_name)
 
@@ -42,7 +45,7 @@ def test_food_search_detail_match_replace_portion_and_clear(
         "diets": {"vegan": "contains"},
     }
     request_headers = {
-        **editor_headers,
+        **owner_headers,
         "Idempotency-Key": f"match-{uuid4()}",
         "X-HealthLabs-Access-Reason": "Curate source match",
     }
@@ -59,7 +62,7 @@ def test_food_search_detail_match_replace_portion_and_clear(
         resource,
         json={**body, "nutrientFoodId": replacement_food_id},
         headers={
-            **editor_headers,
+            **owner_headers,
             "Idempotency-Key": f"replace-{uuid4()}",
             "X-HealthLabs-Access-Reason": "Replace source match",
         },
@@ -71,7 +74,7 @@ def test_food_search_detail_match_replace_portion_and_clear(
         f"/api/healthlabs/v1/nutrition/foods/{food_id}/portions",
         json={"description": "one piece", "amount": 1, "unit": "piece", "grams": 80},
         headers={
-            **editor_headers,
+            **owner_headers,
             "Idempotency-Key": f"portion-{uuid4()}",
             "X-HealthLabs-Access-Reason": "Add measured portion",
         },
@@ -82,7 +85,7 @@ def test_food_search_detail_match_replace_portion_and_clear(
     cleared = api_client.delete(
         resource,
         headers={
-            **editor_headers,
+            **owner_headers,
             "Idempotency-Key": f"clear-{uuid4()}",
             "X-HealthLabs-Access-Reason": "Clear invalid match",
         },
@@ -94,6 +97,52 @@ def test_food_search_detail_match_replace_portion_and_clear(
     sources = api_client.get("/api/healthlabs/v1/nutrition/sources", headers=owner_headers)
     assert sources.status_code == 200
     assert source_id in {item["id"] for item in sources.json()}
+
+
+def test_nutrition_mutations_reject_foods_from_another_workspace(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_set_capabilities: Callable,
+    healthlabs_recipe_food: Callable,
+    healthlabs_nutrition_source: Callable,
+) -> None:
+    _, owner_headers = healthlabs_provision()
+    editor, editor_headers = healthlabs_provision()
+    healthlabs_set_capabilities(editor["userId"], HealthLabsCapability.NUTRITION_WRITE)
+    _, food_id = healthlabs_recipe_food(owner_headers, f"Foreign nutrition food {uuid4()}")
+    _, nutrient_food_id = healthlabs_nutrition_source(name=f"Unrelated source {uuid4()}")
+    resource = f"/api/healthlabs/v1/nutrition/foods/{food_id}"
+
+    match = api_client.put(
+        f"{resource}/match",
+        json={"nutrientFoodId": nutrient_food_id, "country": "GB"},
+        headers={
+            **editor_headers,
+            "Idempotency-Key": f"foreign-match-{uuid4()}",
+            "X-HealthLabs-Access-Reason": "Attempt foreign match",
+        },
+    )
+    clear = api_client.delete(
+        f"{resource}/match",
+        headers={
+            **editor_headers,
+            "Idempotency-Key": f"foreign-clear-{uuid4()}",
+            "X-HealthLabs-Access-Reason": "Attempt foreign clear",
+        },
+    )
+    portion = api_client.post(
+        f"{resource}/portions",
+        json={"description": "piece", "amount": 1, "unit": "item", "grams": 80},
+        headers={
+            **editor_headers,
+            "Idempotency-Key": f"foreign-portion-{uuid4()}",
+            "X-HealthLabs-Access-Reason": "Attempt foreign portion",
+        },
+    )
+
+    assert match.status_code == 404
+    assert clear.status_code == 404
+    assert portion.status_code == 404
 
 
 def test_source_food_search_is_tokenized_country_scoped_and_stable(
@@ -217,10 +266,13 @@ def test_nutrition_mutations_require_headers_and_reject_stale_source(
     healthlabs_set_capabilities: Callable,
     healthlabs_recipe_food: Callable,
 ) -> None:
-    owner, owner_headers = healthlabs_provision()
     editor, editor_headers = healthlabs_provision()
-    healthlabs_set_capabilities(editor["userId"], HealthLabsCapability.NUTRITION_WRITE)
-    _, food_id = healthlabs_recipe_food(owner_headers, f"Header food {uuid4()}")
+    healthlabs_set_capabilities(
+        editor["userId"],
+        HealthLabsCapability.RECIPES_WRITE_OWN,
+        HealthLabsCapability.NUTRITION_WRITE,
+    )
+    _, food_id = healthlabs_recipe_food(editor_headers, f"Header food {uuid4()}")
     resource = f"/api/healthlabs/v1/nutrition/foods/{food_id}/match"
     body = {"nutrientFoodId": str(uuid4()), "country": "GB"}
 

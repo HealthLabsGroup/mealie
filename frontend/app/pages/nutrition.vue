@@ -172,7 +172,7 @@
               </v-chip>
             </v-card-title>
 
-            <template v-if="selectedFood.nutrition">
+            <template v-if="hasReviewedMatch && selectedFood.nutrition">
               <v-divider />
               <v-card-text>
                 <div class="d-flex flex-column flex-sm-row justify-space-between ga-3 mb-4">
@@ -206,9 +206,50 @@
                     variant="outlined"
                     color="error"
                     :loading="saving"
+                    data-testid="clear-match"
                     @click="clearMatch"
                   >
                     {{ $t("nutrition-curator.clear-match") }}
+                  </v-btn>
+                </div>
+
+                <dl class="nutrient-grid">
+                  <div
+                    v-for="nutrient in nutrientFields"
+                    :key="nutrient.key"
+                    class="nutrient-value"
+                  >
+                    <dt>{{ nutrient.label }}</dt>
+                    <dd>{{ formatNutrient(selectedFood.nutrition.nutrientsPer100g[nutrient.key], nutrient.unit) }}</dd>
+                  </div>
+                </dl>
+              </v-card-text>
+            </template>
+            <template v-else-if="selectedFood.nutrition">
+              <v-divider />
+              <v-card-text>
+                <div class="d-flex flex-column flex-sm-row justify-space-between ga-3 mb-4">
+                  <div>
+                    <h2 class="text-subtitle-1 font-weight-bold mb-1">
+                      {{ $t("nutrition-curator.suggested-source") }}
+                    </h2>
+                    <p class="text-body-2 text-medium-emphasis mb-0">
+                      {{ sourceLine(selectedFood.nutrition.source) }}
+                    </p>
+                    <p class="text-body-1 mb-0">
+                      {{ selectedFood.nutrition.name }}
+                    </p>
+                    <p class="text-caption text-medium-emphasis mb-0">
+                      {{ $t("nutrition-curator.suggestion-help") }}
+                    </p>
+                  </div>
+                  <v-btn
+                    color="primary"
+                    :loading="saving"
+                    data-testid="use-suggestion"
+                    @click="approveSuggestion"
+                  >
+                    {{ $t("nutrition-curator.use-suggestion") }}
                   </v-btn>
                 </div>
 
@@ -343,7 +384,7 @@
           </v-card>
 
           <v-card
-            v-if="selectedFood.nutrition"
+            v-if="hasReviewedMatch && selectedFood.nutrition"
             variant="outlined"
           >
             <v-card-title>{{ $t("nutrition-curator.measured-portions") }}</v-card-title>
@@ -365,11 +406,13 @@
 
               <v-form
                 class="portion-form"
+                data-testid="portion-form"
                 @submit.prevent="submitPortion"
               >
                 <v-text-field
                   v-model="portion.description"
                   :label="$t('nutrition-curator.description')"
+                  data-testid="portion-description"
                   variant="outlined"
                   density="comfortable"
                 />
@@ -379,12 +422,14 @@
                   type="number"
                   min="0.01"
                   step="any"
+                  data-testid="portion-amount"
                   variant="outlined"
                   density="comfortable"
                 />
                 <v-text-field
                   v-model="portion.unit"
                   :label="$t('nutrition-curator.unit')"
+                  data-testid="portion-unit"
                   variant="outlined"
                   density="comfortable"
                 />
@@ -394,6 +439,7 @@
                   type="number"
                   min="0.01"
                   step="any"
+                  data-testid="portion-grams"
                   variant="outlined"
                   density="comfortable"
                 />
@@ -427,7 +473,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive } from "vue";
+import { computed, onMounted, reactive, watch } from "vue";
 import { useNutritionCurator } from "~/composables/use-nutrition-curator";
 import type {
   HealthLabsFoodPortionCreate,
@@ -458,6 +504,7 @@ const {
   selectFood,
   searchSources,
   approveSource,
+  approveSuggestion,
   clearMatch,
   addPortion,
 } = useNutritionCurator();
@@ -482,12 +529,24 @@ const portion = reactive<HealthLabsFoodPortionCreate>({
   unit: "",
   grams: 0,
 });
+const hasReviewedMatch = computed(() => (
+  selectedFood.value?.status === "matched" && selectedFood.value.nutrition?.reviewed === true
+));
 const portionValid = computed(() => (
   portion.description.trim().length > 0
   && portion.amount > 0
   && portion.unit.trim().length > 0
   && portion.grams > 0
 ));
+
+function resetPortion() {
+  portion.description = "";
+  portion.amount = 1;
+  portion.unit = "";
+  portion.grams = 0;
+}
+
+watch(() => selectedFood.value?.id, resetPortion);
 
 function statusLabel(status: HealthLabsNutritionStatus) {
   return i18n.t(`nutrition-curator.status-${status.replace("_", "-")}`);
@@ -512,12 +571,15 @@ async function submitPortion() {
   if (!portionValid.value) {
     return;
   }
-  await addPortion({
+  const saved = await addPortion({
     description: portion.description.trim(),
     amount: portion.amount,
     unit: portion.unit.trim(),
     grams: portion.grams,
   });
+  if (saved) {
+    resetPortion();
+  }
 }
 
 onMounted(loadFoods);

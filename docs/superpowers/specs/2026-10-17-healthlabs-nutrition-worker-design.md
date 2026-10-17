@@ -54,7 +54,7 @@ Provider calls are disabled by default. `HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQ
 
 ## Curator Visibility
 
-`GET /api/healthlabs/v1/nutrition/worker-status` requires the existing `nutrition:write` capability and returns state counts, whether provider processing is enabled or budget-exhausted, and the most recent worker update time. `GET /api/healthlabs/v1/nutrition/work` returns only the current group's actionable review rows. `POST /api/healthlabs/v1/nutrition/work/{id}/approve` can apply only a stored, still-current exact ingredient suggestion; stale fingerprints are rejected. Both actions are audited under `nutrition:write`. Portion gaps use the existing audited add-portion action. The `/nutrition` page shows status and review items above the existing food queue. It never exposes provider prompts or raw responses.
+`GET /api/healthlabs/v1/nutrition/worker-status` requires the existing `nutrition:write` capability and returns state counts, whether provider processing is enabled or budget-exhausted, and the most recent worker update time. `GET /api/healthlabs/v1/nutrition/work` returns a bounded list from only the current group's review queue. Exact provider results are applied automatically; non-exact ingredient suggestions are shown as informational work until catalogue changes make them exact. Food matches and portion gaps use the existing audited source-match and add-portion actions. The `/nutrition` page shows status and review items above the existing food queue. It never exposes provider prompts or raw responses.
 
 ## Acceptance Criteria
 
@@ -66,4 +66,4 @@ Provider calls are disabled by default. `HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQ
 6. Source matches remain unreviewed until a nutrition editor approves them.
 7. Curator status and tests prove pending, retry, review, completed, failed, budget-exhausted, and input-changed behavior.
 8. Conversion gaps are discovered automatically; only authoritative exact conversions resolve without review, and adding an editor-reviewed portion completes the gap on a later tick.
-9. An editor can act on each review-required ingredient/portion row, while stale or cross-group approval is rejected and audited.
+9. An editor can act on food-match and portion rows; unresolved ingredient rows truthfully show their provider/catalogue waiting state without offering an invalid action.

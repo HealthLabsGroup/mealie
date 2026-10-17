@@ -83,15 +83,8 @@ export class HealthLabsNutritionApi extends BaseAPI {
       route(`${nutritionRoute}/work`, {
         state: params.state,
         ...(params.kind ? { kind: params.kind } : {}),
+        limit: 50,
       }),
-    );
-  }
-
-  async approveWork(workId: string, idempotencyKey: string) {
-    return await this.requests.post<HealthLabsNutritionWorkOut>(
-      `${nutritionRoute}/work/${workId}/approve`,
-      {},
-      writeConfig(idempotencyKey, "Nutrition curator ingredient review"),
     );
   }
 }

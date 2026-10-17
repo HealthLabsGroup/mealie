@@ -59,6 +59,11 @@ def upgrade() -> None:
         ["state", "next_attempt_at", "lease_expires_at"],
     )
     op.create_index(
+        "healthlabs_nutrition_work_scan_idx",
+        "healthlabs_nutrition_work",
+        ["kind", "update_at"],
+    )
+    op.create_index(
         "ix_healthlabs_nutrition_work_created_at",
         "healthlabs_nutrition_work",
         ["created_at"],
@@ -96,5 +101,6 @@ def downgrade() -> None:
     op.drop_table("healthlabs_nutrition_provider_usage")
     op.drop_index("ix_healthlabs_nutrition_work_group_id", table_name="healthlabs_nutrition_work")
     op.drop_index("ix_healthlabs_nutrition_work_created_at", table_name="healthlabs_nutrition_work")
+    op.drop_index("healthlabs_nutrition_work_scan_idx", table_name="healthlabs_nutrition_work")
     op.drop_index("healthlabs_nutrition_work_due_idx", table_name="healthlabs_nutrition_work")
     op.drop_table("healthlabs_nutrition_work")

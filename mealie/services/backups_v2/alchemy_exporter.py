@@ -83,8 +83,9 @@ class AlchemyExporter(BaseService):
     """Column names restored back into datetimes. Anything stored as a `NaiveDateTime` and missing
     here comes back from a backup as a string; `test_every_datetime_column_survives_a_backup` guards
     against forgetting to add one."""
-    look_for_date = {"date_added", "date", "from_date"}
+    look_for_date = {"date_added", "date", "from_date", "usage_date"}
     look_for_time = {"scheduled_time"}
+    uuid_string_columns = {"target_id"}
 
     class DateTimeParser(BaseModel):
         date: datetime.date | None = None
@@ -137,7 +138,7 @@ class AlchemyExporter(BaseService):
                 for key, value in row.items():
                     if not isinstance(value, str):
                         continue
-                    if self.is_uuid(value):
+                    if key not in self.uuid_string_columns and self.is_uuid(value):
                         # convert the data to the current database's native GUID type
                         row[key] = GUID.convert_value_to_guid(value, self.engine.dialect)
                     if key in self.look_for_datetime:

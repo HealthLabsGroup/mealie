@@ -114,23 +114,6 @@ export function useNutritionCurator() {
     }
   }
 
-  async function approveIngredientWork(workId: string) {
-    saving.value = true;
-    actionError.value = null;
-    try {
-      const { data, error } = await api.approveWork(workId, crypto.randomUUID());
-      if (error || !data) {
-        actionError.value = "Unable to approve this ingredient suggestion.";
-        return false;
-      }
-      await Promise.all([loadWorker(), loadFoods()]);
-      return true;
-    }
-    finally {
-      saving.value = false;
-    }
-  }
-
   async function openWork(work: HealthLabsNutritionWorkOut) {
     const foodId = typeof work.result?.food_id === "string" ? work.result.food_id : null;
     if (!foodId) {
@@ -336,7 +319,6 @@ export function useNutritionCurator() {
     workError,
     loadFoods,
     loadWorker,
-    approveIngredientWork,
     openWork,
     selectFood,
     searchSources,

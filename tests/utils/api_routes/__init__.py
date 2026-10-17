@@ -414,11 +414,6 @@ def healthlabs_v1_nutrition_foods_food_id_portions(food_id):
     return f"{prefix}/healthlabs/v1/nutrition/foods/{food_id}/portions"
 
 
-def healthlabs_v1_nutrition_work_work_id_approve(work_id):
-    """`/api/healthlabs/v1/nutrition/work/{work_id}/approve`"""
-    return f"{prefix}/healthlabs/v1/nutrition/work/{work_id}/approve"
-
-
 def healthlabs_v1_operations_idempotency_key(idempotency_key):
     """`/api/healthlabs/v1/operations/{idempotency_key}`"""
     return f"{prefix}/healthlabs/v1/operations/{idempotency_key}"

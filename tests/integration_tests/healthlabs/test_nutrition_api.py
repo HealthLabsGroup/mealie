@@ -10,7 +10,6 @@ from mealie.core.config import get_app_settings
 from mealie.db.models._model_utils.datetime import get_utc_now
 from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
 from mealie.db.models.healthlabs import (
-    HealthLabsAccessAudit,
     HealthLabsFoodPortion,
     HealthLabsNutritionProviderUsage,
     HealthLabsNutritionWork,
@@ -407,11 +406,10 @@ def test_nutrition_mutations_require_headers_and_reject_stale_source(
     assert stale.status_code == 404
 
 
-def test_worker_status_review_queue_and_idempotent_ingredient_approval_are_group_scoped(
+def test_worker_status_and_review_queue_are_group_scoped(
     api_client: TestClient,
     healthlabs_provision: Callable,
     healthlabs_set_capabilities: Callable,
-    healthlabs_recipe_food: Callable,
     unfiltered_database: AllRepositories,
 ) -> None:
     editor, editor_headers = healthlabs_provision()
@@ -424,8 +422,6 @@ def test_worker_status_review_queue_and_idempotent_ingredient_approval_are_group
         )
 
     token = uuid4().hex
-    food_name = f"approved food {token}"
-    healthlabs_recipe_food(editor_headers, food_name)
     recipe = api_client.post(
         "/api/healthlabs/v1/recipes",
         headers={**editor_headers, "Idempotency-Key": f"worker-recipe-{uuid4()}"},
@@ -453,13 +449,6 @@ def test_worker_status_review_queue_and_idempotent_ingredient_approval_are_group
         if work is not None:
             break
     assert work is not None
-    work.state = "review_required"
-    work.result = {
-        "reason": "ingredient_suggestion",
-        "suggestion": {"quantity": 2, "unit": "gram", "food": food_name, "note": ""},
-    }
-    session.commit()
-
     status_response = api_client.get("/api/healthlabs/v1/nutrition/worker-status", headers=editor_headers)
     queue_response = api_client.get(
         "/api/healthlabs/v1/nutrition/work",
@@ -477,45 +466,8 @@ def test_worker_status_review_queue_and_idempotent_ingredient_approval_are_group
     assert outsider_queue.status_code == 200
     assert outsider_queue.json() == []
 
-    resource = f"/api/healthlabs/v1/nutrition/work/{work.id}/approve"
-    request_headers = {
-        **editor_headers,
-        "Idempotency-Key": f"approve-work-{uuid4()}",
-        "X-HealthLabs-Access-Reason": "Approve exact ingredient structure",
-    }
-    approved = api_client.post(resource, headers=request_headers)
-    replay = api_client.post(resource, headers=request_headers)
-    denied_cross_group = api_client.post(
-        resource,
-        headers={
-            **outsider_headers,
-            "Idempotency-Key": f"cross-group-{uuid4()}",
-            "X-HealthLabs-Access-Reason": "Attempt foreign approval",
-        },
-    )
 
-    assert approved.status_code == 200, approved.text
-    assert replay.json() == approved.json()
-    assert approved.json()["state"] == "completed"
-    assert denied_cross_group.status_code == 404
-    session.expire_all()
-    assert session.get(RecipeIngredientModel, ingredient.id).quantity == 2
-    assert session.get(RecipeIngredientModel, ingredient.id).food.name == food_name
-    assert (
-        session.scalar(
-            sa.select(sa.func.count())
-            .select_from(HealthLabsAccessAudit)
-            .where(
-                HealthLabsAccessAudit.actor_user_id == UUID(editor["userId"]),
-                HealthLabsAccessAudit.action == "nutrition.work.approve",
-                HealthLabsAccessAudit.resource_id == str(work.id),
-            )
-        )
-        == 1
-    )
-
-
-def test_worker_approval_rejects_stale_ingredient_input(
+def test_worker_review_queue_is_bounded(
     api_client: TestClient,
     healthlabs_provision: Callable,
     healthlabs_set_capabilities: Callable,
@@ -524,30 +476,37 @@ def test_worker_approval_rejects_stale_ingredient_input(
     editor, headers = healthlabs_provision()
     healthlabs_set_capabilities(editor["userId"], HealthLabsCapability.NUTRITION_WRITE)
     session = unfiltered_database.session
-    work = HealthLabsNutritionWork(
-        group_id=UUID(editor["groupId"]),
-        kind="ingredient_structure",
-        target_id="2147483647",
-        input_sha256="0" * 64,
-        state="review_required",
-        result={
-            "reason": "ingredient_suggestion",
-            "suggestion": {"quantity": 1, "unit": "gram", "food": "missing", "note": ""},
-        },
+    session.add_all(
+        [
+            HealthLabsNutritionWork(
+                group_id=UUID(editor["groupId"]),
+                kind="food_match",
+                target_id=str(uuid4()),
+                input_sha256=str(index).zfill(64),
+                state="review_required",
+                result={"reason": "no_unique_source_match"},
+            )
+            for index in range(3)
+        ]
     )
-    session.add(work)
     session.commit()
 
-    response = api_client.post(
-        f"/api/healthlabs/v1/nutrition/work/{work.id}/approve",
-        headers={
-            **headers,
-            "Idempotency-Key": f"stale-work-{uuid4()}",
-            "X-HealthLabs-Access-Reason": "Approve stale structure",
-        },
+    response = api_client.get(
+        "/api/healthlabs/v1/nutrition/work",
+        params={"state": "review_required", "limit": 2},
+        headers=headers,
     )
 
-    assert response.status_code == 409
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+    assert (
+        api_client.get(
+            "/api/healthlabs/v1/nutrition/work",
+            params={"state": "review_required", "limit": 101},
+            headers=headers,
+        ).status_code
+        == 422
+    )
 
 
 def test_worker_status_reports_configured_exhausted_provider_without_exposing_other_groups(

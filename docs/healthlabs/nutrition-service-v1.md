@@ -192,8 +192,7 @@ DELETE /api/healthlabs/v1/nutrition/foods/{food_id}/match
 POST /api/healthlabs/v1/nutrition/foods/{food_id}/portions
 GET /api/healthlabs/v1/nutrition/sources
 GET /api/healthlabs/v1/nutrition/worker-status
-GET /api/healthlabs/v1/nutrition/work?state=review_required&kind=
-POST /api/healthlabs/v1/nutrition/work/{work_id}/approve
+GET /api/healthlabs/v1/nutrition/work?state=review_required&kind=&limit=50
 GET /api/healthlabs/v1/capabilities
 ```
 
@@ -254,11 +253,12 @@ in runtime provider settings; they are never copied into the image, repository,
 work result, or logs. A positive DEV value requires an explicitly approved
 daily monetary ceiling.
 
-`nutrition:write` editors see current group status and review rows above the
-existing food queue. Exact stored ingredient suggestions use the idempotent,
-audited approval route. Food matches open the existing source reviewer, and
-conversion gaps open the existing audited measured-portion editor. Stale and
-cross-group work is rejected.
+`nutrition:write` editors see current group status and up to 50 review rows
+above the existing food queue. Exact provider results are applied automatically;
+non-exact suggestions are informational until the group food/unit catalogue is
+updated. Food matches open the existing source reviewer, and conversion gaps
+open the existing audited measured-portion editor. Cross-group work is never
+returned.
 
 Operators can monitor state counts through `worker-status` and the sanitized
 scheduler summary. A growing `failed` count indicates provider or data errors;

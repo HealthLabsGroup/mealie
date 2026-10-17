@@ -96,30 +96,13 @@ class NutritionImportService:
                     food.preparation_state = row.preparation_state
                     food.nutrient_values = nutrient_values
 
-                editor_portion_keys = {
-                    (description, amount, unit)
-                    for description, amount, unit in self.session.execute(
-                        select(
-                            HealthLabsFoodPortion.description,
-                            HealthLabsFoodPortion.amount,
-                            HealthLabsFoodPortion.unit,
-                        ).where(
-                            HealthLabsFoodPortion.nutrient_food_id == food.id,
-                            HealthLabsFoodPortion.source_managed.is_(False),
-                        )
-                    )
-                }
                 self.session.execute(
                     delete(HealthLabsFoodPortion).where(
                         HealthLabsFoodPortion.nutrient_food_id == food.id,
                         HealthLabsFoodPortion.source_managed.is_(True),
                     )
                 )
-                source_portions = [
-                    portion
-                    for portion in row.portions
-                    if (portion.description, portion.amount, portion.unit) not in editor_portion_keys
-                ]
+                source_portions = row.portions
                 self.session.add_all(
                     HealthLabsFoodPortion(
                         nutrient_food_id=food.id,

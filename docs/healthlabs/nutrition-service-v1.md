@@ -84,12 +84,19 @@ The HealthLabs extension adds these Mealie-owned records:
 | `healthlabs_nutrient_source_releases` | Provider, version, country, licence URL, attribution text, source URL, file checksum, and import time. |
 | `healthlabs_nutrient_foods` | One source food and preparation state with nullable nutrient values per 100 g edible portion. |
 | `healthlabs_food_matches` | One Mealie `ingredient_foods.id` mapped to one source food, with country, method, confidence, reviewer, food group, plant, nullable allergen/diet maps, and timestamps. |
-| `healthlabs_food_portions` | Source-backed conversion from a portion or standardized unit to edible grams. |
+| `healthlabs_food_portions` | Conversion from a portion or standardized unit to edible grams: source-managed rows are global, while editor-measured rows belong to one workspace. |
 | `healthlabs_branded_products` | Barcode product facts kept logically separate from the generic catalogue because Open Food Facts uses ODbL. |
 
 `healthlabs_food_matches` is the only editable link between a Mealie food and
 nutrient truth. A source re-import may update source records but must not replace
 a reviewed match silently.
+
+Source-managed portions are shared catalogue facts. Editor-measured portions
+carry the matching food's group ID; reads and calculations combine source rows
+only with editor rows from the current workspace. The migration assigns a legacy
+editor row only when exactly one workspace already matches its source food; it
+stops before schema changes when ownership is missing or ambiguous. Downgrade
+also stops while editor-managed rows exist rather than discarding tenant data.
 
 The following food facts belong to Mealie and travel with the match:
 
@@ -199,6 +206,8 @@ The page reads the current workspace's foods and imported source records from
 the running database. It does not use fixtures or mock nutrition data. An
 editor can filter the queue, search a selected country's source records,
 approve or replace a match, clear a match, and add a positive measured portion.
+Measured portions are visible and used in calculations only inside the workspace
+that created them.
 Nullable source values stay unavailable in the UI, while source-reported zero
 remains visible as zero. All mutations use idempotency keys and fixed,
 operation-specific audit reasons.

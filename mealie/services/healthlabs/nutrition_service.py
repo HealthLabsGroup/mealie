@@ -182,6 +182,8 @@ class NutritionService:
         duplicate = self.session.scalar(
             sa.select(HealthLabsFoodPortion.id).where(
                 HealthLabsFoodPortion.nutrient_food_id == match.nutrient_food_id,
+                HealthLabsFoodPortion.group_id == food.group_id,
+                HealthLabsFoodPortion.source_managed.is_(False),
                 HealthLabsFoodPortion.description == data.description.strip(),
                 HealthLabsFoodPortion.amount == data.amount,
                 HealthLabsFoodPortion.unit == data.unit.strip(),
@@ -192,6 +194,7 @@ class NutritionService:
         self.session.add(
             HealthLabsFoodPortion(
                 nutrient_food_id=match.nutrient_food_id,
+                group_id=food.group_id,
                 description=data.description.strip(),
                 amount=data.amount,
                 unit=data.unit.strip(),
@@ -415,7 +418,7 @@ class NutritionService:
                 ),
             )
 
-        grams = self._resolve_grams(match.nutrient_food_id, unit_id, Decimal(str(quantity)))
+        grams = self._resolve_grams(food_id, match.nutrient_food_id, unit_id, Decimal(str(quantity)))
         if grams is None:
             return self._cache_facts(
                 cache_key,
@@ -472,6 +475,7 @@ class NutritionService:
                 sources[(source.provider, source.version, source.country)] = source
             grams = (
                 self._resolve_grams(
+                    ingredient.food.id,
                     facts.food_match.nutrient_food_id,
                     ingredient.unit.id if ingredient.unit is not None else None,
                     self._decimal(ingredient.quantity),
@@ -560,7 +564,8 @@ class NutritionService:
             raise ValueError("Nutrition match references missing data")
 
         reviewed = match is not None and match.reviewed_by_user_id is not None and match.reviewed_at is not None
-        source_food = self._source_food_out(nutrient_food, source)
+        group_id = self.session.scalar(sa.select(IngredientFoodModel.group_id).where(IngredientFoodModel.id == food_id))
+        source_food = self._source_food_out(nutrient_food, source, group_id=group_id)
         return HealthLabsFoodMatchOut(
             id=match.id if match is not None else None,
             food_id=food_id,
@@ -590,15 +595,35 @@ class NutritionService:
         source: HealthLabsNutrientSourceRelease,
         *,
         source_only_portions: bool = False,
+        group_id: UUID | None = None,
     ) -> HealthLabsNutrientFoodOut:
         portions_statement = sa.select(HealthLabsFoodPortion).where(
             HealthLabsFoodPortion.nutrient_food_id == nutrient_food.id
         )
         if source_only_portions:
             portions_statement = portions_statement.where(HealthLabsFoodPortion.source_managed.is_(True))
-        portions = self.session.scalars(
-            portions_statement.order_by(HealthLabsFoodPortion.description, HealthLabsFoodPortion.id)
+        elif group_id is not None:
+            portions_statement = portions_statement.where(
+                sa.or_(
+                    HealthLabsFoodPortion.source_managed.is_(True),
+                    HealthLabsFoodPortion.group_id == group_id,
+                )
+            )
+        else:
+            portions_statement = portions_statement.where(HealthLabsFoodPortion.source_managed.is_(True))
+        portion_rows = self.session.scalars(
+            portions_statement.order_by(
+                HealthLabsFoodPortion.description,
+                HealthLabsFoodPortion.amount,
+                HealthLabsFoodPortion.unit,
+                HealthLabsFoodPortion.source_managed,
+                HealthLabsFoodPortion.id,
+            )
         ).all()
+        visible_portions: dict[tuple[str, float, str], HealthLabsFoodPortion] = {}
+        for portion in portion_rows:
+            visible_portions.setdefault((portion.description, portion.amount, portion.unit), portion)
+        portions = visible_portions.values()
         return HealthLabsNutrientFoodOut(
             id=nutrient_food.id,
             source_food_id=nutrient_food.source_food_id,
@@ -627,7 +652,13 @@ class NutritionService:
             ),
         )
 
-    def _resolve_grams(self, nutrient_food_id: UUID, unit_id: UUID | None, quantity: Decimal) -> Decimal | None:
+    def _resolve_grams(
+        self,
+        food_id: UUID,
+        nutrient_food_id: UUID,
+        unit_id: UUID | None,
+        quantity: Decimal,
+    ) -> Decimal | None:
         if unit_id is None:
             return None
         unit = self.session.get(IngredientUnitModel, unit_id)
@@ -653,8 +684,21 @@ class NutritionService:
             else None
         )
 
+        group_id = self.session.scalar(sa.select(IngredientFoodModel.group_id).where(IngredientFoodModel.id == food_id))
+        portions_statement = sa.select(HealthLabsFoodPortion).where(
+            HealthLabsFoodPortion.nutrient_food_id == nutrient_food_id
+        )
+        if group_id is None:
+            portions_statement = portions_statement.where(HealthLabsFoodPortion.source_managed.is_(True))
+        else:
+            portions_statement = portions_statement.where(
+                sa.or_(
+                    HealthLabsFoodPortion.source_managed.is_(True),
+                    HealthLabsFoodPortion.group_id == group_id,
+                )
+            )
         portions = self.session.scalars(
-            sa.select(HealthLabsFoodPortion).where(HealthLabsFoodPortion.nutrient_food_id == nutrient_food_id)
+            portions_statement.order_by(HealthLabsFoodPortion.source_managed, HealthLabsFoodPortion.id)
         ).all()
         for portion in portions:
             portion_unit = self._normalize_unit(portion.unit)

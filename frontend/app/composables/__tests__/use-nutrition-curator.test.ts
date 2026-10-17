@@ -317,4 +317,76 @@ describe("useNutritionCurator", () => {
     await secondLoad;
     expect(curator.loadingFoods.value).toBe(false);
   });
+
+  test("discards a mutation response after the source country changes", async () => {
+    let resolveMatch!: (value: unknown) => void;
+    nutritionApi.setMatch.mockReturnValueOnce(new Promise(resolve => resolveMatch = resolve));
+    const { useNutritionCurator } = await import("../use-nutrition-curator");
+    const curator = useNutritionCurator();
+    await curator.loadFoods();
+    await curator.selectFood(unmatchedFood);
+    const mutation = curator.approveSource(candidate);
+
+    const deFood = { ...unmatchedFood };
+    curator.country.value = "DE";
+    nutritionApi.getFoods.mockResolvedValueOnce({ data: { items: [deFood], total: 1 }, error: null });
+    await curator.loadFoods();
+    resolveMatch({ data: matchedFood, error: null });
+    await mutation;
+
+    expect(curator.country.value).toBe("DE");
+    expect(curator.foods.value).toEqual([deFood]);
+    expect(curator.selectedFood.value).toEqual(deFood);
+  });
+
+  test("keeps a confirmed mutation ahead of an older queue snapshot", async () => {
+    let resolveLoad!: (value: unknown) => void;
+    const { useNutritionCurator } = await import("../use-nutrition-curator");
+    const curator = useNutritionCurator();
+    await curator.loadFoods();
+    await curator.selectFood(unmatchedFood);
+    nutritionApi.getFoods.mockReturnValueOnce(new Promise(resolve => resolveLoad = resolve));
+
+    const staleLoad = curator.loadFoods();
+    await curator.approveSource(candidate);
+    resolveLoad({ data: { items: [unmatchedFood], total: 1 }, error: null });
+    await staleLoad;
+
+    expect(curator.foods.value).toEqual([matchedFood, existingMatchedFood]);
+    expect(curator.selectedFood.value).toEqual(matchedFood);
+  });
+
+  test("lets a queue search started after a mutation finish", async () => {
+    let resolveMatch!: (value: unknown) => void;
+    let resolveLoad!: (value: unknown) => void;
+    nutritionApi.setMatch.mockReturnValueOnce(new Promise(resolve => resolveMatch = resolve));
+    const { useNutritionCurator } = await import("../use-nutrition-curator");
+    const curator = useNutritionCurator();
+    await curator.loadFoods();
+    await curator.selectFood(unmatchedFood);
+
+    const mutation = curator.approveSource(candidate);
+    curator.queueQuery.value = "banana";
+    nutritionApi.getFoods.mockReturnValueOnce(new Promise(resolve => resolveLoad = resolve));
+    const newerLoad = curator.loadFoods();
+    resolveMatch({ data: matchedFood, error: null });
+    await mutation;
+
+    expect(curator.loadingFoods.value).toBe(true);
+    resolveLoad({ data: { items: [secondFood], total: 1 }, error: null });
+    await newerLoad;
+
+    expect(curator.foods.value).toEqual([secondFood]);
+    expect(curator.loadingFoods.value).toBe(false);
+  });
+
+  test("loads the unfiltered queue after the clearable search becomes null", async () => {
+    const { useNutritionCurator } = await import("../use-nutrition-curator");
+    const curator = useNutritionCurator();
+    (curator.queueQuery as unknown as { value: string | null }).value = null;
+
+    await expect(curator.loadFoods()).resolves.toBe(true);
+
+    expect(nutritionApi.getFoods).toHaveBeenCalledWith({ country: "GB", q: undefined });
+  });
 });

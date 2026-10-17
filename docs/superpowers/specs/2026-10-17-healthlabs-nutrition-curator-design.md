@@ -33,7 +33,10 @@ authorization boundary for every mutation.
 - No invented, averaged, or manually typed nutrient values.
 - No source import or release management UI.
 - No cross-workspace food browser and no user health data.
-- No new dependency, database migration, or standalone frontend.
+- No new dependency or standalone frontend. One guarded migration scopes
+  editor-measured portions to their workspace; ambiguous legacy ownership and
+  lossy downgrade stop with an actionable error. Source-managed portions remain
+  global catalogue facts.
 
 ## Interaction
 
@@ -85,6 +88,8 @@ Mealie tool, not a separate HealthLabs application.
 - `GET /api/healthlabs/v1/capabilities` returns only the authenticated user's
   active capability names, sorted deterministically.
 - Food list reads remain scoped to the authenticated user's Mealie group.
+- Editor-measured portions carry that group ID and are visible and calculated
+  only in that group; source-managed portions remain global.
 - Source search returns public licensed facts for the chosen country plus
   `OTHER`; it does not approve a match.
 - Match and portion writes retain `nutrition:write`, idempotency, access-reason,

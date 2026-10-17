@@ -224,6 +224,31 @@ def test_food_portion_requires_positive_amount_and_grams(
     session.rollback()
 
 
+@pytest.mark.parametrize(("source_managed", "has_group"), [(True, True), (False, False)])
+def test_food_portion_requires_source_or_editor_ownership(
+    unique_user_fn_scoped: TestUser,
+    source_managed: bool,
+    has_group: bool,
+) -> None:
+    session = unique_user_fn_scoped.repos.session
+    nutrient_food = _nutrient_food(unique_user_fn_scoped, _source(unique_user_fn_scoped))
+    session.add(
+        HealthLabsFoodPortion(
+            nutrient_food_id=nutrient_food.id,
+            group_id=unique_user_fn_scoped.group_id if has_group else None,
+            description="one portion",
+            amount=1,
+            unit="piece",
+            grams=10,
+            source_managed=source_managed,
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+    session.rollback()
+
+
 def test_branded_product_identity_is_provider_plus_barcode(unique_user_fn_scoped: TestUser) -> None:
     session = unique_user_fn_scoped.repos.session
     barcode = "0123456789012"

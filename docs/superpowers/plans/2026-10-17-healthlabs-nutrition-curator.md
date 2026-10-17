@@ -14,7 +14,8 @@
 
 - Runtime data comes only from Mealie's real database and pinned source releases.
 - `nutrition:write` gates the navigation, page, and every mutation.
-- No automatic approval, new dependency, database migration, or cross-workspace listing.
+- No automatic approval, new dependency, or cross-workspace listing. One guarded
+  migration scopes editor portions and refuses ambiguous ownership or data loss.
 - Missing nutrient values remain unavailable; never coerce them to zero.
 - Every write retains idempotency and a specific HealthLabs access reason.
 
@@ -93,3 +94,10 @@
 
 - [x] Run the complete backend suite, frontend suite, mypy, Ruff, ESLint, and production frontend build.
 - [x] Review authorization, tenant scoping, idempotency/audit headers, null rendering, and responsive layout.
+
+## PR review hardening
+
+- [x] Ignore stale capability responses after a newer request or logout.
+- [x] Prevent country changes or older queue loads from replacing mutation results.
+- [x] Accept the clearable queue search's `null` value.
+- [x] Scope editor-measured portions with a migration that rejects ambiguous ownership and lossy downgrade.

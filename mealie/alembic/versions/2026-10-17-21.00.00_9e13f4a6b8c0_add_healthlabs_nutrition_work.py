@@ -31,7 +31,7 @@ def upgrade() -> None:
         *_base_columns(),
         sa.Column("group_id", GUID(), nullable=False),
         sa.Column("kind", sa.String(length=32), nullable=False),
-        sa.Column("target_id", GUID(), nullable=False),
+        sa.Column("target_id", sa.String(length=64), nullable=False),
         sa.Column("input_sha256", sa.String(length=64), nullable=False),
         sa.Column("state", sa.String(length=24), server_default="pending", nullable=False),
         sa.Column("attempt_count", sa.Integer(), server_default="0", nullable=False),

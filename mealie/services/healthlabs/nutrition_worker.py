@@ -47,6 +47,7 @@ class NutritionReconciliationWorker:
         country: str = "GB",
         batch_size: int = 20,
         provider_daily_request_limit: int = 0,
+        group_id: UUID | None = None,
         now: datetime | None = None,
     ) -> None:
         if batch_size < 1:
@@ -59,6 +60,7 @@ class NutritionReconciliationWorker:
         self.country = country
         self.batch_size = batch_size
         self.provider_daily_request_limit = provider_daily_request_limit
+        self.group_id = group_id
         self._fixed_now = now
         self.now = now or get_utc_now()
         self.fingerprints = NutritionFingerprintService(
@@ -144,6 +146,8 @@ class NutritionReconciliationWorker:
                 ),
             )
         )
+        if self.group_id is not None:
+            statement = statement.where(RecipeModel.group_id == self.group_id)
         rows = self.session.execute(
             statement.order_by(
                 sa.func.coalesce(work_row.update_at, RecipeIngredientModel.update_at),
@@ -179,6 +183,8 @@ class NutritionReconciliationWorker:
             .outerjoin(HealthLabsFoodMatch, HealthLabsFoodMatch.ingredient_food_id == IngredientFoodModel.id)
             .where(sa.or_(work_row.id.is_not(None), HealthLabsFoodMatch.id.is_(None)))
         )
+        if self.group_id is not None:
+            statement = statement.where(IngredientFoodModel.group_id == self.group_id)
         rows = self.session.execute(
             statement.order_by(
                 sa.func.coalesce(work_row.update_at, IngredientFoodModel.update_at),
@@ -216,6 +222,8 @@ class NutritionReconciliationWorker:
                 HealthLabsFoodMatch.reviewed_at.is_not(None),
             )
         )
+        if self.group_id is not None:
+            statement = statement.where(RecipeModel.group_id == self.group_id)
         rows = self.session.execute(
             statement.order_by(
                 sa.func.coalesce(work_row.update_at, RecipeIngredientModel.update_at),
@@ -285,16 +293,16 @@ class NutritionReconciliationWorker:
                 ),
             ),
         )
+        statement = sa.select(HealthLabsNutritionWork.id).where(due)
+        if self.group_id is not None:
+            statement = statement.where(HealthLabsNutritionWork.group_id == self.group_id)
         return list(
             self.session.scalars(
-                sa.select(HealthLabsNutritionWork.id)
-                .where(due)
-                .order_by(
+                statement.order_by(
                     HealthLabsNutritionWork.next_attempt_at,
                     HealthLabsNutritionWork.kind,
                     HealthLabsNutritionWork.target_id,
-                )
-                .limit(self.batch_size)
+                ).limit(self.batch_size)
             )
         )
 
@@ -663,22 +671,22 @@ class NutritionReconciliationWorker:
             )
             .exists()
         )
+        statement = sa.select(HealthLabsNutritionWork.id).where(
+            ~active_lease,
+            sa.or_(
+                sa.and_(
+                    HealthLabsNutritionWork.kind == "ingredient_structure",
+                    ~ingredient_eligible,
+                ),
+                sa.and_(HealthLabsNutritionWork.kind == "portion_resolution", ~portion_eligible),
+                sa.and_(HealthLabsNutritionWork.kind == "food_match", ~food_exists),
+            ),
+        )
+        if self.group_id is not None:
+            statement = statement.where(HealthLabsNutritionWork.group_id == self.group_id)
         stale_ids = list(
             self.session.scalars(
-                sa.select(HealthLabsNutritionWork.id)
-                .where(
-                    ~active_lease,
-                    sa.or_(
-                        sa.and_(
-                            HealthLabsNutritionWork.kind == "ingredient_structure",
-                            ~ingredient_eligible,
-                        ),
-                        sa.and_(HealthLabsNutritionWork.kind == "portion_resolution", ~portion_eligible),
-                        sa.and_(HealthLabsNutritionWork.kind == "food_match", ~food_exists),
-                    ),
-                )
-                .order_by(HealthLabsNutritionWork.update_at, HealthLabsNutritionWork.id)
-                .limit(self.batch_size)
+                statement.order_by(HealthLabsNutritionWork.update_at, HealthLabsNutritionWork.id).limit(self.batch_size)
             )
         )
         if stale_ids:

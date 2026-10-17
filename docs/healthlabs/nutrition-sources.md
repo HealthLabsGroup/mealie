@@ -60,6 +60,21 @@ uv run python scripts/healthlabs/backfill-food-matches.py --country GB
 uv run python scripts/healthlabs/report-nutrition-coverage.py --external-subject-id <subject-uuid>
 ```
 
+Structure legacy free-text ingredient rows after the group food and unit
+catalogues exist. The first command is a dry run; review its aggregate counts
+before applying the same exact-only pass:
+
+```sh
+uv run python scripts/healthlabs/backfill-ingredient-structure.py
+uv run python scripts/healthlabs/backfill-ingredient-structure.py --apply
+```
+
+The structure backfill writes only when a positive quantity, unit, and food all
+resolve to unique existing Mealie records. It preserves the source text, rejects
+fuzzy and ambiguous names, and never creates foods, units, nutrient values, or
+gram conversions. Existing mass metadata and source-backed food portions remain
+the only conversion inputs.
+
 New automatic matches always require review. Ambiguous and fuzzy candidates remain unknown. The report contains counts and source provenance only; it excludes user identifiers, recipe text, and nutrient values.
 
 ## Restored-data verification — 2026-10-17

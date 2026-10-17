@@ -87,6 +87,8 @@ The HealthLabs extension adds these Mealie-owned records:
 | `healthlabs_food_matches` | One Mealie `ingredient_foods.id` mapped to one source food, with country, method, confidence, reviewer, food group, plant, nullable allergen/diet maps, and timestamps. |
 | `healthlabs_food_portions` | Conversion from a portion or standardized unit to edible grams: source-managed rows are global, while editor-measured rows belong to one workspace. |
 | `healthlabs_branded_products` | Barcode product facts kept logically separate from the generic catalogue because Open Food Facts uses ODbL. |
+| `healthlabs_nutrition_work` | Group-scoped, fingerprinted ingredient, food-match, and portion work with retry and lease state. |
+| `healthlabs_nutrition_provider_usage` | One persisted request counter per UTC day for the deployment-wide provider allowance. |
 
 `healthlabs_food_matches` is the only editable link between a Mealie food and
 nutrient truth. A source re-import may update source records but must not replace
@@ -189,6 +191,9 @@ PUT /api/healthlabs/v1/nutrition/foods/{food_id}/match
 DELETE /api/healthlabs/v1/nutrition/foods/{food_id}/match
 POST /api/healthlabs/v1/nutrition/foods/{food_id}/portions
 GET /api/healthlabs/v1/nutrition/sources
+GET /api/healthlabs/v1/nutrition/worker-status
+GET /api/healthlabs/v1/nutrition/work?state=review_required&kind=
+POST /api/healthlabs/v1/nutrition/work/{work_id}/approve
 GET /api/healthlabs/v1/capabilities
 ```
 
@@ -218,6 +223,50 @@ public licensed catalogue facts. It matches every normalized query token,
 returns only the requested country plus country-neutral `OTHER` records, and
 never creates or approves a match. Editors pass a selected source-food ID to
 the existing audited match route.
+
+## Background reconciliation
+
+Mealie's existing scheduler runs a bounded reconciliation tick every five
+minutes. Each tick discovers at most 20 changed targets, claims due work with a
+15-minute lease, and commits each target independently. A concurrent in-process
+tick exits immediately; after a restart, an expired lease is reclaimable.
+
+The persisted states are `pending`, `running`, `review_required`, `completed`,
+and `failed`. Provider errors retry after 5 and 30 minutes, then stop after the
+third failed attempt. Changed source text, catalogue data, provider
+configuration, reviewed match, source release, or portion data changes the
+relevant fingerprint and makes the target eligible again. Unchanged review
+work is not retried and does not spend another provider request.
+
+Processing stays deterministic:
+
+1. Resolve free-text ingredients against exact group food/unit records.
+2. Create exact or alias source matches as unreviewed Curator work.
+3. Resolve grams only from mass units or authoritative source/editor portions.
+4. Use the group's configured parser provider only for unresolved ingredient
+   structure, and apply its result only when it resolves exactly.
+
+`HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT` is the deployment-wide
+maximum provider requests per UTC day and defaults to `0`. Zero disables paid
+calls while deterministic work continues. The counter is persisted before a
+request, so a crash cannot cause an uncounted repeat. Provider credentials stay
+in runtime provider settings; they are never copied into the image, repository,
+work result, or logs. A positive DEV value requires an explicitly approved
+daily monetary ceiling.
+
+`nutrition:write` editors see current group status and review rows above the
+existing food queue. Exact stored ingredient suggestions use the idempotent,
+audited approval route. Food matches open the existing source reviewer, and
+conversion gaps open the existing audited measured-portion editor. Stale and
+cross-group work is rejected.
+
+Operators can monitor state counts through `worker-status` and the sanitized
+scheduler summary. A growing `failed` count indicates provider or data errors;
+long-lived `running` rows are automatically reclaimed after the lease. To stop
+paid processing without stopping deterministic reconciliation, set the daily
+limit to `0` and restart. To roll back the feature, unregister the scheduler
+callback and revert the additive API/UI while retaining the work tables; only
+drop them with the paired migration after confirming no review state is needed.
 
 ## Ephra consumption and snapshots
 

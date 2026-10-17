@@ -36,7 +36,7 @@ from mealie.services.healthlabs.nutrition_service import (
     NutritionService,
     NutritionSourceNotFound,
 )
-from mealie.services.healthlabs.nutrition_worker import NutritionWorkService
+from mealie.services.healthlabs.nutrition_work_service import NutritionWorkService
 
 router = APIRouter(prefix="/nutrition", tags=["HealthLabs: Nutrition"])
 

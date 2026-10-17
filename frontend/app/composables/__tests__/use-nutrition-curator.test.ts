@@ -146,7 +146,14 @@ beforeEach(() => {
     error: null,
   });
   nutritionApi.getWorkerStatus.mockResolvedValue({ data: workerStatus, error: null });
-  nutritionApi.getWork.mockResolvedValue({ data: [ingredientWork], error: null });
+  nutritionApi.getWork.mockImplementation((params: { kind?: string }) => Promise.resolve({
+    data: params.kind === "ingredient_structure"
+      ? [ingredientWork]
+      : params.kind === "portion_resolution"
+        ? [portionWork]
+        : [],
+    error: null,
+  }));
   vi.spyOn(crypto, "randomUUID").mockReturnValue("44444444-4444-4444-8444-444444444444");
 });
 
@@ -210,14 +217,19 @@ describe("useNutritionCurator", () => {
 
     await curator.loadWorker();
     expect(curator.workerStatus.value).toEqual(workerStatus);
-    expect(curator.reviewWork.value).toEqual([ingredientWork]);
+    expect(curator.reviewWork.value).toEqual([ingredientWork, portionWork]);
+    expect(nutritionApi.getWork).toHaveBeenCalledTimes(3);
+    expect(nutritionApi.getWork).toHaveBeenCalledWith({
+      state: "review_required",
+      kind: "portion_resolution",
+    });
 
     nutritionApi.getWorkerStatus.mockResolvedValueOnce({ data: null, error: new Error("offline") });
     nutritionApi.getWork.mockResolvedValueOnce({ data: null, error: new Error("offline") });
     await curator.loadWorker();
 
     expect(curator.workerStatus.value).toEqual(workerStatus);
-    expect(curator.reviewWork.value).toEqual([ingredientWork]);
+    expect(curator.reviewWork.value).toEqual([ingredientWork, portionWork]);
     expect(curator.workError.value).toBeTruthy();
   });
 

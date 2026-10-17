@@ -1,46 +1,33 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from uuid import UUID
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, aliased
 
 from mealie.db.models._model_utils.datetime import get_utc_now
 from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
 from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
-    HealthLabsFoodPortion,
-    HealthLabsNutrientFood,
-    HealthLabsNutrientSourceRelease,
     HealthLabsNutritionProviderUsage,
     HealthLabsNutritionWork,
 )
 from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel, RecipeIngredientModel, RecipeModel
-from mealie.db.models.recipe.ingredient import IngredientFoodAliasModel, IngredientUnitAliasModel
 from mealie.lang.providers import get_locale_provider
-from mealie.schema.healthlabs.identity import HealthLabsCapability
-from mealie.schema.healthlabs.nutrition import (
-    HealthLabsNutritionWorkerStatus,
-    HealthLabsNutritionWorkKind,
-    HealthLabsNutritionWorkOut,
-    HealthLabsNutritionWorkState,
-)
 from mealie.schema.recipe import IngredientFood, IngredientUnit, RecipeIngredient
-from mealie.schema.user import PrivateUser
-from mealie.services.healthlabs.access_policy import RecipeAccessPolicy
 from mealie.services.healthlabs.ingredient_structure_service import IngredientStructureService
+from mealie.services.healthlabs.nutrition_fingerprint_service import NutritionFingerprintService
 from mealie.services.healthlabs.nutrition_service import NutritionService
 from mealie.services.parser_services.openai.parser import OpenAIParser
 
 RETRY_DELAYS = (timedelta(minutes=5), timedelta(minutes=30))
 LEASE_DURATION = timedelta(minutes=15)
 PROVIDER_CALL_TIMEOUT_SECONDS = 14 * 60
-WORK_STATES = tuple(state.value for state in HealthLabsNutritionWorkState)
 
 
 @dataclass(frozen=True)
@@ -74,8 +61,11 @@ class NutritionReconciliationWorker:
         self.provider_daily_request_limit = provider_daily_request_limit
         self._fixed_now = now
         self.now = now or get_utc_now()
-        self._catalogue_hashes: dict[UUID, str] = {}
-        self._source_hash: str | None = None
+        self.fingerprints = NutritionFingerprintService(
+            session,
+            country=country,
+            provider_enabled=provider_daily_request_limit > 0,
+        )
 
     async def run(self) -> NutritionWorkerReport:
         discovered = self._discover()
@@ -113,17 +103,25 @@ class NutritionReconciliationWorker:
 
     def _discover(self) -> int:
         self._delete_stale_work()
-        changed = self._discover_ingredients(self.batch_size)
-        if changed < self.batch_size:
-            changed += self._discover_foods(self.batch_size - changed)
-        if changed < self.batch_size:
-            changed += self._discover_portions(self.batch_size - changed)
-        return changed
+        base, remainder = divmod(self.batch_size, 3)
+        limits = [base] * 3
+        start = int(self.now.timestamp() // (5 * 60)) % 3
+        for index in range(remainder):
+            limits[(start + index) % 3] += 1
+        return sum(
+            discover(limit)
+            for discover, limit in zip(
+                (self._discover_ingredients, self._discover_foods, self._discover_portions),
+                limits,
+                strict=True,
+            )
+            if limit
+        )
 
     def _discover_ingredients(self, limit: int) -> int:
         changed = 0
         work_row = aliased(HealthLabsNutritionWork)
-        rows = self.session.execute(
+        statement = (
             sa.select(RecipeIngredientModel, RecipeModel.group_id, work_row)
             .join(RecipeModel, RecipeModel.id == RecipeIngredientModel.recipe_id)
             .outerjoin(
@@ -136,6 +134,7 @@ class NutritionReconciliationWorker:
             .where(
                 RecipeIngredientModel.food_id.is_(None),
                 RecipeIngredientModel.unit_id.is_(None),
+                sa.or_(RecipeIngredientModel.quantity.is_(None), RecipeIngredientModel.quantity == 0),
                 RecipeIngredientModel.referenced_recipe_id.is_(None),
                 RecipeIngredientModel.title.is_(None),
                 ~RecipeIngredientModel.substitutions.any(),
@@ -144,13 +143,13 @@ class NutritionReconciliationWorker:
                     sa.func.trim(RecipeIngredientModel.note) != "",
                 ),
             )
-            .order_by(
-                sa.case((work_row.id.is_(None), 0), else_=1),
-                work_row.update_at,
-                RecipeIngredientModel.id,
-            )
-            .limit(self.batch_size)
         )
+        rows = self.session.execute(
+            statement.order_by(
+                sa.func.coalesce(work_row.update_at, RecipeIngredientModel.update_at),
+                RecipeIngredientModel.id,
+            ).limit(self.batch_size)
+        ).all()
         for ingredient, group_id, work in rows:
             fingerprint = self.ingredient_fingerprint(ingredient, group_id)
             changed += self._upsert(
@@ -168,7 +167,7 @@ class NutritionReconciliationWorker:
         changed = 0
         work_row = aliased(HealthLabsNutritionWork)
         target_id = sa.func.replace(sa.cast(IngredientFoodModel.id, sa.String), "-", "")
-        rows = self.session.execute(
+        statement = (
             sa.select(IngredientFoodModel, work_row, HealthLabsFoodMatch)
             .outerjoin(
                 work_row,
@@ -179,16 +178,16 @@ class NutritionReconciliationWorker:
             )
             .outerjoin(HealthLabsFoodMatch, HealthLabsFoodMatch.ingredient_food_id == IngredientFoodModel.id)
             .where(sa.or_(work_row.id.is_not(None), HealthLabsFoodMatch.id.is_(None)))
-            .order_by(
-                sa.case((work_row.id.is_(None), 0), else_=1),
-                work_row.update_at,
-                IngredientFoodModel.id,
-            )
-            .limit(self.batch_size)
         )
+        rows = self.session.execute(
+            statement.order_by(
+                sa.func.coalesce(work_row.update_at, IngredientFoodModel.update_at),
+                IngredientFoodModel.id,
+            ).limit(self.batch_size)
+        ).all()
         for food, work, match in rows:
             target_id = str(food.id)
-            fingerprint = self._food_fingerprint(food, match)
+            fingerprint = self.fingerprints.food(food, match)
             changed += self._upsert("food_match", target_id, food.group_id, fingerprint, work=work)
             if changed == limit:
                 break
@@ -197,7 +196,7 @@ class NutritionReconciliationWorker:
     def _discover_portions(self, limit: int) -> int:
         changed = 0
         work_row = aliased(HealthLabsNutritionWork)
-        rows = self.session.execute(
+        statement = (
             sa.select(RecipeIngredientModel, RecipeModel.group_id, HealthLabsFoodMatch, work_row)
             .join(RecipeModel, RecipeModel.id == RecipeIngredientModel.recipe_id)
             .join(HealthLabsFoodMatch, HealthLabsFoodMatch.ingredient_food_id == RecipeIngredientModel.food_id)
@@ -216,16 +215,16 @@ class NutritionReconciliationWorker:
                 HealthLabsFoodMatch.reviewed_by_user_id.is_not(None),
                 HealthLabsFoodMatch.reviewed_at.is_not(None),
             )
-            .order_by(
-                sa.case((work_row.id.is_(None), 0), else_=1),
-                work_row.update_at,
-                RecipeIngredientModel.id,
-            )
-            .limit(self.batch_size)
         )
+        rows = self.session.execute(
+            statement.order_by(
+                sa.func.coalesce(work_row.update_at, RecipeIngredientModel.update_at),
+                RecipeIngredientModel.id,
+            ).limit(self.batch_size)
+        ).all()
         for ingredient, group_id, match, work in rows:
             target_id = str(ingredient.id)
-            fingerprint = self._portion_fingerprint(ingredient, match, group_id)
+            fingerprint = self.fingerprints.portion(ingredient, match, group_id)
             changed += self._upsert("portion_resolution", target_id, group_id, fingerprint, work=work)
             if changed == limit:
                 break
@@ -239,6 +238,7 @@ class NutritionReconciliationWorker:
         fingerprint: str,
         *,
         work: HealthLabsNutritionWork | None = None,
+        preserve_active_claim: bool = True,
     ) -> int:
         work = work or self._work(kind, target_id)
         if work is None:
@@ -255,6 +255,13 @@ class NutritionReconciliationWorker:
             return 1
         if work.input_sha256 == fingerprint:
             work.update_at = get_utc_now()
+            return 0
+        if (
+            preserve_active_claim
+            and work.state == "running"
+            and work.lease_expires_at is not None
+            and work.lease_expires_at > self._current_time()
+        ):
             return 0
         work.group_id = group_id
         work.input_sha256 = fingerprint
@@ -322,7 +329,7 @@ class NutritionReconciliationWorker:
 
     async def _process_ingredient(self, work: HealthLabsNutritionWork) -> None:
         ingredient = self._ingredient(work)
-        if ingredient is None:
+        if ingredient is None or not self._ingredient_needs_structure(ingredient):
             self.session.delete(work)
             return
         value = RecipeIngredient(
@@ -346,8 +353,9 @@ class NutritionReconciliationWorker:
             work.result = {"reason": "provider_unconfigured"}
             return
         if not self._reserve_provider_request(work):
+            request_now = self._current_time()
             work.state = "pending"
-            work.next_attempt_at = datetime.combine(self.now.date() + timedelta(days=1), time.min, tzinfo=UTC)
+            work.next_attempt_at = datetime.combine(request_now.date() + timedelta(days=1), time.min, tzinfo=UTC)
             work.result = {"reason": "provider_budget_exhausted"}
             return
 
@@ -356,10 +364,27 @@ class NutritionReconciliationWorker:
         parser.data_matcher = service.matcher  # type: ignore[assignment]
         async with asyncio.timeout(PROVIDER_CALL_TIMEOUT_SECONDS):
             parsed = await parser.parse_one(source)
+        self.session.expire_all()
+        ingredient = self._ingredient(work)
+        if ingredient is None:
+            self.session.delete(work)
+            return
+        if not self._ingredient_needs_structure(ingredient):
+            self.session.delete(work)
+            return
+        self.fingerprints.invalidate_catalogue(work.group_id)
+        current_fingerprint = self.ingredient_fingerprint(ingredient, work.group_id)
+        if current_fingerprint != work.input_sha256:
+            self._requeue_ingredient(work, ingredient, current_fingerprint)
+            return
+        service = IngredientStructureService(self.session, work.group_id, get_locale_provider())
         if service.apply_exact(value, parsed.ingredient):
-            self._apply_ingredient(ingredient, value)
-            work.state = "completed"
-            work.result = None
+            expected = (ingredient.original_text, ingredient.quantity, ingredient.note, ingredient.title)
+            if self._apply_provider_ingredient(ingredient, value, expected):
+                work.state = "completed"
+                work.result = None
+            else:
+                self._requeue_ingredient(work, ingredient)
             return
         suggestion = parsed.ingredient
         work.state = "review_required"
@@ -383,6 +408,81 @@ class NutritionReconciliationWorker:
         ingredient.note = value.note
         ingredient.original_text = value.original_text
 
+    def _apply_provider_ingredient(
+        self,
+        ingredient: RecipeIngredientModel,
+        value: RecipeIngredient,
+        expected: tuple[str | None, float | None, str | None, str | None],
+    ) -> bool:
+        assert isinstance(value.food, IngredientFood) and value.food.id is not None
+        assert isinstance(value.unit, IngredientUnit) and value.unit.id is not None
+        food_is_current = (
+            sa.select(IngredientFoodModel.id)
+            .where(
+                IngredientFoodModel.id == value.food.id,
+                IngredientFoodModel.update_at.is_not_distinct_from(value.food.updated_at),
+            )
+            .exists()
+        )
+        unit_is_current = (
+            sa.select(IngredientUnitModel.id)
+            .where(
+                IngredientUnitModel.id == value.unit.id,
+                IngredientUnitModel.update_at.is_not_distinct_from(value.unit.updated_at),
+            )
+            .exists()
+        )
+        updated = self.session.execute(
+            sa.update(RecipeIngredientModel)
+            .where(
+                RecipeIngredientModel.id == ingredient.id,
+                RecipeIngredientModel.original_text.is_not_distinct_from(expected[0]),
+                RecipeIngredientModel.quantity.is_not_distinct_from(expected[1]),
+                RecipeIngredientModel.note.is_not_distinct_from(expected[2]),
+                RecipeIngredientModel.title.is_not_distinct_from(expected[3]),
+                RecipeIngredientModel.food_id.is_(None),
+                RecipeIngredientModel.unit_id.is_(None),
+                RecipeIngredientModel.referenced_recipe_id.is_(None),
+                ~RecipeIngredientModel.substitutions.any(),
+                food_is_current,
+                unit_is_current,
+            )
+            .values(
+                quantity=value.quantity,
+                food_id=value.food.id,
+                unit_id=value.unit.id,
+                note=value.note,
+                original_text=value.original_text,
+            )
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if updated == 1:
+            self.session.expire(ingredient)
+            return True
+        self.session.refresh(ingredient)
+        return False
+
+    def _requeue_ingredient(
+        self,
+        work: HealthLabsNutritionWork,
+        ingredient: RecipeIngredientModel,
+        fingerprint: str | None = None,
+    ) -> None:
+        if not self._ingredient_needs_structure(ingredient):
+            self.session.delete(work)
+            return
+        if fingerprint is None:
+            self.fingerprints.invalidate_catalogue(work.group_id)
+            fingerprint = self.ingredient_fingerprint(ingredient, work.group_id)
+        self._upsert(
+            "ingredient_structure",
+            str(ingredient.id),
+            work.group_id,
+            fingerprint,
+            work=work,
+            preserve_active_claim=False,
+        )
+
     def _provider_available(self, group_id: UUID) -> bool:
         settings = self.session.scalar(sa.select(AIProviderSettings).where(AIProviderSettings.group_id == group_id))
         if settings is None or settings.default_provider_id is None:
@@ -398,15 +498,37 @@ class NutritionReconciliationWorker:
         )
 
     def _reserve_provider_request(self, work: HealthLabsNutritionWork) -> bool:
+        request_now = self._current_time()
         usage = self.session.scalar(
             sa.select(HealthLabsNutritionProviderUsage).where(
-                HealthLabsNutritionProviderUsage.usage_date == self.now.date()
+                HealthLabsNutritionProviderUsage.usage_date == request_now.date()
             )
         )
         if usage is None:
-            usage = HealthLabsNutritionProviderUsage(usage_date=self.now.date(), request_count=0)
-            self.session.add(usage)
+            values = {"usage_date": request_now.date(), "request_count": 0}
+            dialect = self.session.get_bind().dialect.name
+            if dialect == "sqlite":
+                self.session.execute(
+                    sqlite_insert(HealthLabsNutritionProviderUsage)
+                    .values(**values)
+                    .on_conflict_do_nothing(index_elements=[HealthLabsNutritionProviderUsage.usage_date])
+                )
+            elif dialect == "postgresql":
+                self.session.execute(
+                    postgresql_insert(HealthLabsNutritionProviderUsage)
+                    .values(**values)
+                    .on_conflict_do_nothing(index_elements=[HealthLabsNutritionProviderUsage.usage_date])
+                )
+            else:
+                self.session.add(HealthLabsNutritionProviderUsage(**values))
             self.session.flush()
+            usage = self.session.scalar(
+                sa.select(HealthLabsNutritionProviderUsage).where(
+                    HealthLabsNutritionProviderUsage.usage_date == request_now.date()
+                )
+            )
+            if usage is None:
+                raise RuntimeError("provider usage reservation was not created")
         reserved = self.session.execute(
             sa.update(HealthLabsNutritionProviderUsage)
             .where(
@@ -417,7 +539,7 @@ class NutritionReconciliationWorker:
         ).rowcount
         if reserved != 1:
             return False
-        work.provider_requested_at = self.now
+        work.provider_requested_at = request_now
         self.session.commit()
         return True
 
@@ -441,7 +563,7 @@ class NutritionReconciliationWorker:
                 )
                 self.session.add(existing)
                 self.session.flush()
-        work.input_sha256 = self._food_fingerprint(food, existing)
+        work.input_sha256 = self.fingerprints.food(food, existing)
         if existing is not None and existing.reviewed_at is not None and existing.reviewed_by_user_id is not None:
             work.state = "completed"
             work.result = None
@@ -492,12 +614,43 @@ class NutritionReconciliationWorker:
         return terminal
 
     def _delete_stale_work(self) -> None:
-        ingredient_exists = (
+        active_lease = sa.and_(
+            HealthLabsNutritionWork.state == "running",
+            HealthLabsNutritionWork.lease_expires_at.is_not(None),
+            HealthLabsNutritionWork.lease_expires_at > self._current_time(),
+        )
+        ingredient_eligible = (
             sa.select(RecipeIngredientModel.id)
             .join(RecipeModel, RecipeModel.id == RecipeIngredientModel.recipe_id)
             .where(
                 sa.cast(RecipeIngredientModel.id, sa.String) == HealthLabsNutritionWork.target_id,
                 RecipeModel.group_id == HealthLabsNutritionWork.group_id,
+                RecipeIngredientModel.food_id.is_(None),
+                RecipeIngredientModel.unit_id.is_(None),
+                sa.or_(RecipeIngredientModel.quantity.is_(None), RecipeIngredientModel.quantity == 0),
+                RecipeIngredientModel.referenced_recipe_id.is_(None),
+                RecipeIngredientModel.title.is_(None),
+                ~RecipeIngredientModel.substitutions.any(),
+                sa.or_(
+                    sa.func.trim(RecipeIngredientModel.original_text) != "",
+                    sa.func.trim(RecipeIngredientModel.note) != "",
+                ),
+            )
+            .exists()
+        )
+        portion_eligible = (
+            sa.select(RecipeIngredientModel.id)
+            .join(RecipeModel, RecipeModel.id == RecipeIngredientModel.recipe_id)
+            .join(HealthLabsFoodMatch, HealthLabsFoodMatch.ingredient_food_id == RecipeIngredientModel.food_id)
+            .where(
+                sa.cast(RecipeIngredientModel.id, sa.String) == HealthLabsNutritionWork.target_id,
+                RecipeModel.group_id == HealthLabsNutritionWork.group_id,
+                RecipeIngredientModel.food_id.is_not(None),
+                RecipeIngredientModel.unit_id.is_not(None),
+                RecipeIngredientModel.quantity.is_not(None),
+                RecipeIngredientModel.quantity > 0,
+                HealthLabsFoodMatch.reviewed_by_user_id.is_not(None),
+                HealthLabsFoodMatch.reviewed_at.is_not(None),
             )
             .exists()
         )
@@ -514,13 +667,15 @@ class NutritionReconciliationWorker:
             self.session.scalars(
                 sa.select(HealthLabsNutritionWork.id)
                 .where(
+                    ~active_lease,
                     sa.or_(
                         sa.and_(
-                            HealthLabsNutritionWork.kind.in_(("ingredient_structure", "portion_resolution")),
-                            ~ingredient_exists,
+                            HealthLabsNutritionWork.kind == "ingredient_structure",
+                            ~ingredient_eligible,
                         ),
+                        sa.and_(HealthLabsNutritionWork.kind == "portion_resolution", ~portion_eligible),
                         sa.and_(HealthLabsNutritionWork.kind == "food_match", ~food_exists),
-                    )
+                    ),
                 )
                 .order_by(HealthLabsNutritionWork.update_at, HealthLabsNutritionWork.id)
                 .limit(self.batch_size)
@@ -535,6 +690,19 @@ class NutritionReconciliationWorker:
 
     def _current_time(self) -> datetime:
         return self._fixed_now or get_utc_now()
+
+    @staticmethod
+    def _ingredient_needs_structure(ingredient: RecipeIngredientModel) -> bool:
+        source = (ingredient.original_text or "").strip() or (ingredient.note or "").strip()
+        return bool(
+            source
+            and ingredient.food_id is None
+            and ingredient.unit_id is None
+            and ingredient.quantity in (None, 0)
+            and ingredient.referenced_recipe_id is None
+            and ingredient.title is None
+            and not ingredient.substitutions
+        )
 
     def _ingredient(self, work: HealthLabsNutritionWork) -> RecipeIngredientModel | None:
         try:
@@ -567,242 +735,8 @@ class NutritionReconciliationWorker:
             )
         )
 
-    def _catalogue_hash(self, group_id: UUID) -> str:
-        if cached := self._catalogue_hashes.get(group_id):
-            return cached
-        foods = self.session.execute(
-            sa.select(
-                IngredientFoodModel.id,
-                IngredientFoodModel.name,
-                IngredientFoodModel.plural_name,
-                IngredientFoodModel.update_at,
-            )
-            .where(IngredientFoodModel.group_id == group_id)
-            .order_by(IngredientFoodModel.id)
-        ).all()
-        units = self.session.execute(
-            sa.select(
-                IngredientUnitModel.id,
-                IngredientUnitModel.name,
-                IngredientUnitModel.plural_name,
-                IngredientUnitModel.abbreviation,
-                IngredientUnitModel.plural_abbreviation,
-                IngredientUnitModel.update_at,
-            )
-            .where(IngredientUnitModel.group_id == group_id)
-            .order_by(IngredientUnitModel.id)
-        ).all()
-        food_aliases = self.session.execute(
-            sa.select(IngredientFoodAliasModel.food_id, IngredientFoodAliasModel.name)
-            .join(IngredientFoodModel, IngredientFoodModel.id == IngredientFoodAliasModel.food_id)
-            .where(IngredientFoodModel.group_id == group_id)
-            .order_by(IngredientFoodAliasModel.food_id, IngredientFoodAliasModel.name)
-        ).all()
-        unit_aliases = self.session.execute(
-            sa.select(IngredientUnitAliasModel.unit_id, IngredientUnitAliasModel.name)
-            .join(IngredientUnitModel, IngredientUnitModel.id == IngredientUnitAliasModel.unit_id)
-            .where(IngredientUnitModel.group_id == group_id)
-            .order_by(IngredientUnitAliasModel.unit_id, IngredientUnitAliasModel.name)
-        ).all()
-        value = self._hash(foods, units, food_aliases, unit_aliases)
-        self._catalogue_hashes[group_id] = value
-        return value
-
     def ingredient_fingerprint(self, ingredient: RecipeIngredientModel, group_id: UUID) -> str:
-        source = (ingredient.original_text or "").strip() or (ingredient.note or "").strip()
-        return self._hash(
-            source,
-            self._catalogue_hash(group_id),
-            self.provider_daily_request_limit > 0,
-            self._provider_fingerprint(group_id),
-        )
+        return self.fingerprints.ingredient(ingredient, group_id)
 
     def _provider_fingerprint(self, group_id: UUID) -> str:
-        settings = self.session.scalar(sa.select(AIProviderSettings).where(AIProviderSettings.group_id == group_id))
-        if settings is None or settings.default_provider_id is None:
-            return self._hash(None)
-        provider = self.session.get(AIProvider, settings.default_provider_id)
-        if provider is None or provider.settings_id != settings.id:
-            return self._hash(None)
-        return self._hash(
-            provider.id,
-            provider.base_url,
-            provider.model,
-            provider.timeout,
-            self._hash(provider.api_key),
-            sorted((item.key_name or "", item.value or "") for item in provider.request_headers),
-            sorted((item.key_name or "", item.value or "") for item in provider.request_params),
-        )
-
-    def _food_fingerprint(
-        self,
-        food: IngredientFoodModel,
-        match: HealthLabsFoodMatch | None,
-    ) -> str:
-        aliases = self.session.execute(
-            sa.select(IngredientFoodAliasModel.name, IngredientFoodAliasModel.update_at)
-            .where(IngredientFoodAliasModel.food_id == food.id)
-            .order_by(IngredientFoodAliasModel.name)
-        ).all()
-        match_state = (
-            (
-                str(match.nutrient_food_id),
-                match.country,
-                match.reviewed_at,
-                match.reviewed_by_user_id,
-            )
-            if match is not None
-            else None
-        )
-        return self._hash(food.name, food.plural_name, aliases, self.country, self._source_release_hash(), match_state)
-
-    def _portion_fingerprint(
-        self,
-        ingredient: RecipeIngredientModel,
-        match: HealthLabsFoodMatch,
-        group_id: UUID,
-    ) -> str:
-        source = self.session.scalar(
-            sa.select(HealthLabsNutrientSourceRelease)
-            .join(
-                HealthLabsNutrientFood, HealthLabsNutrientFood.source_release_id == HealthLabsNutrientSourceRelease.id
-            )
-            .where(HealthLabsNutrientFood.id == match.nutrient_food_id)
-        )
-        portions = self.session.execute(
-            sa.select(
-                HealthLabsFoodPortion.description,
-                HealthLabsFoodPortion.amount,
-                HealthLabsFoodPortion.unit,
-                HealthLabsFoodPortion.grams,
-                HealthLabsFoodPortion.source_managed,
-                HealthLabsFoodPortion.group_id,
-                HealthLabsFoodPortion.update_at,
-            )
-            .where(
-                HealthLabsFoodPortion.nutrient_food_id == match.nutrient_food_id,
-                sa.or_(
-                    HealthLabsFoodPortion.source_managed.is_(True),
-                    HealthLabsFoodPortion.group_id == group_id,
-                ),
-            )
-            .order_by(HealthLabsFoodPortion.id)
-        ).all()
-        return self._hash(
-            ingredient.quantity,
-            ingredient.unit_id,
-            match.nutrient_food_id,
-            match.reviewed_at,
-            source.sha256 if source is not None else None,
-            portions,
-        )
-
-    def _source_release_hash(self) -> str:
-        if self._source_hash is None:
-            countries = [self.country] if self.country == "OTHER" else [self.country, "OTHER"]
-            rows = self.session.execute(
-                sa.select(
-                    HealthLabsNutrientSourceRelease.id,
-                    HealthLabsNutrientSourceRelease.sha256,
-                    HealthLabsNutrientSourceRelease.country,
-                )
-                .where(sa.func.upper(HealthLabsNutrientSourceRelease.country).in_(countries))
-                .order_by(HealthLabsNutrientSourceRelease.id)
-            ).all()
-            self._source_hash = self._hash(rows)
-        return self._source_hash
-
-    @staticmethod
-    def _hash(*values: object) -> str:
-        payload = json.dumps(values, default=str, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(payload.encode()).hexdigest()
-
-
-class NutritionWorkService:
-    def __init__(
-        self,
-        session: Session,
-        user: PrivateUser,
-        *,
-        provider_daily_request_limit: int,
-    ) -> None:
-        self.session = session
-        self.user = user
-        self.provider_daily_request_limit = provider_daily_request_limit
-        self.policy = RecipeAccessPolicy(session, user)
-
-    def status(self) -> HealthLabsNutritionWorkerStatus:
-        self._require_write()
-        counts = dict.fromkeys(WORK_STATES, 0)
-        counts.update(
-            dict(
-                self.session.execute(
-                    sa.select(HealthLabsNutritionWork.state, sa.func.count())
-                    .where(HealthLabsNutritionWork.group_id == self.user.group_id)
-                    .group_by(HealthLabsNutritionWork.state)
-                ).all()
-            )
-        )
-        requests_today = (
-            self.session.scalar(
-                sa.select(HealthLabsNutritionProviderUsage.request_count).where(
-                    HealthLabsNutritionProviderUsage.usage_date == get_utc_now().date()
-                )
-            )
-            or 0
-        )
-        provider_enabled = self.provider_daily_request_limit > 0 and self._provider_available()
-        return HealthLabsNutritionWorkerStatus(
-            counts=counts,
-            provider_enabled=provider_enabled,
-            provider_budget_exhausted=(provider_enabled and requests_today >= self.provider_daily_request_limit),
-            last_updated_at=self.session.scalar(
-                sa.select(sa.func.max(HealthLabsNutritionWork.update_at)).where(
-                    HealthLabsNutritionWork.group_id == self.user.group_id
-                )
-            ),
-        )
-
-    def list_work(
-        self,
-        *,
-        state: HealthLabsNutritionWorkState,
-        kind: HealthLabsNutritionWorkKind | None,
-        limit: int,
-    ) -> list[HealthLabsNutritionWorkOut]:
-        self._require_write()
-        query = sa.select(HealthLabsNutritionWork).where(
-            HealthLabsNutritionWork.group_id == self.user.group_id,
-            HealthLabsNutritionWork.state == state.value,
-        )
-        if kind is not None:
-            query = query.where(HealthLabsNutritionWork.kind == kind.value)
-        rows = self.session.scalars(
-            query.order_by(HealthLabsNutritionWork.kind, HealthLabsNutritionWork.target_id).limit(limit)
-        ).all()
-        return [self._out(row) for row in rows]
-
-    def _provider_available(self) -> bool:
-        settings = self.session.scalar(
-            sa.select(AIProviderSettings).where(AIProviderSettings.group_id == self.user.group_id)
-        )
-        if settings is None or settings.default_provider_id is None:
-            return False
-        provider = self.session.get(AIProvider, settings.default_provider_id)
-        return provider is not None and provider.settings_id == settings.id
-
-    def _require_write(self) -> None:
-        self.policy.require(HealthLabsCapability.NUTRITION_WRITE)
-
-    @staticmethod
-    def _out(work: HealthLabsNutritionWork) -> HealthLabsNutritionWorkOut:
-        return HealthLabsNutritionWorkOut(
-            id=work.id,
-            kind=work.kind,
-            target_id=work.target_id,
-            state=work.state,
-            attempt_count=work.attempt_count,
-            result=work.result,
-            last_error=work.last_error,
-            updated_at=work.update_at,
-        )
+        return self.fingerprints.provider(group_id)

@@ -17,7 +17,7 @@ from mealie.db.models.healthlabs import (
     HealthLabsNutritionProviderUsage,
     HealthLabsNutritionWork,
 )
-from mealie.db.models.recipe import RecipeIngredientModel
+from mealie.db.models.recipe import IngredientFoodModel, RecipeIngredientModel
 from mealie.schema.recipe import (
     CreateIngredientFood,
     CreateIngredientUnit,
@@ -199,6 +199,7 @@ def test_stale_cleanup_is_bounded_to_one_batch(unique_user_fn_scoped: TestUser) 
             input_sha256=str(index).zfill(64),
             state="completed",
             next_attempt_at=NOW,
+            update_at=datetime(2000, 1, 1, index, tzinfo=UTC),
         )
         for index in range(4)
     ]
@@ -215,6 +216,162 @@ def test_stale_cleanup_is_bounded_to_one_batch(unique_user_fn_scoped: TestUser) 
     assert remaining == 2
 
 
+def test_cleanup_removes_work_when_existing_targets_are_no_longer_eligible(
+    unique_user_fn_scoped: TestUser,
+) -> None:
+    user = unique_user_fn_scoped
+    token = uuid4().hex
+    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"unit-{token}"))
+    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"food-{token}"))
+    ingredient = _recipe_ingredients(
+        user,
+        [f"1 {unit.name} {food.name}"],
+        food_id=food.id,
+        unit_id=unit.id,
+        quantity=1,
+    )[0]
+    work = [
+        HealthLabsNutritionWork(
+            group_id=user.group_id,
+            kind=kind,
+            target_id=str(ingredient.id),
+            input_sha256=kind.ljust(64, "0"),
+            state="review_required",
+            next_attempt_at=NOW,
+        )
+        for kind in ("ingredient_structure", "portion_resolution")
+    ]
+    user.repos.session.add_all(work)
+    user.repos.session.commit()
+    work_ids = [row.id for row in work]
+
+    NutritionReconciliationWorker(user.repos.session, batch_size=20, now=NOW)._delete_stale_work()
+    user.repos.session.commit()
+
+    assert (
+        user.repos.session.scalar(
+            sa.select(sa.func.count())
+            .select_from(HealthLabsNutritionWork)
+            .where(HealthLabsNutritionWork.id.in_(work_ids))
+        )
+        == 0
+    )
+
+
+def test_existing_changed_ingredient_is_scanned_before_new_backlog(unique_user_fn_scoped: TestUser) -> None:
+    user = unique_user_fn_scoped
+    existing = _recipe_ingredients(user, [f"changed-{uuid4()}"])[0]
+    work = HealthLabsNutritionWork(
+        group_id=user.group_id,
+        kind="ingredient_structure",
+        target_id=str(existing.id),
+        input_sha256="0" * 64,
+        state="review_required",
+        next_attempt_at=NOW,
+        update_at=datetime(2000, 1, 1, tzinfo=UTC),
+    )
+    user.repos.session.add(work)
+    user.repos.session.commit()
+    _recipe_ingredients(user, [f"new-{uuid4()}" for _ in range(5)])
+
+    NutritionReconciliationWorker(user.repos.session, batch_size=3, now=NOW)._discover_ingredients(1)
+    user.repos.session.commit()
+
+    assert work.input_sha256 != "0" * 64
+    assert work.state == "pending"
+
+
+def test_quantity_only_ingredient_work_is_ineligible_and_removed(unique_user_fn_scoped: TestUser) -> None:
+    user = unique_user_fn_scoped
+    ingredient = _recipe_ingredients(user, [f"quantity-only-{uuid4()}"], quantity=2)[0]
+    ingredient.update_at = datetime(2000, 1, 1, tzinfo=UTC)
+    work = HealthLabsNutritionWork(
+        group_id=user.group_id,
+        kind="ingredient_structure",
+        target_id=str(ingredient.id),
+        input_sha256="0" * 64,
+        state="pending",
+        next_attempt_at=NOW,
+        update_at=datetime(2000, 1, 1, tzinfo=UTC),
+    )
+    user.repos.session.add(work)
+    user.repos.session.commit()
+    work_id = work.id
+
+    worker = NutritionReconciliationWorker(user.repos.session, batch_size=20, now=NOW)
+    assert not worker._ingredient_needs_structure(ingredient)
+    worker._discover_ingredients(20)
+    worker._delete_stale_work()
+    user.repos.session.commit()
+
+    assert user.repos.session.get(HealthLabsNutritionWork, work_id) is None
+
+
+def test_discovery_preserves_an_active_changed_claim(unique_user_fn_scoped: TestUser) -> None:
+    user = unique_user_fn_scoped
+    ingredient = _recipe_ingredients(user, [f"active-claim-{uuid4()}"])[0]
+    work = HealthLabsNutritionWork(
+        group_id=user.group_id,
+        kind="ingredient_structure",
+        target_id=str(ingredient.id),
+        input_sha256="0" * 64,
+        state="running",
+        next_attempt_at=NOW,
+        lease_expires_at=NOW + timedelta(minutes=1),
+        update_at=datetime(2000, 1, 1, tzinfo=UTC),
+    )
+    user.repos.session.add(work)
+    user.repos.session.commit()
+
+    NutritionReconciliationWorker(user.repos.session, batch_size=20, now=NOW)._discover_ingredients(20)
+    user.repos.session.commit()
+    user.repos.session.refresh(work)
+
+    assert work.state == "running"
+    assert work.input_sha256 == "0" * 64
+    assert work.lease_expires_at == NOW + timedelta(minutes=1)
+
+
+def test_stale_cleanup_preserves_an_active_claim(unique_user_fn_scoped: TestUser) -> None:
+    user = unique_user_fn_scoped
+    ingredient = _recipe_ingredients(user, [f"active-cleanup-{uuid4()}"])[0]
+    work = HealthLabsNutritionWork(
+        group_id=user.group_id,
+        kind="ingredient_structure",
+        target_id=str(ingredient.id),
+        input_sha256="0" * 64,
+        state="running",
+        next_attempt_at=NOW,
+        lease_expires_at=NOW + timedelta(minutes=1),
+    )
+    user.repos.session.add(work)
+    user.repos.session.commit()
+    ingredient.quantity = 2
+    user.repos.session.commit()
+
+    NutritionReconciliationWorker(user.repos.session, batch_size=20, now=NOW)._delete_stale_work()
+    user.repos.session.commit()
+
+    assert user.repos.session.get(HealthLabsNutritionWork, work.id) is not None
+
+
+def test_small_discovery_batches_rotate_between_work_kinds(session: Session, monkeypatch) -> None:
+    called: list[str] = []
+    for tick in range(3):
+        worker = NutritionReconciliationWorker(
+            session,
+            batch_size=1,
+            now=NOW + timedelta(minutes=5 * tick),
+        )
+        monkeypatch.setattr(worker, "_delete_stale_work", lambda: None)
+        monkeypatch.setattr(worker, "_discover_ingredients", lambda _limit: called.append("ingredient") or 0)
+        monkeypatch.setattr(worker, "_discover_foods", lambda _limit: called.append("food") or 0)
+        monkeypatch.setattr(worker, "_discover_portions", lambda _limit: called.append("portion") or 0)
+        worker._discover()
+
+    assert set(called) == {"ingredient", "food", "portion"}
+
+
 def test_worker_requeues_changed_input_and_removes_deleted_targets(unique_user_fn_scoped: TestUser) -> None:
     user = unique_user_fn_scoped
     token = uuid4().hex
@@ -222,13 +379,18 @@ def test_worker_requeues_changed_input_and_removes_deleted_targets(unique_user_f
     food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"rice-{token}"))
     ingredient = _recipe_ingredients(user, [f"unresolved-{token}"])[0]
 
-    first = _run(user.repos.session)
-    work = user.repos.session.scalar(
-        sa.select(HealthLabsNutritionWork).where(
-            HealthLabsNutritionWork.kind == "ingredient_structure",
-            HealthLabsNutritionWork.target_id == str(ingredient.id),
+    reports = []
+    work = None
+    for _ in range(100):
+        reports.append(_run(user.repos.session))
+        work = user.repos.session.scalar(
+            sa.select(HealthLabsNutritionWork).where(
+                HealthLabsNutritionWork.kind == "ingredient_structure",
+                HealthLabsNutritionWork.target_id == str(ingredient.id),
+            )
         )
-    )
+        if work is not None:
+            break
     assert work is not None
     first_fingerprint = work.input_sha256
     assert work.state == "review_required"
@@ -238,8 +400,11 @@ def test_worker_requeues_changed_input_and_removes_deleted_targets(unique_user_f
 
     ingredient.original_text = f"2 {unit.name} {food.name}"
     user.repos.session.commit()
-    _run(user.repos.session)
-    user.repos.session.refresh(work)
+    for _ in range(100):
+        _run(user.repos.session)
+        user.repos.session.refresh(work)
+        if work.state == "completed":
+            break
     assert work.input_sha256 != first_fingerprint
     assert work.state == "completed"
 
@@ -248,7 +413,7 @@ def test_worker_requeues_changed_input_and_removes_deleted_targets(unique_user_f
     user.repos.session.commit()
     _run(user.repos.session)
     assert user.repos.session.get(HealthLabsNutritionWork, work_id) is None
-    assert first.processed >= 1
+    assert any(report.processed >= 1 for report in reports)
 
 
 def test_worker_does_not_resolve_ingredient_from_another_group(
@@ -371,6 +536,51 @@ def test_worker_tracks_only_unresolved_authoritative_portions(unique_user_fn_sco
     assert work.result == {"resolved_grams": 300.0}
 
 
+def test_discovery_reserves_capacity_for_each_work_kind(unique_user_fn_scoped: TestUser) -> None:
+    user = unique_user_fn_scoped
+    _recipe_ingredients(user, [f"ingredient-backlog-{uuid4()}" for _ in range(3)])
+    user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"unmatched-{uuid4()}"))
+    portion_food = user.repos.ingredient_foods.create(
+        SaveIngredientFood(group_id=user.group_id, name=f"portion-{uuid4()}")
+    )
+    portion_unit = user.repos.ingredient_units.create(
+        SaveIngredientUnit(group_id=user.group_id, name=f"portion-unit-{uuid4()}")
+    )
+    _, source_food = _source_food(user, portion_food.name)
+    user.repos.session.add(
+        HealthLabsFoodMatch(
+            ingredient_food_id=portion_food.id,
+            nutrient_food_id=source_food.id,
+            country="GB",
+            match_method="manual",
+            confidence=1,
+            reviewed_by_user_id=user.user_id,
+            reviewed_at=get_utc_now(),
+        )
+    )
+    _recipe_ingredients(
+        user,
+        [f"1 {portion_unit.name} {portion_food.name}"],
+        food_id=portion_food.id,
+        unit_id=portion_unit.id,
+        quantity=1,
+    )
+
+    kinds: set[str] = set()
+    for _ in range(100):
+        NutritionReconciliationWorker(user.repos.session, batch_size=3, now=NOW)._discover()
+        user.repos.session.commit()
+        kinds = set(
+            user.repos.session.scalars(
+                sa.select(HealthLabsNutritionWork.kind).where(HealthLabsNutritionWork.group_id == user.group_id)
+            )
+        )
+        if kinds == {"ingredient_structure", "food_match", "portion_resolution"}:
+            break
+
+    assert kinds == {"ingredient_structure", "food_match", "portion_resolution"}
+
+
 def test_worker_commits_each_target_and_continues_after_one_failure(
     unique_user_fn_scoped: TestUser,
     monkeypatch,
@@ -390,16 +600,20 @@ def test_worker_commits_each_target_and_continues_after_one_failure(
 
     monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.NutritionService.match_food", fail_one)
 
-    _run(user.repos.session)
-    works = {
-        row.target_id: row
-        for row in user.repos.session.scalars(
-            sa.select(HealthLabsNutritionWork).where(
-                HealthLabsNutritionWork.kind == "food_match",
-                HealthLabsNutritionWork.target_id.in_([str(failing.id), str(succeeding.id)]),
+    works = {}
+    for _ in range(100):
+        _run(user.repos.session)
+        works = {
+            row.target_id: row
+            for row in user.repos.session.scalars(
+                sa.select(HealthLabsNutritionWork).where(
+                    HealthLabsNutritionWork.kind == "food_match",
+                    HealthLabsNutritionWork.target_id.in_([str(failing.id), str(succeeding.id)]),
+                )
             )
-        )
-    }
+        }
+        if len(works) == 2:
+            break
 
     assert works[str(failing.id)].state == "pending"
     assert works[str(failing.id)].attempt_count == 1
@@ -587,6 +801,254 @@ def test_provider_headers_change_the_worker_fingerprint(unique_user_fn_scoped: T
     assert after != before
 
 
+def test_provider_result_does_not_overwrite_a_concurrent_ingredient_edit(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch,
+) -> None:
+    user = unique_user_fn_scoped
+    token = uuid4().hex
+    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"cup-{token}"))
+    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"rice-{token}"))
+    ingredient = _recipe_ingredients(user, [f"provider-{token}"])[0]
+    _configure_provider(user)
+    edited_note = f"user-edited-{token}"
+    calls = 0
+
+    async def parse_one(_parser, source: str):
+        nonlocal calls
+        calls += 1
+        with Session(user.repos.session.get_bind()) as concurrent:
+            edited = concurrent.get(RecipeIngredientModel, ingredient.id)
+            assert edited is not None
+            edited.quantity = 7
+            edited.note = edited_note
+            concurrent.commit()
+        return _parsed(source, quantity=2, unit=unit.name, food=food.name)
+
+    monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
+    for _ in range(100):
+        _run(
+            user.repos.session,
+            provider_daily_request_limit=1,
+            now=datetime(2031, 10, 17, 12, tzinfo=UTC),
+        )
+        if calls:
+            break
+    user.repos.session.refresh(ingredient)
+    work = user.repos.session.scalar(
+        sa.select(HealthLabsNutritionWork).where(
+            HealthLabsNutritionWork.kind == "ingredient_structure",
+            HealthLabsNutritionWork.target_id == str(ingredient.id),
+        )
+    )
+
+    assert calls == 1
+    assert ingredient.quantity == 7
+    assert ingredient.note == edited_note
+    assert ingredient.food_id is None
+    assert work is None
+
+
+def test_provider_result_is_requeued_after_a_concurrent_catalogue_change(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch,
+) -> None:
+    user = unique_user_fn_scoped
+    token = uuid4().hex
+    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"cup-{token}"))
+    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"rice-{token}"))
+    ingredient = _recipe_ingredients(user, [f"provider-catalogue-{token}"])[0]
+    _configure_provider(user)
+    original_food_name = food.name
+    assert original_food_name is not None
+    calls = 0
+
+    async def parse_one(_parser, source: str):
+        nonlocal calls
+        calls += 1
+        with Session(user.repos.session.get_bind()) as concurrent:
+            edited = concurrent.get(IngredientFoodModel, food.id)
+            assert edited is not None
+            edited.name = f"renamed-{token}"
+            concurrent.commit()
+        return _parsed(source, quantity=2, unit=unit.name, food=original_food_name)
+
+    monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
+    worker = NutritionReconciliationWorker(
+        user.repos.session,
+        provider_daily_request_limit=1,
+        now=datetime(2032, 10, 17, 12, tzinfo=UTC),
+    )
+    work = HealthLabsNutritionWork(
+        group_id=user.group_id,
+        kind="ingredient_structure",
+        target_id=str(ingredient.id),
+        input_sha256=worker.ingredient_fingerprint(ingredient, user.group_id),
+        state="running",
+        next_attempt_at=worker.now,
+    )
+    user.repos.session.add(work)
+    user.repos.session.commit()
+    asyncio.run(worker._process_ingredient(work))
+    user.repos.session.commit()
+    user.repos.session.refresh(ingredient)
+    user.repos.session.refresh(work)
+
+    assert calls == 1
+    assert ingredient.food_id is None
+    assert work is not None
+    assert work.state == "pending"
+
+
+def test_provider_apply_requeues_when_a_selected_catalogue_row_changes(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch,
+) -> None:
+    user = unique_user_fn_scoped
+    token = uuid4().hex
+    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"cup-{token}"))
+    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"rice-{token}"))
+    ingredient = _recipe_ingredients(user, [f"provider-catalogue-guard-{token}"])[0]
+    _configure_provider(user)
+
+    async def parse_one(_parser, source: str):
+        return _parsed(source, quantity=2, unit=unit.name, food=food.name)
+
+    monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
+    original_apply = NutritionReconciliationWorker._apply_provider_ingredient
+
+    def rename_then_apply(worker, target, value, expected):
+        with Session(user.repos.session.get_bind()) as concurrent:
+            edited = concurrent.get(IngredientFoodModel, food.id)
+            assert edited is not None
+            edited.name = f"renamed-at-apply-{token}"
+            concurrent.commit()
+        return original_apply(worker, target, value, expected)
+
+    monkeypatch.setattr(NutritionReconciliationWorker, "_apply_provider_ingredient", rename_then_apply)
+    worker = NutritionReconciliationWorker(
+        user.repos.session,
+        provider_daily_request_limit=1,
+        now=datetime(2033, 10, 17, 12, tzinfo=UTC),
+    )
+    work = HealthLabsNutritionWork(
+        group_id=user.group_id,
+        kind="ingredient_structure",
+        target_id=str(ingredient.id),
+        input_sha256=worker.ingredient_fingerprint(ingredient, user.group_id),
+        state="running",
+        next_attempt_at=worker.now,
+    )
+    user.repos.session.add(work)
+    user.repos.session.commit()
+    asyncio.run(worker._process_ingredient(work))
+    user.repos.session.commit()
+    user.repos.session.refresh(ingredient)
+    user.repos.session.refresh(work)
+
+    assert ingredient.food_id is None
+    assert work.state == "pending"
+
+
+def test_provider_requests_crossing_midnight_use_each_utc_day(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch,
+) -> None:
+    user = unique_user_fn_scoped
+    first_now = datetime(2040, 1, 1, 23, 59, tzinfo=UTC)
+    second_now = datetime(2040, 1, 2, 0, 1, tzinfo=UTC)
+    works = [
+        HealthLabsNutritionWork(
+            group_id=user.group_id,
+            kind="ingredient_structure",
+            target_id=str(8_000_000 + index),
+            input_sha256=str(index).zfill(64),
+            state="running",
+            next_attempt_at=first_now,
+        )
+        for index in range(2)
+    ]
+    user.repos.session.add_all(works)
+    user.repos.session.commit()
+    worker = NutritionReconciliationWorker(
+        user.repos.session,
+        provider_daily_request_limit=1,
+        now=first_now,
+    )
+    times = iter((first_now, second_now))
+    monkeypatch.setattr(worker, "_current_time", lambda: next(times))
+
+    assert worker._reserve_provider_request(works[0])
+    assert worker._reserve_provider_request(works[1])
+
+    usage = user.repos.session.scalars(
+        sa.select(HealthLabsNutritionProviderUsage)
+        .where(HealthLabsNutritionProviderUsage.usage_date.in_((first_now.date(), second_now.date())))
+        .order_by(HealthLabsNutritionProviderUsage.usage_date)
+    ).all()
+    assert [(row.usage_date, row.request_count) for row in usage] == [
+        (first_now.date(), 1),
+        (second_now.date(), 1),
+    ]
+    assert works[0].provider_requested_at == first_now
+    assert works[1].provider_requested_at == second_now
+
+
+def test_provider_apply_requeues_when_target_changes_after_the_final_check(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch,
+) -> None:
+    user = unique_user_fn_scoped
+    token = uuid4().hex
+    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"cup-{token}"))
+    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"rice-{token}"))
+    ingredient = _recipe_ingredients(user, [f"provider-final-check-{token}"])[0]
+    _configure_provider(user)
+
+    async def parse_one(_parser, source: str):
+        return _parsed(source, quantity=2, unit=unit.name, food=food.name)
+
+    monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
+    original_apply = getattr(NutritionReconciliationWorker, "_apply_provider_ingredient", None)
+    assert original_apply is not None
+
+    def edit_then_apply(worker, target, value, expected):
+        worker.session.execute(
+            sa.update(RecipeIngredientModel)
+            .where(RecipeIngredientModel.id == target.id)
+            .values(note="last-moment edit")
+        )
+        worker.session.commit()
+        return original_apply(worker, target, value, expected)
+
+    monkeypatch.setattr(NutritionReconciliationWorker, "_apply_provider_ingredient", edit_then_apply)
+    worker = NutritionReconciliationWorker(
+        user.repos.session,
+        provider_daily_request_limit=1,
+        now=datetime(2041, 10, 17, 12, tzinfo=UTC),
+    )
+    work = HealthLabsNutritionWork(
+        group_id=user.group_id,
+        kind="ingredient_structure",
+        target_id=str(ingredient.id),
+        input_sha256=worker.ingredient_fingerprint(ingredient, user.group_id),
+        state="running",
+        next_attempt_at=worker.now,
+    )
+    user.repos.session.add(work)
+    user.repos.session.commit()
+    asyncio.run(worker._process_ingredient(work))
+    user.repos.session.commit()
+    user.repos.session.refresh(ingredient)
+    user.repos.session.refresh(work)
+
+    assert ingredient.quantity is None
+    assert ingredient.note == "last-moment edit"
+    assert ingredient.food_id is None
+    assert work is not None
+    assert work.state == "pending"
+
+
 def test_ambiguous_provider_suggestion_is_sanitized_and_not_repeated(
     unique_user_fn_scoped: TestUser,
     monkeypatch,
@@ -603,14 +1065,19 @@ def test_ambiguous_provider_suggestion_is_sanitized_and_not_repeated(
         return _parsed(value, quantity=3, unit="mystery unit", food="mystery food")
 
     monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
-    _run(user.repos.session, provider_daily_request_limit=10)
-    work = user.repos.session.scalar(
-        sa.select(HealthLabsNutritionWork).where(
-            HealthLabsNutritionWork.kind == "ingredient_structure",
-            HealthLabsNutritionWork.target_id == str(ingredient.id),
-        )
+    worker = NutritionReconciliationWorker(user.repos.session, provider_daily_request_limit=10, now=NOW)
+    work = HealthLabsNutritionWork(
+        group_id=user.group_id,
+        kind="ingredient_structure",
+        target_id=str(ingredient.id),
+        input_sha256=worker.ingredient_fingerprint(ingredient, user.group_id),
+        state="running",
+        next_attempt_at=worker.now,
     )
-    assert work is not None
+    user.repos.session.add(work)
+    user.repos.session.commit()
+    asyncio.run(worker._process_ingredient(work))
+    user.repos.session.commit()
     assert work.state == "review_required"
     assert work.result == {
         "reason": "ingredient_suggestion",
@@ -618,7 +1085,7 @@ def test_ambiguous_provider_suggestion_is_sanitized_and_not_repeated(
     }
     assert source not in json.dumps(work.result)
 
-    assert _run(user.repos.session, provider_daily_request_limit=10).processed == 0
+    assert work.id not in worker._due_work_ids()
     assert calls == 1
 
 
@@ -638,15 +1105,19 @@ def test_provider_allowance_defers_without_attempt_and_resets_next_utc_day(
         return _parsed(source, quantity=1, unit="unknown unit", food="unknown food")
 
     monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
-    _run(user.repos.session, provider_daily_request_limit=1, now=budget_now)
-    works = list(
-        user.repos.session.scalars(
-            sa.select(HealthLabsNutritionWork).where(
-                HealthLabsNutritionWork.kind == "ingredient_structure",
-                HealthLabsNutritionWork.target_id.in_([str(row.id) for row in ingredients]),
+    works = []
+    for _ in range(100):
+        _run(user.repos.session, provider_daily_request_limit=1, now=budget_now)
+        works = list(
+            user.repos.session.scalars(
+                sa.select(HealthLabsNutritionWork).where(
+                    HealthLabsNutritionWork.kind == "ingredient_structure",
+                    HealthLabsNutritionWork.target_id.in_([str(row.id) for row in ingredients]),
+                )
             )
         )
-    )
+        if len(works) == 2:
+            break
     deferred = next(work for work in works if work.state == "pending")
 
     assert calls == 1
@@ -685,14 +1156,39 @@ def test_provider_failures_retry_after_five_and_thirty_minutes_then_stop(
         raise ValueError("raw provider response must not be stored")
 
     monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", malformed)
-    _run(user.repos.session, provider_daily_request_limit=3, now=retry_now)
-    work = user.repos.session.scalar(
-        sa.select(HealthLabsNutritionWork).where(
-            HealthLabsNutritionWork.kind == "ingredient_structure",
-            HealthLabsNutritionWork.target_id == str(ingredient.id),
-        )
+    worker = NutritionReconciliationWorker(user.repos.session, provider_daily_request_limit=3, now=retry_now)
+    work = HealthLabsNutritionWork(
+        group_id=user.group_id,
+        kind="ingredient_structure",
+        target_id=str(ingredient.id),
+        input_sha256=worker.ingredient_fingerprint(ingredient, user.group_id),
+        state="running",
+        next_attempt_at=retry_now,
     )
-    assert work is not None
+    user.repos.session.add(work)
+    user.repos.session.commit()
+    work_id = work.id
+
+    def fail_at(now: datetime) -> HealthLabsNutritionWork:
+        current_worker = NutritionReconciliationWorker(
+            user.repos.session,
+            provider_daily_request_limit=3,
+            now=now,
+        )
+        current_work = user.repos.session.get(HealthLabsNutritionWork, work_id)
+        assert current_work is not None
+        current_work.state = "running"
+        user.repos.session.commit()
+        try:
+            asyncio.run(current_worker._process_ingredient(current_work))
+        except ValueError as exc:
+            user.repos.session.rollback()
+            current_worker._record_failure(work_id, exc)
+        current_work = user.repos.session.get(HealthLabsNutritionWork, work_id)
+        assert current_work is not None
+        return current_work
+
+    work = fail_at(retry_now)
     assert (work.state, work.attempt_count, work.next_attempt_at, work.last_error) == (
         "pending",
         1,
@@ -700,15 +1196,13 @@ def test_provider_failures_retry_after_five_and_thirty_minutes_then_stop(
         "ValueError",
     )
 
-    _run(user.repos.session, provider_daily_request_limit=3, now=retry_now + timedelta(minutes=5))
-    user.repos.session.refresh(work)
+    work = fail_at(retry_now + timedelta(minutes=5))
     assert (work.state, work.attempt_count, work.next_attempt_at) == (
         "pending",
         2,
         retry_now + timedelta(minutes=35),
     )
 
-    _run(user.repos.session, provider_daily_request_limit=3, now=retry_now + timedelta(minutes=35))
-    user.repos.session.refresh(work)
+    work = fail_at(retry_now + timedelta(minutes=35))
     assert (work.state, work.attempt_count, work.last_error) == ("failed", 3, "ValueError")
     assert "raw provider response" not in json.dumps(work.result)

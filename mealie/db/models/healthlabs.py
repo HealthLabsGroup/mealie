@@ -295,7 +295,7 @@ class HealthLabsNutritionWork(SqlAlchemyBase, BaseMixins):
     )
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     # shortcut: polymorphic nutrition targets cannot use one database FK; discovery removes stale rows.
-    target_id: Mapped[GUID] = mapped_column(GUID, nullable=False)
+    target_id: Mapped[str] = mapped_column(String(64), nullable=False)
     input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending", server_default="pending")
     attempt_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")

@@ -65,7 +65,8 @@ class _ExactDataMatcher:
 class IngredientStructureService:
     def __init__(self, session: Session, group_id: UUID4, translator: Translator) -> None:
         self.parser = BruteForceParser(group_id, session, translator)
-        self.parser.data_matcher = _ExactDataMatcher(self.parser)  # type: ignore[assignment]
+        self.matcher = _ExactDataMatcher(self.parser)
+        self.parser.data_matcher = self.matcher  # type: ignore[assignment]
 
     @staticmethod
     def is_candidate(ingredient: RecipeIngredient) -> bool:
@@ -94,17 +95,28 @@ class IngredientStructureService:
         except IndexError, TypeError, ValueError:
             return False
 
-        if (
-            parsed.quantity is None
-            or parsed.quantity <= 0
-            or not isinstance(parsed.unit, IngredientUnit)
-            or not isinstance(parsed.food, IngredientFood)
-        ):
+        return self.apply_exact(ingredient, parsed)
+
+    def apply_exact(self, ingredient: RecipeIngredient, parsed: RecipeIngredient) -> bool:
+        if not self.is_candidate(ingredient):
+            return False
+
+        original_text = (ingredient.original_text or "").strip()
+        source = original_text or (ingredient.note or "").strip()
+        parsed_food = parsed.food
+        parsed_unit = parsed.unit
+
+        if parsed.quantity is None or parsed.quantity <= 0 or parsed_food is None or parsed_unit is None:
+            return False
+
+        food = self.matcher.foods.get(IngredientFoodModel.normalize(parsed_food.name))
+        unit = self.matcher.units.get(IngredientUnitModel.normalize(parsed_unit.name))
+        if not isinstance(food, IngredientFood) or not isinstance(unit, IngredientUnit):
             return False
 
         ingredient.quantity = parsed.quantity
-        ingredient.unit = parsed.unit
-        ingredient.food = parsed.food
+        ingredient.unit = unit
+        ingredient.food = food
         ingredient.original_text = source
         if not original_text or not ingredient.note:
             ingredient.note = parsed.note.strip() if parsed.note else ""

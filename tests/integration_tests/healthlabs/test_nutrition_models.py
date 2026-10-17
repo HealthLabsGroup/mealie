@@ -1,5 +1,5 @@
 from datetime import UTC, date, datetime
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -54,13 +54,13 @@ def _nutrition_work(
     user: TestUser,
     *,
     kind: str = "ingredient_structure",
-    target_id: UUID | None = None,
+    target_id: str | None = None,
     state: str = "pending",
 ) -> HealthLabsNutritionWork:
     work = HealthLabsNutritionWork(
         group_id=user.group_id,
         kind=kind,
-        target_id=target_id or uuid4(),
+        target_id=target_id or str(uuid4()),
         input_sha256="a" * 64,
         state=state,
         next_attempt_at=datetime(2026, 10, 17, 9, 30, tzinfo=UTC),
@@ -107,7 +107,7 @@ def test_nutrition_work_rejects_invalid_control_values(
 
 def test_nutrition_work_has_one_row_per_kind_and_target(unique_user_fn_scoped: TestUser) -> None:
     session = unique_user_fn_scoped.repos.session
-    target_id = uuid4()
+    target_id = str(uuid4())
     _nutrition_work(unique_user_fn_scoped, target_id=target_id)
     _nutrition_work(unique_user_fn_scoped, kind="portion_resolution", target_id=target_id)
     session.flush()
@@ -116,6 +116,15 @@ def test_nutrition_work_has_one_row_per_kind_and_target(unique_user_fn_scoped: T
     with pytest.raises(IntegrityError):
         session.flush()
     session.rollback()
+
+
+def test_nutrition_work_accepts_recipe_ingredient_target_id(unique_user_fn_scoped: TestUser) -> None:
+    work = _nutrition_work(unique_user_fn_scoped, target_id="42")
+
+    unique_user_fn_scoped.repos.session.flush()
+
+    assert work.target_id == "42"
+    unique_user_fn_scoped.repos.session.rollback()
 
 
 def test_provider_usage_has_one_nonnegative_counter_per_utc_date(unique_user_fn_scoped: TestUser) -> None:

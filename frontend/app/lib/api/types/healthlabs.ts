@@ -17,6 +17,8 @@ export type HealthLabsCapability =
   | "nutrition:write";
 export type HealthLabsNutritionStatus = "matched" | "review_required" | "unknown";
 export type HealthLabsRecipeScope = "personal" | "catalogue";
+export type HealthLabsNutritionWorkKind = "ingredient_structure" | "food_match" | "portion_resolution";
+export type HealthLabsNutritionWorkState = "pending" | "running" | "review_required" | "completed" | "failed";
 export type HealthLabsPlanEntryType = "breakfast" | "lunch" | "dinner" | "snack";
 
 export interface HealthLabsAccessAuditOut {
@@ -244,6 +246,26 @@ export interface HealthLabsNutritionSourceReleaseOut {
   id: string;
   sha256: string;
   importedAt: string;
+}
+export interface HealthLabsNutritionWorkOut {
+  id: string;
+  kind: HealthLabsNutritionWorkKind;
+  targetId: string;
+  state: HealthLabsNutritionWorkState;
+  attemptCount: number;
+  result?: {
+    [k: string]: unknown;
+  } | null;
+  lastError?: string | null;
+  updatedAt?: string | null;
+}
+export interface HealthLabsNutritionWorkerStatus {
+  counts: {
+    [k: string]: number;
+  };
+  providerEnabled: boolean;
+  providerBudgetExhausted: boolean;
+  lastUpdatedAt?: string | null;
 }
 export interface HealthLabsOperationOut {
   idempotencyKey: string;

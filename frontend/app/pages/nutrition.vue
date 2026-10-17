@@ -47,6 +47,109 @@
       </div>
     </div>
 
+    <v-card
+      v-if="workerStatus || reviewWork.length || workError || loadingWork"
+      data-testid="worker-status"
+      variant="outlined"
+      class="mb-6"
+    >
+      <v-card-title class="d-flex flex-wrap align-center justify-space-between ga-3">
+        <span>{{ $t("nutrition-curator.background-title") }}</span>
+        <v-btn
+          variant="text"
+          size="small"
+          :loading="loadingWork"
+          @click="refreshAll"
+        >
+          {{ $t("nutrition-curator.refresh") }}
+        </v-btn>
+      </v-card-title>
+      <v-card-text>
+        <div
+          v-if="workerStatus"
+          class="d-flex flex-wrap ga-2 mb-3"
+        >
+          <v-chip
+            v-for="state in workerStates"
+            :key="state"
+            size="small"
+            variant="tonal"
+          >
+            {{ workerStateLabel(state) }}: {{ workerStatus.counts[state] ?? 0 }}
+          </v-chip>
+        </div>
+        <v-alert
+          v-if="workerStatus && !workerStatus.providerEnabled"
+          type="info"
+          variant="tonal"
+          class="mb-3"
+        >
+          {{ $t("nutrition-curator.provider-disabled") }}
+        </v-alert>
+        <v-alert
+          v-else-if="workerStatus?.providerBudgetExhausted"
+          type="warning"
+          variant="tonal"
+          class="mb-3"
+        >
+          {{ $t("nutrition-curator.provider-budget-exhausted") }}
+        </v-alert>
+        <v-alert
+          v-if="workError"
+          type="error"
+          variant="tonal"
+          class="mb-3"
+          aria-live="polite"
+        >
+          {{ workError }}
+        </v-alert>
+
+        <v-list
+          v-if="reviewWork.length"
+          lines="two"
+          class="pa-0"
+        >
+          <v-list-item
+            v-for="work in reviewWork"
+            :key="work.id"
+          >
+            <v-list-item-title>{{ workTitle(work) }}</v-list-item-title>
+            <v-list-item-subtitle>{{ workerStateLabel(work.kind) }}</v-list-item-subtitle>
+            <template #append>
+              <v-btn
+                v-if="work.kind === 'ingredient_structure'"
+                color="primary"
+                size="small"
+                :loading="saving"
+                data-testid="approve-ingredient-work"
+                @click="approveIngredientWork(work.id)"
+              >
+                {{ $t("nutrition-curator.approve-suggestion") }}
+              </v-btn>
+              <v-btn
+                v-else
+                color="primary"
+                size="small"
+                variant="outlined"
+                :data-testid="work.kind === 'portion_resolution' ? 'open-portion-work' : 'open-food-work'"
+                @click="openWork(work)"
+              >
+                {{ work.kind === "portion_resolution"
+                  ? $t("nutrition-curator.add-portion")
+                  : $t("nutrition-curator.review-food") }}
+              </v-btn>
+            </template>
+          </v-list-item>
+        </v-list>
+        <p
+          v-else-if="!loadingWork"
+          class="text-body-2 text-medium-emphasis mb-0"
+        >
+          {{ $t("nutrition-curator.no-background-work") }}
+        </p>
+      </v-card-text>
+    </v-card>
+
     <v-row>
       <v-col
         cols="12"
@@ -480,6 +583,7 @@ import type {
   HealthLabsNutritionSourceOut,
   HealthLabsNutritionStatus,
   HealthLabsNutritionValues,
+  HealthLabsNutritionWorkOut,
 } from "~/lib/api/types/healthlabs";
 
 definePageMeta({ middleware: ["auth", "nutrition-write-only"] });
@@ -500,7 +604,14 @@ const {
   foodError,
   sourceError,
   actionError,
+  workerStatus,
+  reviewWork,
+  loadingWork,
+  workError,
   loadFoods,
+  loadWorker,
+  approveIngredientWork,
+  openWork,
   selectFood,
   searchSources,
   approveSource,
@@ -510,6 +621,7 @@ const {
 } = useNutritionCurator();
 
 const countries = ["GB", "FR", "DE", "US", "OTHER"];
+const workerStates = ["pending", "running", "review_required", "completed", "failed"] as const;
 const nutrientFields: ReadonlyArray<{
   id: string;
   key: keyof HealthLabsNutritionValues;
@@ -567,6 +679,28 @@ function formatNutrient(value: number | null | undefined, unit: string) {
   return value == null ? "—" : `${value} ${unit}`;
 }
 
+function workerStateLabel(value: string) {
+  return i18n.t(`nutrition-curator.worker-${value.replaceAll("_", "-")}`);
+}
+
+function workTitle(work: HealthLabsNutritionWorkOut) {
+  if (work.kind !== "ingredient_structure") {
+    return work.kind === "portion_resolution"
+      ? i18n.t("nutrition-curator.portion-work")
+      : i18n.t("nutrition-curator.food-work");
+  }
+  const suggestion = work.result?.suggestion;
+  if (!suggestion || typeof suggestion !== "object" || Array.isArray(suggestion)) {
+    return i18n.t("nutrition-curator.ingredient-work");
+  }
+  const values = suggestion as Record<string, unknown>;
+  return [values.quantity, values.unit, values.food].filter(value => value != null).join(" ");
+}
+
+async function refreshAll() {
+  await Promise.all([loadFoods(), loadWorker()]);
+}
+
 async function refreshCountry() {
   const loaded = await loadFoods();
   if (loaded && selectedFood.value) {
@@ -589,7 +723,7 @@ async function submitPortion() {
   }
 }
 
-onMounted(loadFoods);
+onMounted(refreshAll);
 </script>
 
 <style scoped>

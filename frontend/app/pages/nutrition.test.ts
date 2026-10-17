@@ -7,6 +7,8 @@ import * as directives from "vuetify/directives";
 import type {
   HealthLabsFoodNutritionOut,
   HealthLabsNutrientFoodOut,
+  HealthLabsNutritionWorkerStatus,
+  HealthLabsNutritionWorkOut,
 } from "~/lib/api/types/healthlabs";
 
 const useNutritionCurator = vi.hoisted(() => vi.fn());
@@ -73,6 +75,34 @@ const suggestedFood: HealthLabsFoodNutritionOut = {
   },
 };
 
+const workerStatus: HealthLabsNutritionWorkerStatus = {
+  counts: { pending: 2, running: 0, review_required: 2, completed: 4, failed: 0 },
+  providerEnabled: false,
+  providerBudgetExhausted: false,
+};
+
+const reviewWork: HealthLabsNutritionWorkOut[] = [
+  {
+    id: "88888888-8888-4888-8888-888888888888",
+    kind: "ingredient_structure",
+    targetId: "42",
+    state: "review_required",
+    attemptCount: 0,
+    result: {
+      reason: "ingredient_suggestion",
+      suggestion: { quantity: 2, unit: "cup", food: "oats", note: "" },
+    },
+  },
+  {
+    id: "99999999-9999-4999-8999-999999999999",
+    kind: "portion_resolution",
+    targetId: "43",
+    state: "review_required",
+    attemptCount: 0,
+    result: { reason: "conversion_missing", food_id: matchedFood.id },
+  },
+];
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal("definePageMeta", vi.fn());
@@ -104,7 +134,14 @@ beforeEach(() => {
     foodError: ref(null),
     sourceError: ref(null),
     actionError: ref(null),
+    workerStatus: ref(workerStatus),
+    reviewWork: ref(reviewWork),
+    loadingWork: ref(false),
+    workError: ref(null),
     loadFoods: vi.fn(),
+    loadWorker: vi.fn(),
+    approveIngredientWork: vi.fn(),
+    openWork: vi.fn(),
     selectFood: vi.fn(),
     searchSources: vi.fn(),
     approveSource: vi.fn(),
@@ -134,6 +171,7 @@ test("renders the curator workflow and keeps unavailable nutrients distinct from
     await flushPromises();
     expect(definePageMeta).toHaveBeenCalledWith({ middleware: ["auth", "nutrition-write-only"] });
     expect(curator.loadFoods).toHaveBeenCalledOnce();
+    expect(curator.loadWorker).toHaveBeenCalledOnce();
     expect(wrapper.get("[data-testid='filter-needs-review']").text()).toContain("Needs review");
     expect(wrapper.get("[data-testid='filter-matched']").text()).toContain("Matched");
     expect(wrapper.get("[data-testid='filter-all']").text()).toContain("All");
@@ -159,6 +197,48 @@ test("renders the curator workflow and keeps unavailable nutrients distinct from
     expect(wrapper.text()).toContain("Unit");
     expect(wrapper.text()).toContain("Grams");
     expect(wrapper.get("[data-testid='add-portion']").text()).toContain("Add portion");
+  }
+  finally {
+    wrapper.unmount();
+  }
+});
+
+test("shows background status and actionable ingredient and portion work", async () => {
+  const wrapper = await mountPage();
+  const curator = useNutritionCurator.mock.results[0]?.value;
+
+  try {
+    await flushPromises();
+    expect(wrapper.get("[data-testid='worker-status']").text()).toContain("Background reconciliation");
+    expect(wrapper.get("[data-testid='worker-status']").text()).toContain("Provider calls are disabled");
+    expect(wrapper.text()).toContain("2 cup oats");
+
+    await wrapper.get("[data-testid='approve-ingredient-work']").trigger("click");
+    expect(curator.approveIngredientWork).toHaveBeenCalledWith(reviewWork[0].id);
+
+    await wrapper.get("[data-testid='open-portion-work']").trigger("click");
+    expect(curator.openWork).toHaveBeenCalledWith(reviewWork[1]);
+  }
+  finally {
+    wrapper.unmount();
+  }
+});
+
+test("shows when the configured provider allowance is exhausted", async () => {
+  const curator = useNutritionCurator.mock.results[0]?.value ?? useNutritionCurator();
+  curator.workerStatus.value = {
+    ...workerStatus,
+    providerEnabled: true,
+    providerBudgetExhausted: true,
+  };
+  useNutritionCurator.mockReturnValue(curator);
+  const wrapper = await mountPage();
+
+  try {
+    await flushPromises();
+    expect(wrapper.get("[data-testid='worker-status']").text()).toContain(
+      "Today's provider request allowance is used",
+    );
   }
   finally {
     wrapper.unmount();

@@ -92,4 +92,4 @@
 ## Final verification
 
 - [x] Run the complete backend suite, frontend suite, mypy, Ruff, ESLint, and production frontend build.
-- [ ] Review authorization, tenant scoping, idempotency/audit headers, null rendering, and responsive layout.
+- [x] Review authorization, tenant scoping, idempotency/audit headers, null rendering, and responsive layout.

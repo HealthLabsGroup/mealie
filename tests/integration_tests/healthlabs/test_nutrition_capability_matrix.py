@@ -3,6 +3,8 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from mealie.db.models.users import User
+from mealie.repos.repository_factory import AllRepositories
 from mealie.schema.healthlabs.identity import HealthLabsCapability
 
 
@@ -12,6 +14,7 @@ def test_nutrition_read_and_write_capabilities_are_independent(
     healthlabs_set_capabilities: Callable,
     healthlabs_recipe_food: Callable,
     healthlabs_nutrition_source: Callable,
+    unfiltered_database: AllRepositories,
 ) -> None:
     owner, owner_headers = healthlabs_provision()
     ordinary, ordinary_headers = healthlabs_provision()
@@ -35,6 +38,15 @@ def test_nutrition_read_and_write_capabilities_are_independent(
     )
     assert source_search.status_code == 200
     assert [item["id"] for item in source_search.json()] == [nutrient_food_id]
+
+    session = unfiltered_database.session
+    owner_user = session.get(User, owner["userId"])
+    assert owner_user is not None
+    for identity in (ordinary, catalogue_editor, plan_editor, nutrition_editor, admin):
+        user = session.get(User, identity["userId"])
+        assert user is not None
+        user.group_id = owner_user.group_id
+    session.commit()
 
     healthlabs_set_capabilities(catalogue_editor["userId"], HealthLabsCapability.CATALOGUE_WRITE)
     healthlabs_set_capabilities(plan_editor["userId"], HealthLabsCapability.PLANS_WRITE_ALL)

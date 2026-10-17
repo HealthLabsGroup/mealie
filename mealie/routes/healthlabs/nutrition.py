@@ -14,6 +14,7 @@ from mealie.schema.healthlabs.nutrition import (
     HealthLabsFoodNutritionOut,
     HealthLabsFoodNutritionPage,
     HealthLabsFoodPortionCreate,
+    HealthLabsNutrientFoodOut,
     HealthLabsNutritionSourceReleaseOut,
     HealthLabsNutritionStatus,
 )
@@ -95,6 +96,17 @@ def get_food(
     except Exception as exc:
         _raise_http(exc)
         raise
+
+
+@router.get("/source-foods", response_model=list[HealthLabsNutrientFoodOut])
+def search_source_foods(
+    q: str = Query(min_length=2, max_length=255),
+    country: str = Query(default="OTHER", min_length=2, max_length=5),
+    limit: int = Query(default=20, ge=1, le=50),
+    session: Session = Depends(generate_session),
+    user: PrivateUser = Depends(get_current_user),
+) -> list[HealthLabsNutrientFoodOut]:
+    return _service(session, user).search_source_foods(q, country, limit)
 
 
 @router.put("/foods/{food_id}/match", response_model=HealthLabsFoodNutritionOut)

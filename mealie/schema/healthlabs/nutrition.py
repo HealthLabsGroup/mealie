@@ -102,6 +102,16 @@ class HealthLabsNutritionSourceReleaseOut(HealthLabsNutritionSourceOut):
     imported_at: datetime
 
 
+class HealthLabsNutrientFoodOut(MealieModel):
+    id: UUID4
+    source_food_id: str
+    name: str
+    preparation_state: str | None = None
+    nutrients_per_100g: HealthLabsNutritionValues
+    portions: list[HealthLabsFoodPortionOut] = Field(default_factory=list)
+    source: HealthLabsNutritionSourceReleaseOut
+
+
 class HealthLabsIngredientNutrition(MealieModel):
     status: HealthLabsNutritionStatus
     resolved_grams: float | None = Field(default=None, ge=0)

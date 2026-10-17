@@ -24,6 +24,7 @@ from mealie.schema.healthlabs.nutrition import (
     HealthLabsFoodPortionCreate,
     HealthLabsFoodPortionOut,
     HealthLabsIngredientNutrition,
+    HealthLabsNutrientFoodOut,
     HealthLabsNutritionSourceOut,
     HealthLabsNutritionSourceReleaseOut,
     HealthLabsNutritionStatus,
@@ -229,6 +230,33 @@ class NutritionService:
             )
             for source in sources
         ]
+
+    def search_source_foods(self, query: str, country: str, limit: int) -> list[HealthLabsNutrientFoodOut]:
+        self._require_user()
+        terms = IngredientFoodModel.normalize(query).split()
+        if not terms:
+            return []
+
+        country = country.upper()
+        countries = [country] if country == "OTHER" else [country, "OTHER"]
+        source_country = sa.func.upper(HealthLabsNutrientSourceRelease.country)
+        source_name = sa.func.lower(HealthLabsNutrientFood.name)
+        statement = (
+            sa.select(HealthLabsNutrientFood, HealthLabsNutrientSourceRelease)
+            .join(
+                HealthLabsNutrientSourceRelease,
+                HealthLabsNutrientSourceRelease.id == HealthLabsNutrientFood.source_release_id,
+            )
+            .where(source_country.in_(countries), *(source_name.contains(term) for term in terms))
+            .order_by(
+                sa.case((source_country == country, 0), else_=1),
+                sa.func.length(HealthLabsNutrientFood.name),
+                source_name,
+                HealthLabsNutrientFood.id,
+            )
+            .limit(limit)
+        )
+        return [self._source_food_out(food, source) for food, source in self.session.execute(statement)]
 
     def match_food(self, food_id: UUID, country: str) -> HealthLabsFoodMatchOut | None:
         existing = self.session.scalar(
@@ -524,18 +552,14 @@ class NutritionService:
             raise ValueError("Nutrition match references missing data")
 
         reviewed = match is not None and match.reviewed_by_user_id is not None and match.reviewed_at is not None
-        portions = self.session.scalars(
-            sa.select(HealthLabsFoodPortion)
-            .where(HealthLabsFoodPortion.nutrient_food_id == nutrient_food.id)
-            .order_by(HealthLabsFoodPortion.description, HealthLabsFoodPortion.id)
-        ).all()
+        source_food = self._source_food_out(nutrient_food, source)
         return HealthLabsFoodMatchOut(
             id=match.id if match is not None else None,
             food_id=food_id,
-            nutrient_food_id=nutrient_food.id,
-            source_food_id=nutrient_food.source_food_id,
-            name=nutrient_food.name,
-            preparation_state=nutrient_food.preparation_state,
+            nutrient_food_id=source_food.id,
+            source_food_id=source_food.source_food_id,
+            name=source_food.name,
+            preparation_state=source_food.preparation_state,
             status=HealthLabsNutritionStatus.MATCHED if reviewed else HealthLabsNutritionStatus.REVIEW_REQUIRED,
             country=country,
             match_method=match_method,
@@ -547,6 +571,26 @@ class NutritionService:
             diets=match.diets if match is not None else None,
             reviewed_by_user_id=match.reviewed_by_user_id if match is not None else None,
             reviewed_at=match.reviewed_at if match is not None else None,
+            nutrients_per_100g=source_food.nutrients_per_100g,
+            portions=source_food.portions,
+            source=source_food.source,
+        )
+
+    def _source_food_out(
+        self,
+        nutrient_food: HealthLabsNutrientFood,
+        source: HealthLabsNutrientSourceRelease,
+    ) -> HealthLabsNutrientFoodOut:
+        portions = self.session.scalars(
+            sa.select(HealthLabsFoodPortion)
+            .where(HealthLabsFoodPortion.nutrient_food_id == nutrient_food.id)
+            .order_by(HealthLabsFoodPortion.description, HealthLabsFoodPortion.id)
+        ).all()
+        return HealthLabsNutrientFoodOut(
+            id=nutrient_food.id,
+            source_food_id=nutrient_food.source_food_id,
+            name=nutrient_food.name,
+            preparation_state=nutrient_food.preparation_state,
             nutrients_per_100g=self._nutrition_values(nutrient_food.nutrient_values),
             portions=[
                 HealthLabsFoodPortionOut(
@@ -557,13 +601,16 @@ class NutritionService:
                 )
                 for portion in portions
             ],
-            source=HealthLabsNutritionSourceOut(
+            source=HealthLabsNutritionSourceReleaseOut(
+                id=source.id,
                 provider=source.provider,
                 version=source.version,
                 country=source.country,
                 source_url=source.source_url,
                 license_url=source.license_url,
                 attribution=source.attribution,
+                sha256=source.sha256,
+                imported_at=source.imported_at,
             ),
         )
 

@@ -1,8 +1,10 @@
 from collections.abc import Callable
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 
+from mealie.db.models.healthlabs import HealthLabsFoodPortion
+from mealie.repos.repository_factory import AllRepositories
 from mealie.schema.healthlabs.identity import HealthLabsCapability
 
 
@@ -92,6 +94,75 @@ def test_food_search_detail_match_replace_portion_and_clear(
     sources = api_client.get("/api/healthlabs/v1/nutrition/sources", headers=owner_headers)
     assert sources.status_code == 200
     assert source_id in {item["id"] for item in sources.json()}
+
+
+def test_source_food_search_is_tokenized_country_scoped_and_stable(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_nutrition_source: Callable,
+    unfiltered_database: AllRepositories,
+) -> None:
+    _, headers = healthlabs_provision()
+    token = uuid4().hex[:10]
+    gb_source_id, gb_food_id = healthlabs_nutrition_source(
+        name=f"Oil, olive {token}", country="GB", provider=f"cofid-{token}"
+    )
+    _, other_food_id = healthlabs_nutrition_source(
+        name=f"Olive {token} cooking oil",
+        country="OTHER",
+        provider=f"usda-{token}",
+    )
+    healthlabs_nutrition_source(name=f"Olive {token} oil", country="FR", provider=f"ciqual-{token}")
+    unfiltered_database.session.add(
+        HealthLabsFoodPortion(
+            nutrient_food_id=UUID(gb_food_id),
+            description="tablespoon",
+            amount=1,
+            unit="tbsp",
+            grams=14,
+        )
+    )
+    unfiltered_database.session.commit()
+
+    response = api_client.get(
+        "/api/healthlabs/v1/nutrition/source-foods",
+        params={"q": f"olive {token} oil", "country": "GB"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert [item["id"] for item in response.json()] == [gb_food_id, other_food_id]
+    assert response.json()[0]["nutrientsPer100g"]["kcal"] == 50
+    assert response.json()[0]["portions"] == [
+        {"description": "tablespoon", "amount": 1.0, "unit": "tbsp", "grams": 14.0}
+    ]
+    assert response.json()[0]["source"]["id"] == gb_source_id
+    assert response.json()[0]["source"]["country"] == "GB"
+    assert len(response.json()[0]["source"]["sha256"]) == 64
+    assert response.json()[1]["source"]["country"] == "OTHER"
+
+    limited = api_client.get(
+        "/api/healthlabs/v1/nutrition/source-foods",
+        params={"q": token, "country": "GB", "limit": 1},
+        headers=headers,
+    )
+    assert limited.status_code == 200
+    assert [item["id"] for item in limited.json()] == [gb_food_id]
+
+    punctuation = api_client.get(
+        "/api/healthlabs/v1/nutrition/source-foods",
+        params={"q": "---", "country": "GB"},
+        headers=headers,
+    )
+    assert punctuation.status_code == 200
+    assert punctuation.json() == []
+
+    too_large = api_client.get(
+        "/api/healthlabs/v1/nutrition/source-foods",
+        params={"q": token, "country": "GB", "limit": 51},
+        headers=headers,
+    )
+    assert too_large.status_code == 422
 
 
 def test_nutrition_mutations_require_headers_and_reject_stale_source(

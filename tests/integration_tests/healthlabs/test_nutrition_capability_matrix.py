@@ -20,13 +20,21 @@ def test_nutrition_read_and_write_capabilities_are_independent(
     nutrition_editor, nutrition_headers = healthlabs_provision()
     admin, admin_headers = healthlabs_provision()
     _, food_id = healthlabs_recipe_food(owner_headers, f"Capability food {uuid4()}")
-    _, nutrient_food_id = healthlabs_nutrition_source(name=f"Capability source {uuid4()}")
+    source_name = f"Capability source {uuid4()}"
+    _, nutrient_food_id = healthlabs_nutrition_source(name=source_name)
     resource = f"/api/healthlabs/v1/nutrition/foods/{food_id}"
     match_resource = f"{resource}/match"
     body = {"nutrientFoodId": nutrient_food_id, "country": "GB"}
 
     assert api_client.get(resource, headers=owner_headers).status_code == 200
     assert api_client.get(resource, headers=ordinary_headers).status_code == 404
+    source_search = api_client.get(
+        "/api/healthlabs/v1/nutrition/source-foods",
+        params={"q": source_name, "country": "GB"},
+        headers=ordinary_headers,
+    )
+    assert source_search.status_code == 200
+    assert [item["id"] for item in source_search.json()] == [nutrient_food_id]
 
     healthlabs_set_capabilities(catalogue_editor["userId"], HealthLabsCapability.CATALOGUE_WRITE)
     healthlabs_set_capabilities(plan_editor["userId"], HealthLabsCapability.PLANS_WRITE_ALL)

@@ -190,7 +190,11 @@ def test_reimport_preserves_editor_portions_alongside_source_portions(
         session.scalars(
             select(HealthLabsFoodPortion)
             .where(HealthLabsFoodPortion.nutrient_food_id == nutrient_food.id)
-            .order_by(HealthLabsFoodPortion.description)
+            .order_by(
+                HealthLabsFoodPortion.description,
+                HealthLabsFoodPortion.source_managed,
+                HealthLabsFoodPortion.id,
+            )
         )
     )
 

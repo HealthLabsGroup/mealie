@@ -26,6 +26,8 @@ export function useNutritionCurator() {
   const actionError = ref<string | null>(null);
   let foodLoadId = 0;
   let sourceSearchId = 0;
+  let confirmedCountry = country.value;
+  const confirmedUpdates = new Map<string, { food: HealthLabsFoodNutritionOut; afterLoadId: number }>();
 
   const visibleFoods = computed(() => foods.value.filter((food) => {
     if (queueFilter.value === "all") {
@@ -40,6 +42,10 @@ export function useNutritionCurator() {
   async function loadFoods() {
     const loadId = ++foodLoadId;
     const loadCountry = country.value;
+    if (loadCountry !== confirmedCountry) {
+      confirmedUpdates.clear();
+      confirmedCountry = loadCountry;
+    }
     const q = (queueQuery.value ?? "").trim();
     loadingFoods.value = true;
     foodError.value = null;
@@ -55,7 +61,14 @@ export function useNutritionCurator() {
         foodError.value = "Unable to load foods.";
         return false;
       }
-      foods.value = data.items;
+      foods.value = data.items.map((food) => {
+        const confirmed = confirmedUpdates.get(food.id);
+        if (confirmed?.afterLoadId >= loadId) {
+          return confirmed.food;
+        }
+        confirmedUpdates.delete(food.id);
+        return food;
+      });
       total.value = data.total;
       const refreshedSelection = foods.value.find(food => food.id === selectedFood.value?.id);
       if (refreshedSelection) {
@@ -124,6 +137,7 @@ export function useNutritionCurator() {
     if (country.value !== targetCountry) {
       return;
     }
+    confirmedUpdates.set(targetFoodId, { food: updated, afterLoadId: foodLoadId });
     if (foodLoadId === startingFoodLoadId) {
       foodLoadId++;
       loadingFoods.value = false;

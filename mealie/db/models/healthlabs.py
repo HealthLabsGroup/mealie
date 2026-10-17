@@ -238,6 +238,7 @@ class HealthLabsFoodPortion(SqlAlchemyBase, BaseMixins):
     amount: Mapped[float] = mapped_column(sa.Float, nullable=False)
     unit: Mapped[str] = mapped_column(String(64), nullable=False)
     grams: Mapped[float] = mapped_column(sa.Float, nullable=False)
+    source_managed: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=True, server_default=sa.true())
 
 
 class HealthLabsBrandedProduct(SqlAlchemyBase, BaseMixins):

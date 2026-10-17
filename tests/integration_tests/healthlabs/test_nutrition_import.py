@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
+    HealthLabsFoodPortion,
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
 )
@@ -145,4 +146,42 @@ def test_reimport_preserves_reviewed_food_match(unique_user_fn_scoped: TestUser)
     assert preserved.nutrient_food_id == nutrient_food.id
     assert preserved.reviewed_by_user_id == unique_user_fn_scoped.user_id
     assert preserved.reviewed_at == reviewed_at
+    session.commit()
+
+
+def test_reimport_preserves_editor_portion(unique_user_fn_scoped: TestUser) -> None:
+    session = unique_user_fn_scoped.repos.session
+    service = NutritionImportService(session)
+    manifest = _manifest()
+    result = service.import_release(manifest, [_row()])
+    nutrient_food = session.scalars(
+        select(HealthLabsNutrientFood).where(HealthLabsNutrientFood.source_release_id == result.source_release_id)
+    ).one()
+    editor_portion = HealthLabsFoodPortion(
+        nutrient_food_id=nutrient_food.id,
+        description="measured scoop",
+        amount=1,
+        unit="scoop",
+        grams=42,
+        source_managed=False,
+    )
+    session.add(editor_portion)
+    session.commit()
+    editor_portion_id = editor_portion.id
+
+    service.import_release(manifest, [_row()])
+    portions = list(
+        session.scalars(
+            select(HealthLabsFoodPortion)
+            .where(HealthLabsFoodPortion.nutrient_food_id == nutrient_food.id)
+            .order_by(HealthLabsFoodPortion.description)
+        )
+    )
+
+    assert [(portion.description, portion.source_managed) for portion in portions] == [
+        ("cup", True),
+        ("measured scoop", False),
+    ]
+    assert portions[1].id == editor_portion_id
+    assert portions[1].grams == 42
     session.commit()

@@ -199,6 +199,7 @@ class NutritionService:
                 amount=data.amount,
                 unit=data.unit.strip(),
                 grams=data.grams,
+                source_managed=False,
             )
         )
         self.session.flush()

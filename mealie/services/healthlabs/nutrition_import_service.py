@@ -97,7 +97,10 @@ class NutritionImportService:
                     food.nutrient_values = nutrient_values
 
                 self.session.execute(
-                    delete(HealthLabsFoodPortion).where(HealthLabsFoodPortion.nutrient_food_id == food.id)
+                    delete(HealthLabsFoodPortion).where(
+                        HealthLabsFoodPortion.nutrient_food_id == food.id,
+                        HealthLabsFoodPortion.source_managed.is_(True),
+                    )
                 )
                 self.session.add_all(
                     HealthLabsFoodPortion(
@@ -106,6 +109,7 @@ class NutritionImportService:
                         amount=portion.amount,
                         unit=portion.unit,
                         grams=portion.grams,
+                        source_managed=True,
                     )
                     for portion in row.portions
                 )

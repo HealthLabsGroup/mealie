@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -7,15 +8,26 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from mealie.db.models._model_utils.datetime import get_utc_now
+from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
 from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
     HealthLabsFoodPortion,
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
+    HealthLabsNutritionProviderUsage,
     HealthLabsNutritionWork,
 )
 from mealie.db.models.recipe import RecipeIngredientModel
-from mealie.schema.recipe import Recipe, SaveIngredientFood, SaveIngredientUnit
+from mealie.schema.recipe import (
+    CreateIngredientFood,
+    CreateIngredientUnit,
+    IngredientConfidence,
+    ParsedIngredient,
+    Recipe,
+    RecipeIngredient,
+    SaveIngredientFood,
+    SaveIngredientUnit,
+)
 from mealie.services.healthlabs.nutrition_service import NutritionService
 from mealie.services.healthlabs.nutrition_worker import NutritionReconciliationWorker
 from tests.fixtures.fixture_users import build_unique_user
@@ -83,8 +95,54 @@ def _source_food(user: TestUser, name: str) -> tuple[HealthLabsNutrientSourceRel
     return release, source_food
 
 
-def _run(session: Session, *, batch_size: int = 20):
-    return asyncio.run(NutritionReconciliationWorker(session, batch_size=batch_size, now=NOW).run())
+def _run(
+    session: Session,
+    *,
+    batch_size: int = 20,
+    provider_daily_request_limit: int = 0,
+    now: datetime = NOW,
+):
+    return asyncio.run(
+        NutritionReconciliationWorker(
+            session,
+            batch_size=batch_size,
+            provider_daily_request_limit=provider_daily_request_limit,
+            now=now,
+        ).run()
+    )
+
+
+def _configure_provider(user: TestUser) -> AIProvider:
+    session = user.repos.session
+    settings = session.scalar(sa.select(AIProviderSettings).where(AIProviderSettings.group_id == user.group_id))
+    assert settings is not None
+    provider = AIProvider(
+        session=session,
+        settings_id=settings.id,
+        name=f"worker-provider-{uuid4()}",
+        base_url="https://openrouter.example/api/v1",
+        api_key="test-runtime-key",
+        model="qwen/test",
+        timeout=30,
+    )
+    session.add(provider)
+    session.flush()
+    settings.default_provider_id = provider.id
+    session.commit()
+    return provider
+
+
+def _parsed(source: str, *, quantity: float, unit: str, food: str) -> ParsedIngredient:
+    return ParsedIngredient(
+        input=source,
+        confidence=IngredientConfidence(average=1, quantity=1, unit=1, food=1, comment=1),
+        ingredient=RecipeIngredient(
+            original_text=source,
+            quantity=quantity,
+            unit=CreateIngredientUnit(name=unit),
+            food=CreateIngredientFood(name=food),
+        ),
+    )
 
 
 def test_worker_discovers_bounded_batches_and_structures_exact_ingredients(
@@ -352,3 +410,198 @@ def test_worker_processes_due_rows_in_stable_order_and_reclaims_expired_leases(
 
     assert works[0].state == "review_required"
     assert works[1].state == "running"
+
+
+def test_provider_is_disabled_by_default_without_spending(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch,
+) -> None:
+    user = unique_user_fn_scoped
+    ingredient = _recipe_ingredients(user, [f"provider-disabled-{uuid4()}"])[0]
+
+    async def unexpected_call(*_args, **_kwargs):
+        raise AssertionError("provider must remain disabled")
+
+    monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", unexpected_call)
+    _run(user.repos.session)
+    work = user.repos.session.scalar(
+        sa.select(HealthLabsNutritionWork).where(
+            HealthLabsNutritionWork.kind == "ingredient_structure",
+            HealthLabsNutritionWork.target_id == str(ingredient.id),
+        )
+    )
+
+    assert work is not None
+    assert work.state == "review_required"
+    assert work.result == {"reason": "provider_disabled"}
+    assert user.repos.session.scalar(sa.select(sa.func.count()).select_from(HealthLabsNutritionProviderUsage)) == 0
+
+
+def test_provider_configuration_wakes_waiting_work_and_applies_only_exact_results(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch,
+) -> None:
+    user = unique_user_fn_scoped
+    token = uuid4().hex
+    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"bowl-{token}"))
+    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"quinoa-{token}"))
+    ingredient = _recipe_ingredients(user, [f"provider-needed-{token}"])[0]
+    calls = 0
+
+    async def parse_one(_parser, source: str):
+        nonlocal calls
+        calls += 1
+        return _parsed(source, quantity=2, unit=unit.name, food=food.name)
+
+    monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
+    _run(user.repos.session, provider_daily_request_limit=1)
+    waiting = user.repos.session.scalar(
+        sa.select(HealthLabsNutritionWork).where(
+            HealthLabsNutritionWork.kind == "ingredient_structure",
+            HealthLabsNutritionWork.target_id == str(ingredient.id),
+        )
+    )
+    assert waiting is not None
+    assert waiting.result == {"reason": "provider_unconfigured"}
+    assert calls == 0
+
+    _configure_provider(user)
+    _run(user.repos.session, provider_daily_request_limit=1)
+    user.repos.session.refresh(ingredient)
+    user.repos.session.refresh(waiting)
+
+    assert calls == 1
+    assert ingredient.quantity == 2
+    assert ingredient.unit_id == unit.id
+    assert ingredient.food_id == food.id
+    assert waiting.state == "completed"
+    usage = user.repos.session.scalar(
+        sa.select(HealthLabsNutritionProviderUsage).where(HealthLabsNutritionProviderUsage.usage_date == NOW.date())
+    )
+    assert usage is not None
+    assert usage.request_count == 1
+
+
+def test_ambiguous_provider_suggestion_is_sanitized_and_not_repeated(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch,
+) -> None:
+    user = unique_user_fn_scoped
+    _configure_provider(user)
+    source = f"3 mystery-unit-{uuid4()} mystery-food-{uuid4()}"
+    ingredient = _recipe_ingredients(user, [source])[0]
+    calls = 0
+
+    async def parse_one(_parser, value: str):
+        nonlocal calls
+        calls += 1
+        return _parsed(value, quantity=3, unit="mystery unit", food="mystery food")
+
+    monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
+    _run(user.repos.session, provider_daily_request_limit=10)
+    work = user.repos.session.scalar(
+        sa.select(HealthLabsNutritionWork).where(
+            HealthLabsNutritionWork.kind == "ingredient_structure",
+            HealthLabsNutritionWork.target_id == str(ingredient.id),
+        )
+    )
+    assert work is not None
+    assert work.state == "review_required"
+    assert work.result == {
+        "reason": "ingredient_suggestion",
+        "suggestion": {"quantity": 3.0, "unit": "mystery unit", "food": "mystery food", "note": ""},
+    }
+    assert source not in json.dumps(work.result)
+
+    assert _run(user.repos.session, provider_daily_request_limit=10).processed == 0
+    assert calls == 1
+
+
+def test_provider_allowance_defers_without_attempt_and_resets_next_utc_day(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch,
+) -> None:
+    user = unique_user_fn_scoped
+    _configure_provider(user)
+    ingredients = _recipe_ingredients(user, [f"budget-{uuid4()}", f"budget-{uuid4()}"])
+    calls = 0
+    budget_now = datetime(2026, 10, 20, tzinfo=UTC)
+
+    async def parse_one(_parser, source: str):
+        nonlocal calls
+        calls += 1
+        return _parsed(source, quantity=1, unit="unknown unit", food="unknown food")
+
+    monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
+    _run(user.repos.session, provider_daily_request_limit=1, now=budget_now)
+    works = list(
+        user.repos.session.scalars(
+            sa.select(HealthLabsNutritionWork).where(
+                HealthLabsNutritionWork.kind == "ingredient_structure",
+                HealthLabsNutritionWork.target_id.in_([str(row.id) for row in ingredients]),
+            )
+        )
+    )
+    deferred = next(work for work in works if work.state == "pending")
+
+    assert calls == 1
+    assert deferred.attempt_count == 0
+    assert deferred.next_attempt_at == datetime(2026, 10, 21, tzinfo=UTC)
+
+    _run(
+        user.repos.session,
+        provider_daily_request_limit=1,
+        now=datetime(2026, 10, 21, tzinfo=UTC),
+    )
+    assert calls == 2
+    usage = user.repos.session.scalars(
+        sa.select(HealthLabsNutritionProviderUsage).order_by(HealthLabsNutritionProviderUsage.usage_date)
+    ).all()
+    assert [
+        (row.usage_date.isoformat(), row.request_count) for row in usage if row.usage_date >= budget_now.date()
+    ] == [
+        ("2026-10-20", 1),
+        ("2026-10-21", 1),
+    ]
+
+
+def test_provider_failures_retry_after_five_and_thirty_minutes_then_stop(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch,
+) -> None:
+    user = unique_user_fn_scoped
+    _configure_provider(user)
+    ingredient = _recipe_ingredients(user, [f"malformed-{uuid4()}"])[0]
+    retry_now = datetime(2026, 10, 22, tzinfo=UTC)
+
+    async def malformed(*_args, **_kwargs):
+        raise ValueError("raw provider response must not be stored")
+
+    monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", malformed)
+    _run(user.repos.session, provider_daily_request_limit=3, now=retry_now)
+    work = user.repos.session.scalar(
+        sa.select(HealthLabsNutritionWork).where(
+            HealthLabsNutritionWork.kind == "ingredient_structure",
+            HealthLabsNutritionWork.target_id == str(ingredient.id),
+        )
+    )
+    assert work is not None
+    assert (work.state, work.attempt_count, work.next_attempt_at, work.last_error) == (
+        "pending",
+        1,
+        retry_now + timedelta(minutes=5),
+        "ValueError",
+    )
+
+    _run(user.repos.session, provider_daily_request_limit=3, now=retry_now + timedelta(minutes=5))
+    user.repos.session.refresh(work)
+    assert (work.state, work.attempt_count, work.next_attempt_at) == (
+        "pending",
+        2,
+        retry_now + timedelta(minutes=35),
+    )
+
+    _run(user.repos.session, provider_daily_request_limit=3, now=retry_now + timedelta(minutes=35))
+    user.repos.session.refresh(work)
+    assert (work.state, work.attempt_count, work.last_error) == ("failed", 3, "ValueError")
+    assert "raw provider response" not in json.dumps(work.result)

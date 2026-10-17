@@ -3,18 +3,20 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from mealie.db.models._model_utils.datetime import get_utc_now
+from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
 from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
     HealthLabsFoodPortion,
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
+    HealthLabsNutritionProviderUsage,
     HealthLabsNutritionWork,
 )
 from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel, RecipeIngredientModel, RecipeModel
@@ -23,6 +25,7 @@ from mealie.lang.providers import get_locale_provider
 from mealie.schema.recipe import IngredientFood, IngredientUnit, RecipeIngredient
 from mealie.services.healthlabs.ingredient_structure_service import IngredientStructureService
 from mealie.services.healthlabs.nutrition_service import NutritionService
+from mealie.services.parser_services.openai.parser import OpenAIParser
 
 RETRY_DELAYS = (timedelta(minutes=5), timedelta(minutes=30))
 
@@ -73,7 +76,7 @@ class NutritionReconciliationWorker:
                 work = self.session.get(HealthLabsNutritionWork, work_id)
                 if work is None:
                     continue
-                self._process(work)
+                await self._process(work)
                 work.lease_expires_at = None
                 work.last_error = None
                 self.session.commit()
@@ -123,7 +126,12 @@ class NutritionReconciliationWorker:
         )
         for ingredient, group_id in rows:
             source = (ingredient.original_text or "").strip() or (ingredient.note or "").strip()
-            fingerprint = self._hash(source, self._catalogue_hash(group_id))
+            fingerprint = self._hash(
+                source,
+                self._catalogue_hash(group_id),
+                self.provider_daily_request_limit > 0,
+                self._provider_fingerprint(group_id),
+            )
             changed += self._upsert("ingredient_structure", str(ingredient.id), group_id, fingerprint)
             if changed == limit:
                 break
@@ -253,15 +261,15 @@ class NutritionReconciliationWorker:
         self.session.commit()
         return claimed == 1
 
-    def _process(self, work: HealthLabsNutritionWork) -> None:
+    async def _process(self, work: HealthLabsNutritionWork) -> None:
         if work.kind == "ingredient_structure":
-            self._process_ingredient(work)
+            await self._process_ingredient(work)
         elif work.kind == "food_match":
             self._process_food(work)
         else:
             self._process_portion(work)
 
-    def _process_ingredient(self, work: HealthLabsNutritionWork) -> None:
+    async def _process_ingredient(self, work: HealthLabsNutritionWork) -> None:
         ingredient = self._ingredient(work)
         if ingredient is None:
             self.session.delete(work)
@@ -273,10 +281,48 @@ class NutritionReconciliationWorker:
             title=ingredient.title,
         )
         service = IngredientStructureService(self.session, work.group_id, get_locale_provider())
-        if not service.structure(value):
-            work.state = "review_required"
-            work.result = {"reason": "structure_unresolved"}
+        if service.structure(value):
+            self._apply_ingredient(ingredient, value)
+            work.state = "completed"
+            work.result = None
             return
+        if self.provider_daily_request_limit == 0:
+            work.state = "review_required"
+            work.result = {"reason": "provider_disabled"}
+            return
+        if not self._provider_available(work.group_id):
+            work.state = "review_required"
+            work.result = {"reason": "provider_unconfigured"}
+            return
+        if not self._reserve_provider_request(work):
+            work.state = "pending"
+            work.next_attempt_at = datetime.combine(self.now.date() + timedelta(days=1), time.min, tzinfo=UTC)
+            work.result = {"reason": "provider_budget_exhausted"}
+            return
+
+        source = (ingredient.original_text or "").strip() or (ingredient.note or "").strip()
+        parser = OpenAIParser(work.group_id, self.session, get_locale_provider())
+        parser.data_matcher = service.matcher  # type: ignore[assignment]
+        parsed = await parser.parse_one(source)
+        if service.apply_exact(value, parsed.ingredient):
+            self._apply_ingredient(ingredient, value)
+            work.state = "completed"
+            work.result = None
+            return
+        suggestion = parsed.ingredient
+        work.state = "review_required"
+        work.result = {
+            "reason": "ingredient_suggestion",
+            "suggestion": {
+                "quantity": suggestion.quantity,
+                "unit": suggestion.unit.name if suggestion.unit is not None else None,
+                "food": suggestion.food.name if suggestion.food is not None else None,
+                "note": (suggestion.note or "").strip(),
+            },
+        }
+
+    @staticmethod
+    def _apply_ingredient(ingredient: RecipeIngredientModel, value: RecipeIngredient) -> None:
         assert isinstance(value.food, IngredientFood) and value.food.id is not None
         assert isinstance(value.unit, IngredientUnit) and value.unit.id is not None
         ingredient.quantity = value.quantity
@@ -284,8 +330,44 @@ class NutritionReconciliationWorker:
         ingredient.unit_id = value.unit.id
         ingredient.note = value.note
         ingredient.original_text = value.original_text
-        work.state = "completed"
-        work.result = None
+
+    def _provider_available(self, group_id: UUID) -> bool:
+        settings = self.session.scalar(sa.select(AIProviderSettings).where(AIProviderSettings.group_id == group_id))
+        if settings is None or settings.default_provider_id is None:
+            return False
+        return (
+            self.session.scalar(
+                sa.select(AIProvider.id).where(
+                    AIProvider.id == settings.default_provider_id,
+                    AIProvider.settings_id == settings.id,
+                )
+            )
+            is not None
+        )
+
+    def _reserve_provider_request(self, work: HealthLabsNutritionWork) -> bool:
+        usage = self.session.scalar(
+            sa.select(HealthLabsNutritionProviderUsage).where(
+                HealthLabsNutritionProviderUsage.usage_date == self.now.date()
+            )
+        )
+        if usage is None:
+            usage = HealthLabsNutritionProviderUsage(usage_date=self.now.date(), request_count=0)
+            self.session.add(usage)
+            self.session.flush()
+        reserved = self.session.execute(
+            sa.update(HealthLabsNutritionProviderUsage)
+            .where(
+                HealthLabsNutritionProviderUsage.id == usage.id,
+                HealthLabsNutritionProviderUsage.request_count < self.provider_daily_request_limit,
+            )
+            .values(request_count=HealthLabsNutritionProviderUsage.request_count + 1)
+        ).rowcount
+        if reserved != 1:
+            return False
+        work.provider_requested_at = self.now
+        self.session.commit()
+        return True
 
     def _process_food(self, work: HealthLabsNutritionWork) -> None:
         food = self._food(work)
@@ -437,6 +519,21 @@ class NutritionReconciliationWorker:
         value = self._hash(foods, units, food_aliases, unit_aliases)
         self._catalogue_hashes[group_id] = value
         return value
+
+    def _provider_fingerprint(self, group_id: UUID) -> str:
+        settings = self.session.scalar(sa.select(AIProviderSettings).where(AIProviderSettings.group_id == group_id))
+        if settings is None or settings.default_provider_id is None:
+            return self._hash(None)
+        provider = self.session.get(AIProvider, settings.default_provider_id)
+        if provider is None or provider.settings_id != settings.id:
+            return self._hash(None)
+        return self._hash(
+            provider.id,
+            provider.base_url,
+            provider.model,
+            provider.timeout,
+            provider.update_at,
+        )
 
     def _food_fingerprint(
         self,

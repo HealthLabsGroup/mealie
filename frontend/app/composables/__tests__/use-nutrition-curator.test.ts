@@ -248,4 +248,73 @@ describe("useNutritionCurator", () => {
     expect(curator.selectedFood.value).toEqual(secondFood);
     expect(curator.candidates.value).toEqual([secondCandidate]);
   });
+
+  test("updates a completed mutation without restoring its old selection", async () => {
+    let resolveMatch!: (value: unknown) => void;
+    nutritionApi.getFoods.mockResolvedValueOnce({
+      data: { items: [unmatchedFood, secondFood], total: 2 },
+      error: null,
+    });
+    nutritionApi.searchSourceFoods
+      .mockResolvedValueOnce({ data: [candidate], error: null })
+      .mockResolvedValueOnce({ data: [secondCandidate], error: null });
+    nutritionApi.setMatch.mockReturnValueOnce(new Promise(resolve => resolveMatch = resolve));
+    const { useNutritionCurator } = await import("../use-nutrition-curator");
+    const curator = useNutritionCurator();
+    await curator.loadFoods();
+    await curator.selectFood(unmatchedFood);
+
+    const mutation = curator.approveSource(candidate);
+    await curator.selectFood(secondFood);
+    resolveMatch({ data: matchedFood, error: null });
+    await mutation;
+
+    expect(curator.foods.value).toEqual([matchedFood, secondFood]);
+    expect(curator.selectedFood.value).toEqual(secondFood);
+    expect(curator.candidates.value).toEqual([secondCandidate]);
+  });
+
+  test("keeps an older food response from overwriting a newer country", async () => {
+    let resolveFirst!: (value: unknown) => void;
+    let resolveSecond!: (value: unknown) => void;
+    nutritionApi.getFoods
+      .mockReturnValueOnce(new Promise(resolve => resolveFirst = resolve))
+      .mockReturnValueOnce(new Promise(resolve => resolveSecond = resolve));
+    const { useNutritionCurator } = await import("../use-nutrition-curator");
+    const curator = useNutritionCurator();
+    curator.country.value = "FR";
+    const firstLoad = curator.loadFoods();
+    curator.country.value = "DE";
+    const secondLoad = curator.loadFoods();
+
+    resolveSecond({ data: { items: [secondFood], total: 1 }, error: null });
+    await secondLoad;
+    resolveFirst({ data: { items: [unmatchedFood], total: 1 }, error: null });
+    await firstLoad;
+
+    expect(curator.foods.value).toEqual([secondFood]);
+    expect(curator.country.value).toBe("DE");
+    expect(curator.loadingFoods.value).toBe(false);
+  });
+
+  test("keeps the queue loading while the latest food request is pending", async () => {
+    let resolveFirst!: (value: unknown) => void;
+    let resolveSecond!: (value: unknown) => void;
+    nutritionApi.getFoods
+      .mockReturnValueOnce(new Promise(resolve => resolveFirst = resolve))
+      .mockReturnValueOnce(new Promise(resolve => resolveSecond = resolve));
+    const { useNutritionCurator } = await import("../use-nutrition-curator");
+    const curator = useNutritionCurator();
+    const firstLoad = curator.loadFoods();
+    curator.country.value = "DE";
+    const secondLoad = curator.loadFoods();
+
+    resolveFirst({ data: { items: [unmatchedFood], total: 1 }, error: null });
+    await firstLoad;
+    expect(curator.loadingFoods.value).toBe(true);
+
+    resolveSecond({ data: { items: [secondFood], total: 1 }, error: null });
+    await secondLoad;
+    expect(curator.loadingFoods.value).toBe(false);
+  });
 });

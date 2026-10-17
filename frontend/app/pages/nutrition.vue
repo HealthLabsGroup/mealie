@@ -546,7 +546,14 @@ function resetPortion() {
   portion.grams = 0;
 }
 
-watch(() => selectedFood.value?.id, resetPortion);
+watch(
+  [
+    () => selectedFood.value?.id,
+    () => selectedFood.value?.nutrition?.nutrientFoodId,
+    () => selectedFood.value?.nutrition?.reviewed,
+  ],
+  resetPortion,
+);
 
 function statusLabel(status: HealthLabsNutritionStatus) {
   return i18n.t(`nutrition-curator.status-${status.replace("_", "-")}`);
@@ -561,8 +568,8 @@ function formatNutrient(value: number | null | undefined, unit: string) {
 }
 
 async function refreshCountry() {
-  await loadFoods();
-  if (selectedFood.value) {
+  const loaded = await loadFoods();
+  if (loaded && selectedFood.value) {
     await searchSources();
   }
 }

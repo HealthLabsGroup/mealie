@@ -184,7 +184,7 @@ test("shows an automatic suggestion without persisted-match controls", async () 
   }
 });
 
-test("resets a measured portion draft after saving or changing food", async () => {
+test("resets a measured portion draft after saving, changing food, or replacing its source", async () => {
   const wrapper = await mountPage();
   const curator = useNutritionCurator.mock.results[0]?.value;
   curator.addPortion.mockResolvedValue(true);
@@ -206,6 +206,15 @@ test("resets a measured portion draft after saving or changing food", async () =
 
     await wrapper.get("[data-testid='portion-description'] input").setValue("large");
     curator.selectedFood.value = { ...matchedFood, id: "88888888-8888-4888-8888-888888888888" };
+    await nextTick();
+    expect((wrapper.get("[data-testid='portion-description'] input").element as HTMLInputElement).value).toBe("");
+
+    await wrapper.get("[data-testid='portion-description'] input").setValue("source-specific");
+    const currentFood = curator.selectedFood.value;
+    curator.selectedFood.value = {
+      ...currentFood,
+      nutrition: { ...currentFood.nutrition!, nutrientFoodId: candidate.id.replace(/^2/, "9") },
+    };
     await nextTick();
     expect((wrapper.get("[data-testid='portion-description'] input").element as HTMLInputElement).value).toBe("");
   }

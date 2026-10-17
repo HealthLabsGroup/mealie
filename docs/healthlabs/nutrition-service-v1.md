@@ -1,13 +1,14 @@
 # HealthLabs ingredient nutrition service v1
 
 Date: 2026-10-16
-Status: Implemented for `v3.28.0-healthlabs.9`; DEV cutover pending
+Status: Implemented for `v3.28.0-healthlabs.11`; DEV deployment pending
 Owner: HealthLabsGroup
 
 The additive schema, pinned-source import, deterministic calculations, audited
-editor API, and catalogue backfill are implemented. The release keeps Ephra's
-legacy nutrition tables available only as a one-release rollback path; it does
-not authorize their removal during the initial DEV cutover.
+editor API, catalogue backfill, source search, and native curator UI are
+implemented. The release keeps Ephra's legacy nutrition tables available only
+as a one-release rollback path; it does not authorize their removal during the
+initial DEV cutover.
 
 ## Decision
 

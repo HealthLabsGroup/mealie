@@ -39,6 +39,12 @@ The first immutable plan-service release is
 capability-scoped publication, current-plan reads, and cooked-state updates on
 the existing HealthLabs API boundary.
 
+The first ingredient-nutrition release is
+[`v3.28.0-healthlabs.9`](docs/healthlabs/nutrition-service-v1.md). It adds
+pinned authoritative food-source imports, reviewed food matches, source-backed
+portion conversions, deterministic recipe calculations, and the independently
+grantable `nutrition:write` capability.
+
 ## AGPL-3.0 and source availability
 
 The upstream AGPL-3.0 license, copyright notices, and attribution remain in

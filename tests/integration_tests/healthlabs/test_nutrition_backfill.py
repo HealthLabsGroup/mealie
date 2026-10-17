@@ -151,7 +151,7 @@ def test_coverage_report_contains_only_aggregate_workspace_data(
     )
     assert response.status_code == 201, response.text
     session = unfiltered_database.session
-    _, source_foods = _source(session, ["Coverage source"], provider="cofid")
+    source_release, source_foods = _source(session, ["Coverage source"], provider="cofid")
     source_foods[0].nutrient_values = {
         **source_foods[0].nutrient_values,
         "water_ml": {"amount": None, "unit": "ml"},
@@ -190,7 +190,13 @@ def test_coverage_report_contains_only_aggregate_workspace_data(
     assert report["ingredients"]["structured"] == sum(
         report["ingredients"][status] for status in ("matched", "review_required", "unknown")
     )
-    assert report["source_versions"][0]["country"] == "GB"
+    assert any(
+        source["provider"] == source_release.provider
+        and source["version"] == source_release.version
+        and source["country"] == source_release.country
+        and source["food_matches"] == 1
+        for source in report["source_versions"]
+    )
     assert report["mock_source_releases"] == 0
     serialized = json.dumps(report)
     assert private_recipe_name not in serialized

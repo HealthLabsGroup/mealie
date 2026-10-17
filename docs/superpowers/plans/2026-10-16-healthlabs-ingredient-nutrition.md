@@ -148,7 +148,7 @@
 - [ ] **Step 2: Implement batched matching.** Use exact normalized names and aliases; never fuzzy-accept ambiguous candidates.
 - [ ] **Step 3: Implement the coverage report.** Include counts by source, country, status, missing conversion, and missing core nutrient; exclude user identifiers and recipe text.
 - [ ] **Step 4: Run against a restored DEV copy.** Import the four approved source releases, run the backfill, and save only aggregate counts in the release notes.
-- [ ] **Step 5: Verify the `boghdanlesiv@gmail.com` workspace.** Assert all 27,828 migrated ingredient rows are accounted for: rows with structured foods resolve to matched, review-required, or unknown, while unparsed rows remain explicitly unparsed with null facts; assert no mock-source record exists.
+- [ ] **Step 5: Verify the target DEV workspace.** Assert all 27,828 migrated ingredient rows are accounted for: rows with structured foods resolve to matched, review-required, or unknown, while unparsed rows remain explicitly unparsed with null facts; assert no mock-source record exists.
 - [ ] **Step 6: Commit.** Commit as `feat(healthlabs): backfill ingredient nutrition matches`.
 
 ### Task 6: Cut Ephra recipe and meal normalization reads over to Mealie

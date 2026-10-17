@@ -284,6 +284,7 @@ class HealthLabsNutritionWork(SqlAlchemyBase, BaseMixins):
             "next_attempt_at",
             "lease_expires_at",
         ),
+        sa.Index("healthlabs_nutrition_work_scan_idx", "kind", "update_at"),
     )
 
     id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)

@@ -114,20 +114,10 @@
             :key="work.id"
           >
             <v-list-item-title>{{ workTitle(work) }}</v-list-item-title>
-            <v-list-item-subtitle>{{ workerStateLabel(work.kind) }}</v-list-item-subtitle>
+            <v-list-item-subtitle>{{ workSubtitle(work) }}</v-list-item-subtitle>
             <template #append>
               <v-btn
-                v-if="work.kind === 'ingredient_structure'"
-                color="primary"
-                size="small"
-                :loading="saving"
-                data-testid="approve-ingredient-work"
-                @click="approveIngredientWork(work.id)"
-              >
-                {{ $t("nutrition-curator.approve-suggestion") }}
-              </v-btn>
-              <v-btn
-                v-else
+                v-if="work.kind !== 'ingredient_structure'"
                 color="primary"
                 size="small"
                 variant="outlined"
@@ -610,7 +600,6 @@ const {
   workError,
   loadFoods,
   loadWorker,
-  approveIngredientWork,
   openWork,
   selectFood,
   searchSources,
@@ -695,6 +684,20 @@ function workTitle(work: HealthLabsNutritionWorkOut) {
   }
   const values = suggestion as Record<string, unknown>;
   return [values.quantity, values.unit, values.food].filter(value => value != null).join(" ");
+}
+
+function workSubtitle(work: HealthLabsNutritionWorkOut) {
+  if (work.kind !== "ingredient_structure") {
+    return workerStateLabel(work.kind);
+  }
+  const reason = work.result?.reason;
+  if (reason === "provider_disabled") {
+    return i18n.t("nutrition-curator.ingredient-provider-disabled");
+  }
+  if (reason === "provider_unconfigured") {
+    return i18n.t("nutrition-curator.ingredient-provider-unconfigured");
+  }
+  return i18n.t("nutrition-curator.ingredient-suggestion-unresolved");
 }
 
 async function refreshAll() {

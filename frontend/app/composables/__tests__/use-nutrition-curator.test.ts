@@ -15,7 +15,6 @@ const nutritionApi = vi.hoisted(() => ({
   addPortion: vi.fn(),
   getWorkerStatus: vi.fn(),
   getWork: vi.fn(),
-  approveWork: vi.fn(),
 }));
 
 vi.mock("~/composables/api", () => ({
@@ -148,10 +147,6 @@ beforeEach(() => {
   });
   nutritionApi.getWorkerStatus.mockResolvedValue({ data: workerStatus, error: null });
   nutritionApi.getWork.mockResolvedValue({ data: [ingredientWork], error: null });
-  nutritionApi.approveWork.mockResolvedValue({
-    data: { ...ingredientWork, state: "completed", result: null },
-    error: null,
-  });
   vi.spyOn(crypto, "randomUUID").mockReturnValue("44444444-4444-4444-8444-444444444444");
 });
 
@@ -178,7 +173,6 @@ describe("HealthLabsNutritionApi", () => {
     );
     await api.getWorkerStatus();
     await api.getWork({ state: "review_required" });
-    await api.approveWork(ingredientWork.id, "work-key");
 
     expect(requests.get).toHaveBeenNthCalledWith(
       1,
@@ -204,12 +198,7 @@ describe("HealthLabsNutritionApi", () => {
     );
     expect(requests.get).toHaveBeenCalledWith("/api/healthlabs/v1/nutrition/worker-status");
     expect(requests.get).toHaveBeenCalledWith(
-      "/api/healthlabs/v1/nutrition/work?state=review_required",
-    );
-    expect(requests.post).toHaveBeenCalledWith(
-      `/api/healthlabs/v1/nutrition/work/${ingredientWork.id}/approve`,
-      {},
-      { headers: { "Idempotency-Key": "work-key", "X-HealthLabs-Access-Reason": "Nutrition curator ingredient review" } },
+      "/api/healthlabs/v1/nutrition/work?state=review_required&limit=50",
     );
   });
 });
@@ -230,21 +219,6 @@ describe("useNutritionCurator", () => {
     expect(curator.workerStatus.value).toEqual(workerStatus);
     expect(curator.reviewWork.value).toEqual([ingredientWork]);
     expect(curator.workError.value).toBeTruthy();
-  });
-
-  test("approves exact ingredient work and refreshes both queues", async () => {
-    const { useNutritionCurator } = await import("../use-nutrition-curator");
-    const curator = useNutritionCurator();
-    await curator.loadWorker();
-
-    await expect(curator.approveIngredientWork(ingredientWork.id)).resolves.toBe(true);
-
-    expect(nutritionApi.approveWork).toHaveBeenCalledWith(
-      ingredientWork.id,
-      "44444444-4444-4444-8444-444444444444",
-    );
-    expect(nutritionApi.getWorkerStatus).toHaveBeenCalledTimes(2);
-    expect(nutritionApi.getFoods).toHaveBeenCalledOnce();
   });
 
   test("opens portion work in the existing food and measured-portion editor", async () => {

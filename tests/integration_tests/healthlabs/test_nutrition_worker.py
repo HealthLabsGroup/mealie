@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from mealie.db.models._model_utils.datetime import get_utc_now
-from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
+from mealie.db.models.group.ai_providers import AIProvider, AIProviderHeaders, AIProviderSettings
 from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
     HealthLabsFoodPortion,
@@ -168,6 +168,53 @@ def test_worker_discovers_bounded_batches_and_structures_exact_ingredients(
     assert all(user.repos.session.get(RecipeIngredientModel, row.id).food_id == food.id for row in ingredients)
 
 
+def test_discovery_scans_at_most_one_batch_of_unchanged_ingredients(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch,
+) -> None:
+    user = unique_user_fn_scoped
+    _recipe_ingredients(user, [f"unchanged-{uuid4()}" for _ in range(5)])
+    worker = NutritionReconciliationWorker(user.repos.session, batch_size=2, now=NOW)
+    scanned: list[int] = []
+
+    monkeypatch.setattr(worker, "ingredient_fingerprint", lambda ingredient, _group_id: str(ingredient.id))
+
+    def unchanged(_kind, target_id, _group_id, _fingerprint, **_kwargs):
+        scanned.append(int(target_id))
+        return 0
+
+    monkeypatch.setattr(worker, "_upsert", unchanged)
+
+    assert worker._discover_ingredients(2) == 0
+    assert len(scanned) == 2
+
+
+def test_stale_cleanup_is_bounded_to_one_batch(unique_user_fn_scoped: TestUser) -> None:
+    user = unique_user_fn_scoped
+    stale = [
+        HealthLabsNutritionWork(
+            group_id=user.group_id,
+            kind="ingredient_structure",
+            target_id=str(9_000_000 + index),
+            input_sha256=str(index).zfill(64),
+            state="completed",
+            next_attempt_at=NOW,
+        )
+        for index in range(4)
+    ]
+    user.repos.session.add_all(stale)
+    user.repos.session.commit()
+    stale_ids = [row.id for row in stale]
+
+    NutritionReconciliationWorker(user.repos.session, batch_size=2, now=NOW)._delete_stale_work()
+    user.repos.session.commit()
+
+    remaining = user.repos.session.scalar(
+        sa.select(sa.func.count()).select_from(HealthLabsNutritionWork).where(HealthLabsNutritionWork.id.in_(stale_ids))
+    )
+    assert remaining == 2
+
+
 def test_worker_requeues_changed_input_and_removes_deleted_targets(unique_user_fn_scoped: TestUser) -> None:
     user = unique_user_fn_scoped
     token = uuid4().hex
@@ -196,10 +243,11 @@ def test_worker_requeues_changed_input_and_removes_deleted_targets(unique_user_f
     assert work.input_sha256 != first_fingerprint
     assert work.state == "completed"
 
+    work_id = work.id
     user.repos.session.delete(ingredient)
     user.repos.session.commit()
     _run(user.repos.session)
-    assert user.repos.session.get(HealthLabsNutritionWork, work.id) is None
+    assert user.repos.session.get(HealthLabsNutritionWork, work_id) is None
     assert first.processed >= 1
 
 
@@ -402,6 +450,28 @@ def test_worker_processes_due_rows_in_stable_order_and_reclaims_expired_leases(
     assert works[1].state == "running"
 
 
+def test_claim_uses_a_fresh_timestamp_for_its_lease(unique_user_fn_scoped: TestUser, monkeypatch) -> None:
+    user = unique_user_fn_scoped
+    work = HealthLabsNutritionWork(
+        group_id=user.group_id,
+        kind="ingredient_structure",
+        target_id="9000001",
+        input_sha256="a" * 64,
+        state="pending",
+        next_attempt_at=NOW,
+    )
+    user.repos.session.add(work)
+    user.repos.session.commit()
+    claim_now = NOW + timedelta(minutes=5)
+    worker = NutritionReconciliationWorker(user.repos.session, now=NOW)
+    monkeypatch.setattr(worker, "_current_time", lambda: claim_now, raising=False)
+
+    assert worker._claim(work.id)
+    user.repos.session.refresh(work)
+
+    assert work.lease_expires_at == claim_now + timedelta(minutes=15)
+
+
 def test_provider_is_disabled_by_default_without_spending(
     unique_user_fn_scoped: TestUser,
     monkeypatch,
@@ -437,6 +507,19 @@ def test_provider_configuration_wakes_waiting_work_and_applies_only_exact_result
     food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"quinoa-{token}"))
     ingredient = _recipe_ingredients(user, [f"provider-needed-{token}"])[0]
     calls = 0
+    timeouts: list[float] = []
+    wake_now = datetime(2030, 10, 17, 12, tzinfo=UTC)
+
+    class Timeout:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *_args):
+            return False
+
+    def timeout(seconds: float):
+        timeouts.append(seconds)
+        return Timeout()
 
     async def parse_one(_parser, source: str):
         nonlocal calls
@@ -444,32 +527,64 @@ def test_provider_configuration_wakes_waiting_work_and_applies_only_exact_result
         return _parsed(source, quantity=2, unit=unit.name, food=food.name)
 
     monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
-    _run(user.repos.session, provider_daily_request_limit=1)
-    waiting = user.repos.session.scalar(
-        sa.select(HealthLabsNutritionWork).where(
-            HealthLabsNutritionWork.kind == "ingredient_structure",
-            HealthLabsNutritionWork.target_id == str(ingredient.id),
+    monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.asyncio.timeout", timeout)
+    waiting = None
+    for _ in range(100):
+        _run(user.repos.session, provider_daily_request_limit=1, now=wake_now)
+        waiting = user.repos.session.scalar(
+            sa.select(HealthLabsNutritionWork).where(
+                HealthLabsNutritionWork.kind == "ingredient_structure",
+                HealthLabsNutritionWork.target_id == str(ingredient.id),
+            )
         )
-    )
+        if waiting is not None:
+            break
     assert waiting is not None
     assert waiting.result == {"reason": "provider_unconfigured"}
     assert calls == 0
 
     _configure_provider(user)
-    _run(user.repos.session, provider_daily_request_limit=1)
+    for _ in range(100):
+        _run(user.repos.session, provider_daily_request_limit=1, now=wake_now)
+        user.repos.session.refresh(ingredient)
+        if ingredient.food_id == food.id:
+            break
     user.repos.session.refresh(ingredient)
     user.repos.session.refresh(waiting)
 
     assert calls == 1
+    assert timeouts == [14 * 60]
     assert ingredient.quantity == 2
     assert ingredient.unit_id == unit.id
     assert ingredient.food_id == food.id
     assert waiting.state == "completed"
     usage = user.repos.session.scalar(
-        sa.select(HealthLabsNutritionProviderUsage).where(HealthLabsNutritionProviderUsage.usage_date == NOW.date())
+        sa.select(HealthLabsNutritionProviderUsage).where(
+            HealthLabsNutritionProviderUsage.usage_date == wake_now.date()
+        )
     )
     assert usage is not None
     assert usage.request_count == 1
+
+
+def test_provider_headers_change_the_worker_fingerprint(unique_user_fn_scoped: TestUser) -> None:
+    user = unique_user_fn_scoped
+    provider = _configure_provider(user)
+    before = NutritionReconciliationWorker(
+        user.repos.session,
+        provider_daily_request_limit=1,
+        now=NOW,
+    )._provider_fingerprint(user.group_id)
+
+    provider.request_headers.append(AIProviderHeaders("X-Provider-Mode", "structured"))
+    user.repos.session.commit()
+
+    after = NutritionReconciliationWorker(
+        user.repos.session,
+        provider_daily_request_limit=1,
+        now=NOW,
+    )._provider_fingerprint(user.group_id)
+    assert after != before
 
 
 def test_ambiguous_provider_suggestion_is_sanitized_and_not_repeated(
@@ -545,11 +660,13 @@ def test_provider_allowance_defers_without_attempt_and_resets_next_utc_day(
     )
     assert calls == 2
     usage = user.repos.session.scalars(
-        sa.select(HealthLabsNutritionProviderUsage).order_by(HealthLabsNutritionProviderUsage.usage_date)
+        sa.select(HealthLabsNutritionProviderUsage)
+        .where(
+            HealthLabsNutritionProviderUsage.usage_date.in_((budget_now.date(), budget_now.date() + timedelta(days=1)))
+        )
+        .order_by(HealthLabsNutritionProviderUsage.usage_date)
     ).all()
-    assert [
-        (row.usage_date.isoformat(), row.request_count) for row in usage if row.usage_date >= budget_now.date()
-    ] == [
+    assert [(row.usage_date.isoformat(), row.request_count) for row in usage] == [
         ("2026-10-20", 1),
         ("2026-10-21", 1),
     ]

@@ -1,6 +1,8 @@
 import json
 from uuid import UUID, uuid4
 
+from sqlalchemy import Date
+
 from mealie.core.config import get_app_settings
 from mealie.db.models._model_base import SqlAlchemyBase
 from mealie.db.models._model_utils.datetime import NaiveDateTime
@@ -39,6 +41,21 @@ def test_every_datetime_column_survives_a_backup():
     )
 
 
+def test_every_date_column_survives_a_backup():
+    date_columns = {
+        column.name
+        for table in SqlAlchemyBase.metadata.tables.values()
+        for column in table.columns
+        if isinstance(column.type, Date)
+    }
+
+    unregistered = date_columns - AlchemyExporter.look_for_date
+    assert not unregistered, (
+        f"date columns missing from AlchemyExporter.look_for_date: {sorted(unregistered)}. "
+        "Add them, or they will restore as strings."
+    )
+
+
 def test_convert_types_preserves_row_around_nested_json():
     settings = get_app_settings()
     exporter = AlchemyExporter(settings.DB_URL)
@@ -68,5 +85,18 @@ def test_convert_types_preserves_row_around_nested_json():
         "name": "Soup",
         "created_at": "2026-10-15T11:00:00",
     }
+
+    exporter.engine.dispose()
+
+
+def test_convert_types_preserves_uuid_shaped_string_columns():
+    settings = get_app_settings()
+    exporter = AlchemyExporter(settings.DB_URL)
+    target_id = str(uuid4())
+    payload = {"healthlabs_nutrition_work": [{"target_id": target_id}]}
+
+    converted = exporter.convert_types(payload)
+
+    assert converted["healthlabs_nutrition_work"][0]["target_id"] == target_id
 
     exporter.engine.dispose()

@@ -121,12 +121,12 @@
 
 **Interfaces:**
 - Consumes: work-state aggregation and review rows scoped to the current user's group, the existing `nutrition:write` capability, access audit, idempotency, exact ingredient validation, and the existing audited portion action.
-- Produces: `GET /api/healthlabs/v1/nutrition/worker-status` returning state counts, provider-enabled/budget-exhausted flags, and `last_updated_at`; `GET /api/healthlabs/v1/nutrition/work?state=review_required&kind=...`; idempotent `POST /api/healthlabs/v1/nutrition/work/{id}/approve` for a stored current ingredient suggestion; `HealthLabsNutritionApi` methods and Curator status/review panels.
+- Produces: `GET /api/healthlabs/v1/nutrition/worker-status` returning state counts, provider-enabled/budget-exhausted flags, and `last_updated_at`; bounded `GET /api/healthlabs/v1/nutrition/work?state=review_required&kind=...&limit=50`; `HealthLabsNutritionApi` methods and Curator status/review panels. Exact provider results apply automatically; unresolved ingredient suggestions are status-only until catalogue changes make them exact.
 
-- [x] **Step 1: Write failing API/capability tests** for group scoping, `nutrition:write`, empty state, all counts, provider flags, sanitized review output, idempotent ingredient approval, audit creation, stale-fingerprint rejection, and cross-group rejection.
-- [x] **Step 2: Write failing frontend tests** for loading, status rendering, exhausted/disabled copy, ingredient approval, portion-gap handoff to the existing food portion editor, refresh with the food queue, and API errors that do not hide the queue.
+- [x] **Step 1: Write failing API/capability tests** for group scoping, `nutrition:write`, empty state, all counts, provider flags, bounded sanitized review output, and cross-group rejection.
+- [x] **Step 2: Write failing frontend tests** for loading, status rendering, exhausted/disabled copy, truthful non-actionable ingredient states, portion-gap handoff to the existing food portion editor, refresh with the food queue, and API errors that do not hide the queue.
 - [x] **Step 3: Run the focused backend/frontend tests**; expect missing endpoint/UI failures.
-- [x] **Step 4: Implement the status/review schemas, routes, audited exact approval service, API client, composable state, compact accessible panels, and only `en-US` strings.**
+- [x] **Step 4: Implement the status/review schemas, bounded routes, API client, composable state, compact accessible panels, and only `en-US` strings.**
 - [x] **Step 5: Run `task dev:generate`**, then focused API, capability, composable, and page tests; expect PASS.
 - [x] **Step 6: Commit** as `feat(healthlabs): show nutrition worker status`.
 

@@ -94,6 +94,14 @@ const reviewWork: HealthLabsNutritionWorkOut[] = [
     },
   },
   {
+    id: "77777777-7777-4777-8777-777777777777",
+    kind: "ingredient_structure",
+    targetId: "44",
+    state: "review_required",
+    attemptCount: 0,
+    result: { reason: "provider_disabled" },
+  },
+  {
     id: "99999999-9999-4999-8999-999999999999",
     kind: "portion_resolution",
     targetId: "43",
@@ -140,7 +148,6 @@ beforeEach(() => {
     workError: ref(null),
     loadFoods: vi.fn(),
     loadWorker: vi.fn(),
-    approveIngredientWork: vi.fn(),
     openWork: vi.fn(),
     selectFood: vi.fn(),
     searchSources: vi.fn(),
@@ -203,7 +210,7 @@ test("renders the curator workflow and keeps unavailable nutrients distinct from
   }
 });
 
-test("shows background status and actionable ingredient and portion work", async () => {
+test("shows truthful ingredient states and actionable portion work", async () => {
   const wrapper = await mountPage();
   const curator = useNutritionCurator.mock.results[0]?.value;
 
@@ -213,11 +220,12 @@ test("shows background status and actionable ingredient and portion work", async
     expect(wrapper.get("[data-testid='worker-status']").text()).toContain("Provider calls are disabled");
     expect(wrapper.text()).toContain("2 cup oats");
 
-    await wrapper.get("[data-testid='approve-ingredient-work']").trigger("click");
-    expect(curator.approveIngredientWork).toHaveBeenCalledWith(reviewWork[0].id);
+    expect(wrapper.find("[data-testid='approve-ingredient-work']").exists()).toBe(false);
+    expect(wrapper.text()).toContain("Waiting for provider calls to be enabled");
+    expect(wrapper.text()).toContain("Add or map the suggested food and unit");
 
     await wrapper.get("[data-testid='open-portion-work']").trigger("click");
-    expect(curator.openWork).toHaveBeenCalledWith(reviewWork[1]);
+    expect(curator.openWork).toHaveBeenCalledWith(reviewWork.find(work => work.kind === "portion_resolution"));
   }
   finally {
     wrapper.unmount();

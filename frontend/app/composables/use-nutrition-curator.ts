@@ -1,0 +1,196 @@
+import { computed, ref } from "vue";
+import { useUserApi } from "~/composables/api";
+import type {
+  HealthLabsFoodNutritionOut,
+  HealthLabsFoodPortionCreate,
+  HealthLabsNutrientFoodOut,
+} from "~/lib/api/types/healthlabs";
+
+export type NutritionQueueFilter = "needs-review" | "matched" | "all";
+
+export function useNutritionCurator() {
+  const api = useUserApi().healthlabsNutrition;
+  const foods = ref<HealthLabsFoodNutritionOut[]>([]);
+  const total = ref(0);
+  const selectedFood = ref<HealthLabsFoodNutritionOut | null>(null);
+  const candidates = ref<HealthLabsNutrientFoodOut[]>([]);
+  const country = ref("GB");
+  const queueQuery = ref("");
+  const sourceQuery = ref("");
+  const queueFilter = ref<NutritionQueueFilter>("needs-review");
+  const loadingFoods = ref(false);
+  const searchingSources = ref(false);
+  const saving = ref(false);
+  const foodError = ref<string | null>(null);
+  const sourceError = ref<string | null>(null);
+  const actionError = ref<string | null>(null);
+
+  const visibleFoods = computed(() => foods.value.filter((food) => {
+    if (queueFilter.value === "all") {
+      return true;
+    }
+    if (queueFilter.value === "matched") {
+      return food.status === "matched";
+    }
+    return food.status === "unknown" || food.status === "review_required";
+  }));
+
+  async function loadFoods() {
+    loadingFoods.value = true;
+    foodError.value = null;
+    try {
+      const { data, error } = await api.getFoods({
+        country: country.value,
+        q: queueQuery.value.trim() || undefined,
+      });
+      if (error || !data) {
+        foodError.value = "Unable to load foods.";
+        return;
+      }
+      foods.value = data.items;
+      total.value = data.total;
+      const refreshedSelection = foods.value.find(food => food.id === selectedFood.value?.id);
+      if (refreshedSelection) {
+        selectedFood.value = refreshedSelection;
+      }
+    }
+    finally {
+      loadingFoods.value = false;
+    }
+  }
+
+  async function selectFood(food: HealthLabsFoodNutritionOut) {
+    selectedFood.value = food;
+    sourceQuery.value = food.name?.trim() ?? "";
+    sourceError.value = null;
+    candidates.value = [];
+    await searchSources();
+  }
+
+  async function searchSources() {
+    const q = sourceQuery.value.trim();
+    sourceError.value = null;
+    if (q.length < 2) {
+      candidates.value = [];
+      sourceError.value = "Enter at least 2 characters.";
+      return;
+    }
+
+    searchingSources.value = true;
+    try {
+      const { data, error } = await api.searchSourceFoods({ q, country: country.value, limit: 20 });
+      if (error || !data) {
+        sourceError.value = "Unable to search nutrition sources.";
+        return;
+      }
+      candidates.value = data;
+    }
+    finally {
+      searchingSources.value = false;
+    }
+  }
+
+  function applyFoodUpdate(updated: HealthLabsFoodNutritionOut) {
+    const index = foods.value.findIndex(food => food.id === updated.id);
+    if (index !== -1) {
+      foods.value.splice(index, 1, updated);
+    }
+    selectedFood.value = updated;
+  }
+
+  async function approveSource(candidate: HealthLabsNutrientFoodOut) {
+    if (!selectedFood.value) {
+      actionError.value = "Select a food first.";
+      return;
+    }
+    saving.value = true;
+    actionError.value = null;
+    try {
+      const { data, error } = await api.setMatch(
+        selectedFood.value.id,
+        { nutrientFoodId: candidate.id, country: country.value, confidence: 1 },
+        crypto.randomUUID(),
+      );
+      if (error || !data) {
+        actionError.value = "Unable to save this source match.";
+        return;
+      }
+      applyFoodUpdate(data);
+    }
+    finally {
+      saving.value = false;
+    }
+  }
+
+  async function clearMatch() {
+    if (!selectedFood.value) {
+      actionError.value = "Select a food first.";
+      return;
+    }
+    saving.value = true;
+    actionError.value = null;
+    try {
+      const { data, error } = await api.clearMatch(
+        selectedFood.value.id,
+        country.value,
+        crypto.randomUUID(),
+      );
+      if (error || !data) {
+        actionError.value = "Unable to clear this source match.";
+        return;
+      }
+      applyFoodUpdate(data);
+    }
+    finally {
+      saving.value = false;
+    }
+  }
+
+  async function addPortion(payload: HealthLabsFoodPortionCreate) {
+    if (!selectedFood.value) {
+      actionError.value = "Select a food first.";
+      return;
+    }
+    saving.value = true;
+    actionError.value = null;
+    try {
+      const { data, error } = await api.addPortion(
+        selectedFood.value.id,
+        payload,
+        crypto.randomUUID(),
+      );
+      if (error || !data) {
+        actionError.value = "Unable to add this portion.";
+        return;
+      }
+      applyFoodUpdate(data);
+    }
+    finally {
+      saving.value = false;
+    }
+  }
+
+  return {
+    foods,
+    total,
+    visibleFoods,
+    selectedFood,
+    candidates,
+    country,
+    queueQuery,
+    sourceQuery,
+    queueFilter,
+    loadingFoods,
+    searchingSources,
+    saving,
+    foodError,
+    sourceError,
+    actionError,
+    loadFoods,
+    selectFood,
+    searchSources,
+    approveSource,
+    clearMatch,
+    addPortion,
+  };
+}

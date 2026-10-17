@@ -18,10 +18,13 @@ def test_nutrition_write_is_audited_once_across_idempotent_replay(
     healthlabs_nutrition_source: Callable,
     unfiltered_database: AllRepositories,
 ) -> None:
-    owner, owner_headers = healthlabs_provision()
     editor, editor_headers = healthlabs_provision()
-    healthlabs_set_capabilities(editor["userId"], HealthLabsCapability.NUTRITION_WRITE)
-    _, food_id = healthlabs_recipe_food(owner_headers, f"Audit food {uuid4()}")
+    healthlabs_set_capabilities(
+        editor["userId"],
+        HealthLabsCapability.RECIPES_WRITE_OWN,
+        HealthLabsCapability.NUTRITION_WRITE,
+    )
+    _, food_id = healthlabs_recipe_food(editor_headers, f"Audit food {uuid4()}")
     _, nutrient_food_id = healthlabs_nutrition_source(name=f"Audit source {uuid4()}")
     headers = {
         **editor_headers,

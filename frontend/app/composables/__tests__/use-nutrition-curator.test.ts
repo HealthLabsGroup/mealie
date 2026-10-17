@@ -80,6 +80,20 @@ const existingMatchedFood: HealthLabsFoodNutritionOut = {
   },
 };
 
+const secondFood: HealthLabsFoodNutritionOut = {
+  id: "66666666-6666-4666-8666-666666666666",
+  name: "Banana",
+  status: "unknown",
+  nutrition: null,
+};
+
+const secondCandidate: HealthLabsNutrientFoodOut = {
+  ...candidate,
+  id: "77777777-7777-4777-8777-777777777777",
+  sourceFoodId: "GB-BANANA-1",
+  name: "Banana, raw",
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   nutritionApi.getFoods.mockResolvedValue({
@@ -213,5 +227,25 @@ describe("useNutritionCurator", () => {
     expect(curator.sourceQuery.value).toBe("apple cooked");
     expect(curator.candidates.value).toEqual([candidate]);
     expect(curator.sourceError.value).toBeTruthy();
+  });
+
+  test("discards a stale source response after another food is selected", async () => {
+    let resolveFirst!: (value: unknown) => void;
+    let resolveSecond!: (value: unknown) => void;
+    nutritionApi.searchSourceFoods
+      .mockReturnValueOnce(new Promise(resolve => resolveFirst = resolve))
+      .mockReturnValueOnce(new Promise(resolve => resolveSecond = resolve));
+    const { useNutritionCurator } = await import("../use-nutrition-curator");
+    const curator = useNutritionCurator();
+
+    const firstSelection = curator.selectFood(unmatchedFood);
+    const secondSelection = curator.selectFood(secondFood);
+    resolveSecond({ data: [secondCandidate], error: null });
+    await secondSelection;
+    resolveFirst({ data: [candidate], error: null });
+    await firstSelection;
+
+    expect(curator.selectedFood.value).toEqual(secondFood);
+    expect(curator.candidates.value).toEqual([secondCandidate]);
   });
 });

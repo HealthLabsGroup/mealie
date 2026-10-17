@@ -1,5 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils";
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createVuetify } from "vuetify";
 import * as components from "vuetify/components";
@@ -60,6 +60,19 @@ const reviewFood: HealthLabsFoodNutritionOut = {
   nutrition: null,
 };
 
+const suggestedFood: HealthLabsFoodNutritionOut = {
+  ...reviewFood,
+  nutrition: {
+    ...matchedFood.nutrition!,
+    id: null,
+    foodId: reviewFood.id,
+    status: "review_required",
+    reviewed: false,
+    reviewedByUserId: null,
+    reviewedAt: null,
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal("definePageMeta", vi.fn());
@@ -95,6 +108,7 @@ beforeEach(() => {
     selectFood: vi.fn(),
     searchSources: vi.fn(),
     approveSource: vi.fn(),
+    approveSuggestion: vi.fn(),
     clearMatch: vi.fn(),
     addPortion: vi.fn(),
   });
@@ -102,14 +116,18 @@ beforeEach(() => {
 
 afterEach(() => vi.unstubAllGlobals());
 
-test("renders the curator workflow and keeps unavailable nutrients distinct from zero", async () => {
+async function mountPage() {
   const NutritionPage = (await import("./nutrition.vue")).default;
-  const wrapper = mount(NutritionPage, {
+  return mount(NutritionPage, {
     global: {
       plugins: [createVuetify({ components, directives })],
       stubs: { Teleport: true },
     },
   });
+}
+
+test("renders the curator workflow and keeps unavailable nutrients distinct from zero", async () => {
+  const wrapper = await mountPage();
   const curator = useNutritionCurator.mock.results[0]?.value;
 
   try {
@@ -141,6 +159,55 @@ test("renders the curator workflow and keeps unavailable nutrients distinct from
     expect(wrapper.text()).toContain("Unit");
     expect(wrapper.text()).toContain("Grams");
     expect(wrapper.get("[data-testid='add-portion']").text()).toContain("Add portion");
+  }
+  finally {
+    wrapper.unmount();
+  }
+});
+
+test("shows an automatic suggestion without persisted-match controls", async () => {
+  const curator = useNutritionCurator.mock.results[0]?.value ?? useNutritionCurator();
+  curator.selectedFood.value = suggestedFood;
+  useNutritionCurator.mockReturnValue(curator);
+  const wrapper = await mountPage();
+
+  try {
+    await flushPromises();
+    expect(wrapper.text()).toContain("Suggested source");
+    expect(wrapper.find("[data-testid='clear-match']").exists()).toBe(false);
+    expect(wrapper.find("[data-testid='add-portion']").exists()).toBe(false);
+    await wrapper.get("[data-testid='use-suggestion']").trigger("click");
+    expect(curator.approveSuggestion).toHaveBeenCalledOnce();
+  }
+  finally {
+    wrapper.unmount();
+  }
+});
+
+test("resets a measured portion draft after saving or changing food", async () => {
+  const wrapper = await mountPage();
+  const curator = useNutritionCurator.mock.results[0]?.value;
+  curator.addPortion.mockResolvedValue(true);
+
+  try {
+    await wrapper.get("[data-testid='portion-description'] input").setValue("medium");
+    await wrapper.get("[data-testid='portion-amount'] input").setValue("1");
+    await wrapper.get("[data-testid='portion-unit'] input").setValue("item");
+    await wrapper.get("[data-testid='portion-grams'] input").setValue("182");
+    await wrapper.get("[data-testid='portion-form']").trigger("submit");
+    await flushPromises();
+    expect(curator.addPortion).toHaveBeenCalledWith({
+      description: "medium",
+      amount: 1,
+      unit: "item",
+      grams: 182,
+    });
+    expect((wrapper.get("[data-testid='portion-description'] input").element as HTMLInputElement).value).toBe("");
+
+    await wrapper.get("[data-testid='portion-description'] input").setValue("large");
+    curator.selectedFood.value = { ...matchedFood, id: "88888888-8888-4888-8888-888888888888" };
+    await nextTick();
+    expect((wrapper.get("[data-testid='portion-description'] input").element as HTMLInputElement).value).toBe("");
   }
   finally {
     wrapper.unmount();

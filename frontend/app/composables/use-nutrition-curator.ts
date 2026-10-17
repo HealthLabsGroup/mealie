@@ -24,6 +24,7 @@ export function useNutritionCurator() {
   const foodError = ref<string | null>(null);
   const sourceError = ref<string | null>(null);
   const actionError = ref<string | null>(null);
+  let sourceSearchId = 0;
 
   const visibleFoods = computed(() => foods.value.filter((food) => {
     if (queueFilter.value === "all") {
@@ -68,17 +69,29 @@ export function useNutritionCurator() {
   }
 
   async function searchSources() {
+    const searchId = ++sourceSearchId;
+    const foodId = selectedFood.value?.id ?? null;
     const q = sourceQuery.value.trim();
+    const searchCountry = country.value;
     sourceError.value = null;
     if (q.length < 2) {
       candidates.value = [];
+      searchingSources.value = false;
       sourceError.value = "Enter at least 2 characters.";
       return;
     }
 
     searchingSources.value = true;
     try {
-      const { data, error } = await api.searchSourceFoods({ q, country: country.value, limit: 20 });
+      const { data, error } = await api.searchSourceFoods({ q, country: searchCountry, limit: 20 });
+      if (
+        searchId !== sourceSearchId
+        || selectedFood.value?.id !== foodId
+        || sourceQuery.value.trim() !== q
+        || country.value !== searchCountry
+      ) {
+        return;
+      }
       if (error || !data) {
         sourceError.value = "Unable to search nutrition sources.";
         return;
@@ -86,7 +99,9 @@ export function useNutritionCurator() {
       candidates.value = data;
     }
     finally {
-      searchingSources.value = false;
+      if (searchId === sourceSearchId) {
+        searchingSources.value = false;
+      }
     }
   }
 
@@ -98,34 +113,48 @@ export function useNutritionCurator() {
     selectedFood.value = updated;
   }
 
-  async function approveSource(candidate: HealthLabsNutrientFoodOut) {
+  async function approveNutrientFood(nutrientFoodId: string) {
     if (!selectedFood.value) {
       actionError.value = "Select a food first.";
-      return;
+      return false;
     }
     saving.value = true;
     actionError.value = null;
     try {
       const { data, error } = await api.setMatch(
         selectedFood.value.id,
-        { nutrientFoodId: candidate.id, country: country.value, confidence: 1 },
+        { nutrientFoodId, country: country.value, confidence: 1 },
         crypto.randomUUID(),
       );
       if (error || !data) {
         actionError.value = "Unable to save this source match.";
-        return;
+        return false;
       }
       applyFoodUpdate(data);
+      return true;
     }
     finally {
       saving.value = false;
     }
   }
 
+  async function approveSource(candidate: HealthLabsNutrientFoodOut) {
+    return await approveNutrientFood(candidate.id);
+  }
+
+  async function approveSuggestion() {
+    const suggestion = selectedFood.value?.nutrition;
+    if (!suggestion || suggestion.reviewed) {
+      actionError.value = "No source suggestion is available.";
+      return false;
+    }
+    return await approveNutrientFood(suggestion.nutrientFoodId);
+  }
+
   async function clearMatch() {
     if (!selectedFood.value) {
       actionError.value = "Select a food first.";
-      return;
+      return false;
     }
     saving.value = true;
     actionError.value = null;
@@ -161,9 +190,10 @@ export function useNutritionCurator() {
       );
       if (error || !data) {
         actionError.value = "Unable to add this portion.";
-        return;
+        return false;
       }
       applyFoodUpdate(data);
+      return true;
     }
     finally {
       saving.value = false;
@@ -190,6 +220,7 @@ export function useNutritionCurator() {
     selectFood,
     searchSources,
     approveSource,
+    approveSuggestion,
     clearMatch,
     addPortion,
   };

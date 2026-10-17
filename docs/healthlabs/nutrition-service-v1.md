@@ -226,7 +226,7 @@ database backup created immediately before the migration.
   and recipe nutrition.
 - All source-derived values include provider, source food ID, version, licence,
   and checksum provenance.
-- The `boghdanlesiv@gmail.com` workspace has every structured food classified as
+- The target DEV workspace has every structured food classified as
   matched, review-required, or unknown; unparsed ingredient lines stay explicit
   and no fabricated values exist.
 - Recipe totals are deterministic and missing data remains `null`.

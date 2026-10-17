@@ -265,6 +265,62 @@ class HealthLabsFoodPortion(SqlAlchemyBase, BaseMixins):
     source_managed: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=True, server_default=sa.true())
 
 
+class HealthLabsNutritionWork(SqlAlchemyBase, BaseMixins):
+    __tablename__ = "healthlabs_nutrition_work"
+    __table_args__ = (
+        sa.UniqueConstraint("kind", "target_id", name="healthlabs_nutrition_work_target_key"),
+        sa.CheckConstraint(
+            "kind IN ('ingredient_structure', 'food_match', 'portion_resolution')",
+            name="healthlabs_nutrition_work_kind_valid",
+        ),
+        sa.CheckConstraint(
+            "state IN ('pending', 'running', 'review_required', 'completed', 'failed')",
+            name="healthlabs_nutrition_work_state_valid",
+        ),
+        sa.CheckConstraint("attempt_count >= 0", name="healthlabs_nutrition_work_attempt_nonnegative"),
+        sa.Index(
+            "healthlabs_nutrition_work_due_idx",
+            "state",
+            "next_attempt_at",
+            "lease_expires_at",
+        ),
+    )
+
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    group_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("groups.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    # shortcut: polymorphic nutrition targets cannot use one database FK; discovery removes stale rows.
+    target_id: Mapped[GUID] = mapped_column(GUID, nullable=False)
+    input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending", server_default="pending")
+    attempt_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
+    next_attempt_at: Mapped[datetime] = mapped_column(NaiveDateTime, nullable=False, default=get_utc_now)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(NaiveDateTime, nullable=True)
+    provider_requested_at: Mapped[datetime | None] = mapped_column(NaiveDateTime, nullable=True)
+    result: Mapped[dict[str, Any] | None] = mapped_column(sa.JSON, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class HealthLabsNutritionProviderUsage(SqlAlchemyBase, BaseMixins):
+    __tablename__ = "healthlabs_nutrition_provider_usage"
+    __table_args__ = (
+        sa.UniqueConstraint("usage_date", name="healthlabs_nutrition_provider_usage_date_key"),
+        sa.CheckConstraint(
+            "request_count >= 0",
+            name="healthlabs_nutrition_provider_usage_count_nonnegative",
+        ),
+    )
+
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    usage_date: Mapped[date] = mapped_column(sa.Date, nullable=False)
+    request_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
+
+
 class HealthLabsBrandedProduct(SqlAlchemyBase, BaseMixins):
     __tablename__ = "healthlabs_branded_products"
     __table_args__ = (

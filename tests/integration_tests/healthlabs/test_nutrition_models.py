@@ -1,5 +1,5 @@
-from datetime import UTC, datetime
-from uuid import uuid4
+from datetime import UTC, date, datetime
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -10,6 +10,8 @@ from mealie.db.models.healthlabs import (
     HealthLabsFoodPortion,
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
+    HealthLabsNutritionProviderUsage,
+    HealthLabsNutritionWork,
 )
 from mealie.schema.recipe import SaveIngredientFood
 from tests.utils import TestUser
@@ -46,6 +48,91 @@ def _nutrient_food(user: TestUser, source: HealthLabsNutrientSourceRelease):
     user.repos.session.add(food)
     user.repos.session.flush()
     return food
+
+
+def _nutrition_work(
+    user: TestUser,
+    *,
+    kind: str = "ingredient_structure",
+    target_id: UUID | None = None,
+    state: str = "pending",
+) -> HealthLabsNutritionWork:
+    work = HealthLabsNutritionWork(
+        group_id=user.group_id,
+        kind=kind,
+        target_id=target_id or uuid4(),
+        input_sha256="a" * 64,
+        state=state,
+        next_attempt_at=datetime(2026, 10, 17, 9, 30, tzinfo=UTC),
+    )
+    user.repos.session.add(work)
+    return work
+
+
+@pytest.mark.parametrize("kind", ["ingredient_structure", "food_match", "portion_resolution"])
+@pytest.mark.parametrize("state", ["pending", "running", "review_required", "completed", "failed"])
+def test_nutrition_work_accepts_supported_kind_and_state(
+    unique_user_fn_scoped: TestUser,
+    kind: str,
+    state: str,
+) -> None:
+    work = _nutrition_work(unique_user_fn_scoped, kind=kind, state=state)
+
+    unique_user_fn_scoped.repos.session.flush()
+
+    assert work.attempt_count == 0
+    assert work.lease_expires_at is None
+    assert work.provider_requested_at is None
+    assert work.result is None
+    assert work.last_error is None
+    unique_user_fn_scoped.repos.session.rollback()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("kind", "unsupported"), ("state", "unsupported"), ("attempt_count", -1)],
+)
+def test_nutrition_work_rejects_invalid_control_values(
+    unique_user_fn_scoped: TestUser,
+    field: str,
+    value: str | int,
+) -> None:
+    work = _nutrition_work(unique_user_fn_scoped)
+    setattr(work, field, value)
+
+    with pytest.raises(IntegrityError):
+        unique_user_fn_scoped.repos.session.flush()
+    unique_user_fn_scoped.repos.session.rollback()
+
+
+def test_nutrition_work_has_one_row_per_kind_and_target(unique_user_fn_scoped: TestUser) -> None:
+    session = unique_user_fn_scoped.repos.session
+    target_id = uuid4()
+    _nutrition_work(unique_user_fn_scoped, target_id=target_id)
+    _nutrition_work(unique_user_fn_scoped, kind="portion_resolution", target_id=target_id)
+    session.flush()
+
+    _nutrition_work(unique_user_fn_scoped, target_id=target_id)
+    with pytest.raises(IntegrityError):
+        session.flush()
+    session.rollback()
+
+
+def test_provider_usage_has_one_nonnegative_counter_per_utc_date(unique_user_fn_scoped: TestUser) -> None:
+    session = unique_user_fn_scoped.repos.session
+    usage_date = date(2026, 10, 17)
+    session.add(HealthLabsNutritionProviderUsage(usage_date=usage_date, request_count=0))
+    session.flush()
+
+    session.add(HealthLabsNutritionProviderUsage(usage_date=usage_date, request_count=1))
+    with pytest.raises(IntegrityError):
+        session.flush()
+    session.rollback()
+
+    session.add(HealthLabsNutritionProviderUsage(usage_date=date(2026, 10, 18), request_count=-1))
+    with pytest.raises(IntegrityError):
+        session.flush()
+    session.rollback()
 
 
 def test_source_release_identity_is_unique(unique_user_fn_scoped: TestUser) -> None:

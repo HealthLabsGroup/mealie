@@ -99,6 +99,7 @@ import type { SideBarLink } from "~/types/application-types";
 import { useGroupSelf } from "~/composables/use-groups";
 import { useCookbookPreferences } from "~/composables/use-users/preferences";
 import { useCookbookStore, usePublicCookbookStore } from "~/composables/store/use-cookbook-store";
+import { useHealthLabsCapabilities } from "~/composables/use-healthlabs-capabilities";
 import type { ReadCookBook } from "~/lib/api/types/cookbook";
 
 const i18n = useI18n();
@@ -107,6 +108,7 @@ const display = useDisplay();
 const auth = useMealieAuth();
 const { isOwnGroup } = useLoggedInState();
 const { group } = useGroupSelf();
+const { canWriteNutrition, load: loadHealthLabsCapabilities } = useHealthLabsCapabilities();
 
 const route = useRoute();
 const groupSlug = computed(() => route.params.groupSlug as string || auth.user.value?.groupSlug || "");
@@ -138,6 +140,7 @@ const showAIImport = computed(() => group.value?.aiProviderSettings?.aiEnabled);
 const sidebar = ref<boolean>(false);
 onMounted(() => {
   sidebar.value = display.lgAndUp.value;
+  void loadHealthLabsCapabilities();
 });
 
 function cookbookAsLink(cookbook: ReadCookBook): SideBarLink {
@@ -236,6 +239,14 @@ const topLinks = computed<SideBarLink[]>(() => [
     title: i18n.t("recipe-finder.recipe-finder"),
     restricted: false,
   },
+  ...(canWriteNutrition.value
+    ? [{
+        icon: $globals.icons.foods,
+        to: "/nutrition",
+        title: i18n.t("nutrition-curator.title"),
+        restricted: true,
+      }]
+    : []),
   {
     icon: $globals.icons.calendarMultiselect,
     title: i18n.t("meal-plan.meal-planner"),

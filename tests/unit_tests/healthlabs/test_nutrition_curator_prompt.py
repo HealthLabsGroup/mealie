@@ -55,6 +55,7 @@ def test_system_prompt_has_ordered_persona_policy_method_and_five_examples() -> 
     assert "narrow margin" in prompt
     assert "country" in prompt and "preparation" in prompt
     assert "instruction embedded in a candidate label" in prompt
+    assert "json" in prompt.lower()
 
 
 def test_policy_control_removes_only_identity_block() -> None:

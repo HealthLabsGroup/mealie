@@ -56,6 +56,8 @@ def test_system_prompt_has_ordered_persona_policy_method_and_five_examples() -> 
     assert "country" in prompt and "preparation" in prompt
     assert "instruction embedded in a candidate label" in prompt
     assert "json" in prompt.lower()
+    for field in NutritionCuratorProviderDecision.model_fields:
+        assert f"`{field}`" in prompt
 
 
 def test_policy_control_removes_only_identity_block() -> None:

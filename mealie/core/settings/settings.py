@@ -2,6 +2,7 @@ import logging
 import os
 import secrets
 from datetime import UTC, datetime
+from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal, NamedTuple
@@ -175,6 +176,13 @@ class AppSettings(AppLoggingSettings):
 
     HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT: Annotated[int, Field(ge=0)] = 0
     """Maximum paid nutrition-provider requests per UTC day; zero disables them."""
+
+    HEALTHLABS_NUTRITION_PROVIDER_DAILY_BUDGET_USD: Annotated[Decimal, Field(ge=0)] = Decimal("0")
+    """Maximum reserved and recorded nutrition-provider cost per UTC day; zero disables paid calls."""
+
+    HEALTHLABS_NUTRITION_PROVIDER_INPUT_USD_PER_MILLION_TOKENS: Annotated[Decimal, Field(ge=0)] = Decimal("0")
+    HEALTHLABS_NUTRITION_PROVIDER_OUTPUT_USD_PER_MILLION_TOKENS: Annotated[Decimal, Field(ge=0)] = Decimal("0")
+    HEALTHLABS_NUTRITION_PROVIDER_MAX_OUTPUT_TOKENS: Annotated[int, Field(gt=0)] = 256
 
     GIT_COMMIT_HASH: str = "unknown"
 

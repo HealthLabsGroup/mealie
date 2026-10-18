@@ -10,7 +10,7 @@ import pytest
 import mealie.services.openai.openai as openai_module
 from mealie.schema.group.ai_providers import AIProviderOut
 from mealie.schema.openai._base import OpenAIBase
-from mealie.services.openai.openai import OpenAIService
+from mealie.services.openai.openai import OpenAIRequestRejected, OpenAIService
 
 
 def _make_mock_repos() -> MagicMock:
@@ -277,21 +277,22 @@ def _make_provider() -> MagicMock:
     return provider
 
 
-def _make_body(content: str | None, finish_reason: str = "stop") -> str:
+def _make_body(content: str | None, finish_reason: str = "stop", *, usage: dict | None = None) -> str:
     choices = (
         [{"message": {"content": content, "role": "assistant"}, "finish_reason": finish_reason, "index": 0}]
         if content is not None
         else []
     )
-    return json.dumps(
-        {
-            "id": "chatcmpl-test",
-            "object": "chat.completion",
-            "created": 0,
-            "model": "test-model",
-            "choices": choices,
-        }
-    )
+    body = {
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "test-model",
+        "choices": choices,
+    }
+    if usage is not None:
+        body["usage"] = usage
+    return json.dumps(body)
 
 
 class _FakeStream:
@@ -342,6 +343,60 @@ async def test_get_response_sends_schema_as_response_format(settings_stub):
     call = completions.parse_calls[0]
     assert call["response_format"] is _SampleSchema
     assert call["model"] == "test-model"
+
+
+@pytest.mark.asyncio
+async def test_get_response_bounds_output_and_reports_sanitized_usage(settings_stub):
+    svc = OpenAIService(_make_mock_repos())
+    completions = _FakeCompletions(
+        parse_result=_make_body(
+            '{"answer": "hi"}',
+            usage={
+                "prompt_tokens": 11,
+                "completion_tokens": 3,
+                "total_tokens": 14,
+                "prompt_tokens_details": {"cached_tokens": 2},
+            },
+        )
+    )
+    svc.get_client = MagicMock(return_value=_FakeClient(completions))
+    usage = []
+    requests = []
+
+    await svc.get_response(
+        "system prompt",
+        "hello",
+        response_schema=_SampleSchema,
+        provider=_make_provider(),
+        max_completion_tokens=7,
+        request_guard=lambda input_tokens, output_tokens: requests.append((input_tokens, output_tokens)) or True,
+        usage_callback=usage.append,
+    )
+
+    assert completions.parse_calls[0]["max_completion_tokens"] == 7
+    assert len(requests) == 1
+    assert requests[0][0] >= len("system prompt") + len("hello")
+    assert requests[0][1] == 7
+    assert usage == [{"input_tokens": 11, "cached_input_tokens": 2, "output_tokens": 3}]
+
+
+@pytest.mark.asyncio
+async def test_get_response_rejects_guarded_request_before_network_call(settings_stub):
+    svc = OpenAIService(_make_mock_repos())
+    completions = _FakeCompletions(parse_result=_make_body('{"answer": "hi"}'))
+    svc.get_client = MagicMock(return_value=_FakeClient(completions))
+
+    with pytest.raises(OpenAIRequestRejected):
+        await svc.get_response(
+            "system prompt",
+            "hello",
+            response_schema=_SampleSchema,
+            provider=_make_provider(),
+            max_completion_tokens=7,
+            request_guard=lambda *_args: False,
+        )
+
+    assert completions.parse_calls == []
 
 
 @pytest.mark.asyncio

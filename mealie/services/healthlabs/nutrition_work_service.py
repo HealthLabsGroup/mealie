@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import ROUND_FLOOR, Decimal
+
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
@@ -26,10 +28,20 @@ class NutritionWorkService:
         user: PrivateUser,
         *,
         provider_daily_request_limit: int,
+        provider_daily_budget_usd: Decimal,
+        provider_input_usd_per_million_tokens: Decimal,
+        provider_output_usd_per_million_tokens: Decimal,
     ) -> None:
         self.session = session
         self.user = user
         self.provider_daily_request_limit = provider_daily_request_limit
+        self.provider_daily_budget_microusd = int(
+            (provider_daily_budget_usd * 1_000_000).to_integral_value(rounding=ROUND_FLOOR)
+        )
+        self.provider_cost_configured = bool(
+            self.provider_daily_budget_microusd
+            and (provider_input_usd_per_million_tokens or provider_output_usd_per_million_tokens)
+        )
         self.policy = RecipeAccessPolicy(session, user)
 
     def status(self) -> HealthLabsNutritionWorkerStatus:
@@ -44,19 +56,26 @@ class NutritionWorkService:
                 ).all()
             )
         )
-        requests_today = (
-            self.session.scalar(
-                sa.select(HealthLabsNutritionProviderUsage.request_count).where(
-                    HealthLabsNutritionProviderUsage.usage_date == get_utc_now().date()
-                )
+        usage = self.session.scalar(
+            sa.select(HealthLabsNutritionProviderUsage).where(
+                HealthLabsNutritionProviderUsage.usage_date == get_utc_now().date()
             )
-            or 0
         )
-        provider_enabled = self.provider_daily_request_limit > 0 and self._provider_available()
+        provider_enabled = (
+            self.provider_daily_request_limit > 0 and self.provider_cost_configured and self._provider_available()
+        )
+        provider_budget_exhausted = bool(
+            provider_enabled
+            and usage is not None
+            and (
+                usage.request_count >= self.provider_daily_request_limit
+                or usage.spent_microusd + usage.reserved_microusd >= self.provider_daily_budget_microusd
+            )
+        )
         return HealthLabsNutritionWorkerStatus(
             counts=counts,
             provider_enabled=provider_enabled,
-            provider_budget_exhausted=(provider_enabled and requests_today >= self.provider_daily_request_limit),
+            provider_budget_exhausted=provider_budget_exhausted,
             last_updated_at=self.session.scalar(
                 sa.select(sa.func.max(HealthLabsNutritionWork.update_at)).where(
                     HealthLabsNutritionWork.group_id == self.user.group_id

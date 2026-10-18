@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 
 from rapidfuzz import fuzz
 
@@ -18,6 +19,13 @@ from ..parser_utils import extract_quantity_from_string
 
 
 class OpenAIParser(ABCIngredientParser):
+    max_completion_tokens: int | None = None
+    request_guard: Callable[[int, int], bool] | None = None
+    last_usage: dict[str, int] | None = None
+
+    def _capture_usage(self, usage: dict[str, int]) -> None:
+        self.last_usage = usage
+
     def _calculate_qty_conf(self, original_text: str, parsed_qty: float | None) -> float:
         """Compares the extracted quantity to a brute-force parsed quantity."""
 
@@ -159,9 +167,15 @@ class OpenAIParser(ABCIngredientParser):
     async def _parse(self, ingredients: list[str]) -> OpenAIIngredients:
         service = OpenAIService(self.repos)
         prompt = self._get_prompt(service)
+        self.last_usage = None
 
         response = await service.get_response(
-            prompt, json.dumps(ingredients, separators=(",", ":")), response_schema=OpenAIIngredients
+            prompt,
+            json.dumps(ingredients, separators=(",", ":")),
+            response_schema=OpenAIIngredients,
+            max_completion_tokens=self.max_completion_tokens,
+            request_guard=self.request_guard,
+            usage_callback=self._capture_usage if self.request_guard is not None else None,
         )
 
         if not response:

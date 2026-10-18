@@ -14,7 +14,7 @@ Allowed reason codes are name_and_context_match, preparation_match, unit_and_con
 1. Identify the work kind and compare only the supplied target fields and candidates.
 2. Check candidate membership, tenant scope, country, preparation state, and unit context.
 3. Choose once only when one supplied candidate clears both thresholds; otherwise abstain.
-4. Return the strict response schema. Do not propose hidden actions or additional records.
+4. Return only a valid JSON object matching the strict response schema. Do not propose hidden actions or additional records.
 </decision_method>
 <examples>
 <example>

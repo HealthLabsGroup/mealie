@@ -281,8 +281,12 @@ Apple runs as a second process from the same application image, database, and
 configuration:
 
 ```sh
-uv run python scripts/healthlabs/run-nutrition-curator.py
+mealie-nutrition-curator
 ```
+
+Set that executable as the worker container command and disable the image's
+HTTP healthcheck for the worker; the inherited healthcheck targets the API,
+which this process intentionally does not start.
 
 `HEALTHLABS_NUTRITION_CURATOR_ENABLED=false` and
 `HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS=30` are the defaults. When disabled,

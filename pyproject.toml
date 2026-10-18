@@ -50,6 +50,7 @@ dependencies = [
 
 [project.scripts]
 mealie = "mealie.main:main"
+mealie-nutrition-curator = "mealie.services.healthlabs.nutrition_curator_runner:main"
 
 [project.optional-dependencies]
 pgsql = [

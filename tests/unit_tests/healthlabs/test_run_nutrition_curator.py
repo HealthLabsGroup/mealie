@@ -1,20 +1,10 @@
 from __future__ import annotations
 
-import importlib.util
 import signal
 from contextlib import contextmanager
-from pathlib import Path
 from types import SimpleNamespace
 
-SCRIPT = Path(__file__).parents[3] / "scripts/healthlabs/run-nutrition-curator.py"
-
-
-def _load_script():
-    spec = importlib.util.spec_from_file_location("run_nutrition_curator", SCRIPT)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from mealie.services.healthlabs import nutrition_curator_runner as runner
 
 
 class StopEvent:
@@ -42,7 +32,6 @@ def _settings():
 
 
 def test_main_waits_interruptibly_when_idle(monkeypatch) -> None:
-    module = _load_script()
     stop = StopEvent()
     handlers = []
 
@@ -58,19 +47,18 @@ def test_main_waits_interruptibly_when_idle(monkeypatch) -> None:
         def run_once(self):
             return SimpleNamespace(claimed=0, approved=0, insufficient_evidence=0, failed=0)
 
-    monkeypatch.setattr(module, "STOP", stop)
-    monkeypatch.setattr(module, "get_app_settings", _settings)
-    monkeypatch.setattr(module, "session_context", session_context)
-    monkeypatch.setattr(module, "NutritionCuratorWorker", Worker)
+    monkeypatch.setattr(runner, "STOP", stop)
+    monkeypatch.setattr(runner, "get_app_settings", _settings)
+    monkeypatch.setattr(runner, "session_context", session_context)
+    monkeypatch.setattr(runner, "NutritionCuratorWorker", Worker)
     monkeypatch.setattr(signal, "signal", lambda signum, handler: handlers.append((signum, handler)))
 
-    assert module.main() == 0
+    assert runner.main() == 0
     assert stop.waits == [30]
     assert [signum for signum, _ in handlers] == [signal.SIGTERM, signal.SIGINT]
 
 
 def test_signal_during_work_allows_current_decision_to_finish(monkeypatch, caplog) -> None:
-    module = _load_script()
     caplog.set_level("INFO")
     stop = StopEvent()
     calls = 0
@@ -89,13 +77,13 @@ def test_signal_during_work_allows_current_decision_to_finish(monkeypatch, caplo
             stop.set()
             return SimpleNamespace(claimed=1, approved=1, insufficient_evidence=0, failed=0)
 
-    monkeypatch.setattr(module, "STOP", stop)
-    monkeypatch.setattr(module, "get_app_settings", _settings)
-    monkeypatch.setattr(module, "session_context", session_context)
-    monkeypatch.setattr(module, "NutritionCuratorWorker", Worker)
+    monkeypatch.setattr(runner, "STOP", stop)
+    monkeypatch.setattr(runner, "get_app_settings", _settings)
+    monkeypatch.setattr(runner, "session_context", session_context)
+    monkeypatch.setattr(runner, "NutritionCuratorWorker", Worker)
     monkeypatch.setattr(signal, "signal", lambda *_args: None)
 
-    assert module.main() == 0
+    assert runner.main() == 0
     assert calls == 1
     assert stop.waits == []
     assert "approved=1" in caplog.text

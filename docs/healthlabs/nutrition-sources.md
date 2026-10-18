@@ -99,7 +99,7 @@ portions remain the source of all nutrition values and conversions.
 Apple runs separately with the same image/database/configuration:
 
 ```sh
-uv run python scripts/healthlabs/run-nutrition-curator.py
+mealie-nutrition-curator
 ```
 
 It defaults off. Enable it only after configuring a valid group provider/model,

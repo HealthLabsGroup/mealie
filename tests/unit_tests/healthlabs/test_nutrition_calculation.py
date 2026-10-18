@@ -6,8 +6,11 @@ import pytest
 from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
     HealthLabsFoodPortion,
+    HealthLabsFoodPortionMapping,
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
+    HealthLabsNutritionCuratorDecision,
+    HealthLabsNutritionWork,
 )
 from mealie.schema.healthlabs.nutrition import HealthLabsNutritionStatus
 from mealie.schema.recipe import Recipe, RecipeIngredient, SaveIngredientFood, SaveIngredientUnit
@@ -216,6 +219,63 @@ def test_food_facts_uses_source_backed_volume_and_piece_portions(
     facts = NutritionService(user.repos.session).food_facts(food.id, unit.id, quantity)
 
     assert facts.resolved_grams == expected_grams
+
+
+def test_food_facts_prefers_exact_curator_portion_mapping(unique_user_fn_scoped: TestUser) -> None:
+    user = unique_user_fn_scoped
+    food = _ingredient_food(user, f"mapped-food-{uuid4()}")
+    nutrient_food = _nutrient_food(user, _source(user), name=food.name)
+    _reviewed_match(user, food.id, nutrient_food.id)
+    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"scoop-{uuid4()}"))
+    portion = HealthLabsFoodPortion(
+        nutrient_food_id=nutrient_food.id,
+        description="one piece",
+        amount=2,
+        unit="piece",
+        grams=90,
+    )
+    work = HealthLabsNutritionWork(
+        group_id=user.group_id,
+        kind="portion_resolution",
+        target_id="1",
+        input_sha256="a" * 64,
+        state="completed",
+        next_attempt_at=datetime.now(UTC),
+    )
+    user.repos.session.add_all([portion, work])
+    user.repos.session.flush()
+    decision = HealthLabsNutritionCuratorDecision(
+        work_id=work.id,
+        group_id=user.group_id,
+        kind=work.kind,
+        target_id=work.target_id,
+        work_input_sha256=work.input_sha256,
+        curator_sha256="b" * 64,
+        agent_user_id=user.user_id,
+        state="approved",
+        next_attempt_at=datetime.now(UTC),
+        candidate_snapshot={"portions": [{"id": str(portion.id), "label": "one piece"}]},
+        provider_name="test",
+        provider_model="test",
+        prompt_version="healthlabs-nutrition-curator-v1",
+    )
+    user.repos.session.add(decision)
+    user.repos.session.flush()
+    user.repos.session.add(
+        HealthLabsFoodPortionMapping(
+            group_id=user.group_id,
+            ingredient_food_id=food.id,
+            ingredient_unit_id=unit.id,
+            food_portion_id=portion.id,
+            reviewed_by_user_id=user.user_id,
+            curator_decision_id=decision.id,
+        )
+    )
+    user.repos.session.commit()
+
+    facts = NutritionService(user.repos.session).food_facts(food.id, unit.id, 4)
+
+    assert facts.resolved_grams == 180
 
 
 def test_food_facts_keeps_missing_conversion_unknown(unique_user_fn_scoped: TestUser) -> None:

@@ -16,9 +16,11 @@ export type HealthLabsCapability =
   | "catalogue:write"
   | "nutrition:write";
 export type HealthLabsNutritionStatus = "matched" | "review_required" | "unknown";
+export type UserType = "human" | "agent";
 export type HealthLabsRecipeScope = "personal" | "catalogue";
 export type HealthLabsNutritionWorkKind = "ingredient_structure" | "food_match" | "portion_resolution";
 export type HealthLabsNutritionWorkState = "pending" | "running" | "review_required" | "completed" | "failed";
+export type HealthLabsNutritionCuratorState = "pending" | "running" | "approved" | "insufficient_evidence" | "failed";
 export type HealthLabsPlanEntryType = "breakfast" | "lunch" | "dinner" | "snack";
 
 export interface HealthLabsAccessAuditOut {
@@ -93,9 +95,16 @@ export interface HealthLabsFoodMatchOut {
   } | null;
   reviewedByUserId?: string | null;
   reviewedAt?: string | null;
+  reviewedBy?: HealthLabsReviewerOut | null;
+  appleNote?: string | null;
   nutrientsPer100g: HealthLabsNutritionValues;
   portions?: HealthLabsFoodPortionOut[];
   source: HealthLabsNutritionSourceOut;
+}
+export interface HealthLabsReviewerOut {
+  id: string;
+  displayName: string;
+  userType: UserType;
 }
 export interface HealthLabsNutritionValues {
   kcal?: number | null;
@@ -259,14 +268,23 @@ export interface HealthLabsNutritionWorkOut {
   } | null;
   lastError?: string | null;
   updatedAt?: string | null;
+  curatorState?: HealthLabsNutritionCuratorState | null;
+  curatorReasonCode?: string | null;
+  curatorAttemptCount?: number | null;
+  appleNote?: string | null;
+  curatorAgent?: HealthLabsReviewerOut | null;
 }
 export interface HealthLabsNutritionWorkerStatus {
   counts: {
     [k: string]: number;
   };
+  curatorCounts: {
+    [k: string]: number;
+  };
   providerEnabled: boolean;
   providerBudgetExhausted: boolean;
   lastUpdatedAt?: string | null;
+  curatorLastUpdatedAt?: string | null;
 }
 export interface HealthLabsOperationOut {
   idempotencyKey: string;

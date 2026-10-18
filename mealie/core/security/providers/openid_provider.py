@@ -24,6 +24,7 @@ from mealie.db.models.users.users import AuthMethod
 from mealie.pkgs import cache, img
 from mealie.repos.all_repositories import get_repositories
 from mealie.schema.user import PrivateUser
+from mealie.services.healthlabs.nutrition_curator_identity_service import assert_interactive_user
 
 # Avatars are downscaled to a small webp thumbnail anyway, so anything past this is either a
 # mistake on the provider's side or an attempt to exhaust our disk/memory.
@@ -115,6 +116,8 @@ class OpenIDProvider(AuthProvider[UserInfo]):
             if user is not None and user.healthlabs_managed:
                 self._logger.warning("[OIDC] managed account refused non-subject account matching")
                 return None
+        if user is not None:
+            assert_interactive_user(user)
         if not user:
             if not settings.OIDC_SIGNUP_ENABLED:
                 self._logger.debug("[OIDC] No user found. Not creating a new user - new user creation is disabled.")

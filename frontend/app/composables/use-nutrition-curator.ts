@@ -69,7 +69,7 @@ export function useNutritionCurator() {
       }
       foods.value = data.items.map((food) => {
         const confirmed = confirmedUpdates.get(food.id);
-        if (confirmed?.afterLoadId >= loadId) {
+        if (confirmed && confirmed.afterLoadId >= loadId) {
           return confirmed.food;
         }
         confirmedUpdates.delete(food.id);

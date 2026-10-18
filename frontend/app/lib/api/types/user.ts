@@ -7,6 +7,7 @@
 
 export type WebhookType = "mealplan";
 export type AuthMethod = "Mealie" | "LDAP" | "OIDC";
+export type UserType = "human" | "agent";
 
 export interface ChangePassword {
   currentPassword?: string;
@@ -148,6 +149,7 @@ export interface PrivateUser {
   groupSlug: string;
   householdId: string;
   householdSlug: string;
+  userType: UserType;
   tokens?: LongLiveTokenOut[] | null;
   cacheKey: string;
   password: string;
@@ -272,6 +274,7 @@ export interface UserOut {
   groupSlug: string;
   householdId: string;
   householdSlug: string;
+  userType: UserType;
   tokens?: LongLiveTokenOut[] | null;
   cacheKey: string;
 }
@@ -296,6 +299,23 @@ export interface UserRatingSummary {
 export interface UserRatingUpdate {
   rating?: number | null;
   isFavorite?: boolean | null;
+}
+export interface UserUpdate {
+  id: string;
+  username?: string | null;
+  fullName?: string | null;
+  email: string;
+  authMethod?: AuthMethod;
+  admin?: boolean;
+  group: string;
+  household: string;
+  advanced?: boolean;
+  showAnnouncements?: boolean;
+  lastReadAnnouncement?: string | null;
+  canInvite?: boolean;
+  canManage?: boolean;
+  canManageHousehold?: boolean;
+  canOrganize?: boolean;
 }
 export interface ValidateResetToken {
   token: string;

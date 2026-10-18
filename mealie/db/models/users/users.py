@@ -1,5 +1,6 @@
 import enum
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from pydantic import ConfigDict
@@ -48,6 +49,11 @@ class AuthMethod(enum.Enum):
     OIDC = "OIDC"
 
 
+class UserType(StrEnum):
+    HUMAN = "human"
+    AGENT = "agent"
+
+
 class User(SqlAlchemyBase, BaseMixins):
     __tablename__ = "users"
 
@@ -57,6 +63,19 @@ class User(SqlAlchemyBase, BaseMixins):
     email: Mapped[str | None] = mapped_column(String, unique=True, index=True)
     password: Mapped[str | None] = mapped_column(String)
     auth_method: Mapped[Enum[AuthMethod]] = mapped_column(Enum(AuthMethod), default=AuthMethod.MEALIE)
+    user_type: Mapped[UserType] = mapped_column(
+        Enum(
+            UserType,
+            name="users_user_type_valid",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            values_callable=lambda members: [member.value for member in members],
+        ),
+        nullable=False,
+        default=UserType.HUMAN,
+        server_default=UserType.HUMAN.value,
+    )
     admin: Mapped[bool | None] = mapped_column(Boolean, default=False)
     advanced: Mapped[bool | None] = mapped_column(Boolean, default=False)
     external_subject_id: Mapped[str | None] = mapped_column(

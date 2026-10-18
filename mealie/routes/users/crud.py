@@ -10,6 +10,7 @@ from mealie.routes.users._helpers import assert_user_change_allowed
 from mealie.schema.response import ErrorResponse, SuccessResponse
 from mealie.schema.user import ChangePassword, UserBase, UserOut
 from mealie.schema.user.user import UserRatings, UserRatingSummary
+from mealie.services.healthlabs.nutrition_curator_identity_service import assert_interactive_user
 
 user_router = UserAPIRouter(prefix="/users", tags=["Users: CRUD"])
 
@@ -42,6 +43,7 @@ class UserController(BaseUserController):
     @user_router.put("/password")
     def update_password(self, password_change: ChangePassword):
         """Resets the User Password"""
+        assert_interactive_user(self.user)
         if self.user.auth_method == AuthMethod.LDAP:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST, ErrorResponse.respond(self.t("user.ldap-update-password-unavailable"))
@@ -64,6 +66,7 @@ class UserController(BaseUserController):
 
     @user_router.put("/{item_id}")
     def update_user(self, item_id: UUID4, new_data: UserBase):
+        assert_interactive_user(self.user)
         assert_user_change_allowed(item_id, self.user, new_data)
 
         try:

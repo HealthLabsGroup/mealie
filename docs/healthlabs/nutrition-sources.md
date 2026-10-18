@@ -78,18 +78,42 @@ source text, reject fuzzy and ambiguous names, and never create foods, units,
 nutrient values, or gram conversions. Existing mass metadata and source-backed
 food portions remain the only conversion inputs.
 
-The running service now performs the same exact-only checks automatically every
-five minutes. It also discovers source-match and portion-conversion gaps and
-keeps their group-scoped progress across restarts. The scripts remain diagnostic
-and recovery tools; normal operation does not require an operator to run them.
-Provider parsing is limited to ingredient structure, defaults off through
-the request limit and USD budget both being `0`, and can never provide nutrient
-values or grams. Enabling it also requires explicit input/output token rates;
-each call reserves against the daily request and USD caps before network I/O.
-Source releases and nutrition-editor-reviewed portions remain authoritative for
-those values.
+The running service performs the same deterministic checks every five minutes.
+A unique normalized-name or curated-alias result from the requested country or
+`OTHER` source is applied with `auto_applied=true`. It also discovers ambiguous
+or missing ingredient, source-match, and portion-conversion work and keeps that
+group-scoped progress across restarts. The scripts remain diagnostic and
+recovery tools; normal operation does not require an operator to run them.
 
-New automatic matches always require review. Ambiguous and fuzzy candidates remain unknown. The report contains counts and source provenance only; it excludes user identifiers, recipe text, and nutrient values.
+Apple, the managed nutrition-curator agent, may resolve only a bounded list of
+existing catalogue/source/portion IDs. Apple cannot create foods, source truth,
+nutrient values, or grams. Low confidence, a narrow winner margin, incompatible
+country/preparation, missing candidates, stale data, or an invalid provider
+selection records immutable `insufficient_evidence` and performs no write.
+Malformed or schema-invalid provider output instead follows the 5/30-minute
+provider-failure retry policy and can become `failed` on attempt three.
+Accepted source matches use the ordinary reviewed-match contract with Apple as
+the `user_type=agent` reviewer; source releases and existing authoritative
+portions remain the source of all nutrition values and conversions.
+
+Apple runs separately with the same image/database/configuration:
+
+```sh
+mealie-nutrition-curator
+```
+
+It defaults off. Enable it only after configuring a valid group provider/model,
+positive daily request and USD limits, and a positive input or output token
+rate. Before enabling a new prompt/model pair, compare a representative live
+golden set using Apple and the policy-only control and require identical
+validated selections/abstentions. See
+[`nutrition-service-v1.md`](nutrition-service-v1.md#background-reconciliation)
+for retry, shutdown, monitoring, rollback, and persona-version details.
+
+Ambiguous candidates remain unknown unless Apple or a human break-glass editor
+accepts a defensible source-backed selection. Coverage reports contain counts
+and source provenance only; they exclude user identifiers, recipe text, and
+nutrient values.
 
 ## Restored-data verification — 2026-10-17
 

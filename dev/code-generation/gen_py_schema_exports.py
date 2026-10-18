@@ -22,6 +22,8 @@ __all__ = [
 SCHEMA_PATH = PROJECT_DIR / "mealie" / "schema"
 
 SKIP = {"static", "__pycache__"}
+# Internal provider schemas must not be re-exported into generated client contracts.
+SKIP_FILES = {"nutrition_curator.py"}
 
 
 class PyFile:
@@ -63,7 +65,7 @@ class Modules:
 
     def __post_init__(self):
         for file in self.directory.glob("*.py"):
-            if file.name.startswith("_"):
+            if file.name.startswith("_") or file.name in SKIP_FILES:
                 continue
 
             pfile = PyFile(file)

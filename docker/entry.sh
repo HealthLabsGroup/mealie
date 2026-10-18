@@ -70,11 +70,13 @@ load_secrets() {
     done
 }
 
-change_user
+change_user "$@"
 init
 load_secrets
 
-# Start API
-HOST_IP=`/sbin/ip route|awk '/default/ { print $3 }'`
+# Run an explicitly selected process, such as the nutrition curator worker.
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
 
 exec mealie

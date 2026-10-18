@@ -11,7 +11,7 @@ from mealie.core.config import get_app_dirs, get_app_settings
 from mealie.db.models.recipe.recipe import RecipeModel
 from mealie.db.models.users import User
 from mealie.db.models.users.user_to_recipe import UserToRecipe
-from mealie.db.models.users.users import AuthMethod, LongLiveToken
+from mealie.db.models.users.users import AuthMethod, LongLiveToken, UserType
 from mealie.schema._mealie import MealieModel
 from mealie.schema.group.ai_providers import AIProviderSettingsOut
 from mealie.schema.group.group_preferences import ReadGroupPreferences
@@ -167,6 +167,12 @@ class UserIn(UserBase):
     password: str
 
 
+class UserUpdate(UserBase):
+    id: UUID4
+    group: str
+    household: str
+
+
 class UserOut(UserBase):
     id: UUID4
     group: str
@@ -175,6 +181,7 @@ class UserOut(UserBase):
     household: str
     household_id: UUID4
     household_slug: str
+    user_type: UserType
     tokens: list[LongLiveTokenOut] | None = None
     cache_key: str
     model_config = ConfigDict(from_attributes=True)

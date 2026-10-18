@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from math import isfinite
 from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy import ForeignKey, String, event
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from mealie.db.models._model_base import BaseMixins, SqlAlchemyBase
 from mealie.db.models._model_utils.datetime import NaiveDateTime, get_utc_now
@@ -326,6 +327,167 @@ class HealthLabsNutritionWork(SqlAlchemyBase, BaseMixins):
     provider_requested_at: Mapped[datetime | None] = mapped_column(NaiveDateTime, nullable=True)
     result: Mapped[dict[str, Any] | None] = mapped_column(sa.JSON, nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class HealthLabsNutritionCuratorDecision(SqlAlchemyBase, BaseMixins):
+    __tablename__ = "healthlabs_nutrition_curator_decisions"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "kind",
+            "target_id",
+            "curator_sha256",
+            name="healthlabs_nutrition_curator_target_fingerprint_key",
+        ),
+        sa.CheckConstraint(
+            "kind IN ('ingredient_structure', 'food_match', 'portion_resolution')",
+            name="healthlabs_nutrition_curator_kind_valid",
+        ),
+        sa.CheckConstraint(
+            "state IN ('pending', 'running', 'approved', 'insufficient_evidence', 'failed')",
+            name="healthlabs_nutrition_curator_state_valid",
+        ),
+        sa.CheckConstraint(
+            "attempt_count >= 0",
+            name="healthlabs_nutrition_curator_attempt_nonnegative",
+        ),
+        sa.CheckConstraint(
+            "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
+            name="healthlabs_nutrition_curator_confidence_valid",
+        ),
+        sa.CheckConstraint(
+            "runner_up_confidence IS NULL OR (runner_up_confidence >= 0 AND runner_up_confidence <= 1)",
+            name="healthlabs_nutrition_curator_runner_up_confidence_valid",
+        ),
+        sa.Index(
+            "healthlabs_nutrition_curator_due_idx",
+            "state",
+            "next_attempt_at",
+            "lease_expires_at",
+        ),
+    )
+
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    work_id: Mapped[GUID | None] = mapped_column(
+        GUID,
+        ForeignKey("healthlabs_nutrition_work.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    group_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("groups.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    work_input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    curator_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    agent_user_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    state: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="pending",
+        server_default="pending",
+        active_history=True,
+    )
+    attempt_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
+    next_attempt_at: Mapped[datetime] = mapped_column(NaiveDateTime, nullable=False, default=get_utc_now)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(NaiveDateTime, nullable=True)
+    candidate_snapshot: Mapped[dict[str, Any]] = mapped_column(sa.JSON, nullable=False)
+    selected_ids: Mapped[dict[str, Any] | None] = mapped_column(sa.JSON, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
+    runner_up_confidence: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rationale: Mapped[str | None] = mapped_column(String(280), nullable=True)
+    provider_id: Mapped[GUID | None] = mapped_column(
+        GUID,
+        ForeignKey("ai_providers.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    provider_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_model: Mapped[str] = mapped_column(String(255), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    requested_at: Mapped[datetime | None] = mapped_column(NaiveDateTime, nullable=True)
+    usage: Mapped[dict[str, Any] | None] = mapped_column(sa.JSON, nullable=True)
+
+    @validates("confidence", "runner_up_confidence")
+    def validate_score(self, key: str, value: float | None) -> float | None:
+        if value is not None and (not isfinite(value) or not 0 <= value <= 1):
+            raise ValueError(f"{key} must be finite and between 0 and 1")
+        return value
+
+
+_TERMINAL_CURATOR_STATES = frozenset({"approved", "insufficient_evidence", "failed"})
+
+
+@event.listens_for(HealthLabsNutritionCuratorDecision, "before_update")
+def prevent_terminal_curator_decision_update(_mapper: Any, _connection: Any, target: Any) -> None:
+    history = sa.inspect(target).attrs.state.history
+    previous_state = history.deleted[0] if history.deleted else target.state
+    if previous_state in _TERMINAL_CURATOR_STATES:
+        raise ValueError("terminal Curator decisions are immutable")
+
+
+@event.listens_for(HealthLabsNutritionCuratorDecision, "before_delete")
+def prevent_terminal_curator_decision_delete(_mapper: Any, _connection: Any, target: Any) -> None:
+    if target.state in _TERMINAL_CURATOR_STATES:
+        raise ValueError("terminal Curator decisions are immutable")
+
+
+class HealthLabsFoodPortionMapping(SqlAlchemyBase, BaseMixins):
+    __tablename__ = "healthlabs_food_portion_mappings"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "group_id",
+            "ingredient_food_id",
+            "ingredient_unit_id",
+            name="healthlabs_food_portion_mapping_group_food_unit_key",
+        ),
+    )
+
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    group_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("groups.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    ingredient_food_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("ingredient_foods.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    ingredient_unit_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("ingredient_units.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    food_portion_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("healthlabs_food_portions.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    reviewed_by_user_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    curator_decision_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("healthlabs_nutrition_curator_decisions.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
 
 
 class HealthLabsNutritionProviderUsage(SqlAlchemyBase, BaseMixins):

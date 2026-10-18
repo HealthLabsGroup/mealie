@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Literal
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -11,12 +12,15 @@ from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
     HealthLabsFoodMatchSuppression,
     HealthLabsFoodPortion,
+    HealthLabsFoodPortionMapping,
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
+    HealthLabsNutritionCuratorDecision,
     HealthLabsNutritionWork,
 )
 from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel
 from mealie.db.models.recipe.ingredient import IngredientFoodAliasModel
+from mealie.db.models.users import User
 from mealie.schema.healthlabs.identity import HealthLabsCapability
 from mealie.schema.healthlabs.nutrition import (
     HealthLabsFoodMatchOut,
@@ -32,10 +36,13 @@ from mealie.schema.healthlabs.nutrition import (
     HealthLabsNutritionStatus,
     HealthLabsNutritionValues,
     HealthLabsRecipeNutrition,
+    HealthLabsReviewerOut,
 )
+from mealie.schema.healthlabs.nutrition_curator import public_curator_note
 from mealie.schema.recipe import Recipe
 from mealie.schema.user import PrivateUser
 from mealie.services.healthlabs.access_policy import BreakGlassContext, RecipeAccessDenied, RecipeAccessPolicy
+from mealie.services.healthlabs.nutrition_fingerprint_service import NutritionFingerprintService
 
 CORE_NUTRIENTS = ("kcal", "protein_g", "fibre_g", "carbs_g", "fat_g", "water_ml")
 PUBLIC_QUANTUM = Decimal("0.001")
@@ -81,6 +88,11 @@ class NutritionService:
             str,
             dict[str, list[tuple[HealthLabsNutrientFood, HealthLabsNutrientSourceRelease]]],
         ] = {}
+        self._match_cache: dict[UUID, HealthLabsFoodMatch | None] = {}
+        self._review_attribution_cache: dict[
+            UUID,
+            tuple[User | None, HealthLabsNutritionCuratorDecision | None],
+        ] = {}
 
     def list_foods(
         self,
@@ -100,6 +112,7 @@ class NutritionService:
                 )
             )
         foods = self.session.scalars(query.order_by(IngredientFoodModel.name, IngredientFoodModel.id)).all()
+        self._preload_review_attribution(foods, user.group_id)
         items = [self._food_out(food, country) for food in foods]
         if status is not None:
             items = [item for item in items if item.status == status]
@@ -115,14 +128,47 @@ class NutritionService:
         *,
         access_reason: str | None,
         break_glass_reason: str | None,
+        match_method: Literal["manual", "agent"] = "manual",
+        expected_input_sha256: str | None = None,
     ) -> HealthLabsFoodNutritionOut:
         food = self._get_food_for_user(food_id, for_update=True)
+        country = data.country.upper()
+        if match_method == "agent" and expected_input_sha256 is None:
+            raise NutritionConflict("Food changed after curator evaluation")
+        if match_method == "agent":
+            locked = self.session.execute(
+                sa.update(IngredientFoodModel)
+                .where(
+                    IngredientFoodModel.id == food.id,
+                    IngredientFoodModel.group_id == food.group_id,
+                    IngredientFoodModel.update_at == food.update_at,
+                )
+                .values(update_at=IngredientFoodModel.update_at)
+                .execution_options(synchronize_session=False)
+            ).rowcount
+            if locked != 1:
+                raise NutritionConflict("Food changed after curator evaluation")
+            food = self._get_food_for_user(food_id, for_update=True)
+        match = self.session.scalar(
+            sa.select(HealthLabsFoodMatch)
+            .where(HealthLabsFoodMatch.ingredient_food_id == food_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if match_method == "agent" and (
+            NutritionFingerprintService(
+                self.session,
+                country=country,
+                provider_enabled=True,
+            ).food(food, match)
+            != expected_input_sha256
+        ):
+            raise NutritionConflict("Food changed after curator evaluation")
         self._authorize_write(food_id, "nutrition.match.set", access_reason, break_glass_reason)
         nutrient_food = self.session.get(HealthLabsNutrientFood, data.nutrient_food_id)
         if nutrient_food is None:
             raise NutritionSourceNotFound
         source = self.session.get(HealthLabsNutrientSourceRelease, nutrient_food.source_release_id)
-        country = data.country.upper()
         if source is None or source.country.upper() not in {country, "OTHER"}:
             raise NutritionSourceNotFound
 
@@ -131,24 +177,28 @@ class NutritionService:
                 HealthLabsFoodMatchSuppression.ingredient_food_id == food_id
             )
         )
-        if suppression is not None:
+        if match_method == "agent" and suppression is not None:
+            raise NutritionConflict("Suppressed matches cannot be changed by an agent")
+        if match_method == "manual" and suppression is not None:
             self.session.delete(suppression)
 
-        match = self.session.scalar(
-            sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
-        )
         if match is None:
             match = HealthLabsFoodMatch(ingredient_food_id=food_id)
             self.session.add(match)
+        elif match_method == "agent" and (
+            match.auto_applied or (match.reviewed_by_user_id is not None and match.reviewed_at is not None)
+        ):
+            raise NutritionConflict("Reviewed matches cannot be changed by an agent")
         match.nutrient_food_id = nutrient_food.id
         match.country = country
-        match.match_method = "manual"
+        match.match_method = match_method
         match.confidence = data.confidence
         match.auto_applied = False
-        match.food_group = data.food_group
-        match.plant_id = data.plant_id
-        match.allergens = data.allergens
-        match.diets = data.diets
+        if match_method == "manual":
+            match.food_group = data.food_group
+            match.plant_id = data.plant_id
+            match.allergens = data.allergens
+            match.diets = data.diets
         match.reviewed_by_user_id = self._require_user().id
         match.reviewed_at = get_utc_now()
         self.session.flush()
@@ -297,9 +347,12 @@ class NutritionService:
             )
         ):
             return None
-        existing = self.session.scalar(
-            sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
-        )
+        if food_id in self._match_cache:
+            existing = self._match_cache[food_id]
+        else:
+            existing = self.session.scalar(
+                sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
+            )
         if existing is not None:
             return self._match_out(existing)
 
@@ -371,7 +424,7 @@ class NutritionService:
             IngredientFoodModel.group_id == user.group_id,
         )
         if for_update:
-            statement = statement.with_for_update()
+            statement = statement.with_for_update().execution_options(populate_existing=True)
         food = self.session.scalar(statement)
         if food is None:
             raise NutritionFoodNotFound
@@ -415,6 +468,50 @@ class NutritionService:
     def _clear_cache(self) -> None:
         self._food_facts_cache.clear()
         self._candidate_cache.clear()
+        self._match_cache.clear()
+        self._review_attribution_cache.clear()
+
+    def _preload_review_attribution(self, foods: list[IngredientFoodModel], group_id: UUID) -> None:
+        food_ids = [food.id for food in foods]
+        if not food_ids:
+            return
+        matches = self.session.scalars(
+            sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id.in_(food_ids))
+        ).all()
+        matches_by_food = {match.ingredient_food_id: match for match in matches}
+        self._match_cache.update({food_id: matches_by_food.get(food_id) for food_id in food_ids})
+
+        reviewed_matches = [match for match in matches if match.reviewed_by_user_id is not None]
+        reviewer_ids = {match.reviewed_by_user_id for match in reviewed_matches}
+        reviewers = {
+            reviewer.id: reviewer
+            for reviewer in self.session.scalars(
+                sa.select(User).where(User.id.in_(reviewer_ids), User.group_id == group_id)
+            )
+        }
+        decisions: dict[tuple[str, UUID], HealthLabsNutritionCuratorDecision] = {}
+        if reviewed_matches:
+            target_ids = [str(match.ingredient_food_id) for match in reviewed_matches]
+            for decision in self.session.scalars(
+                sa.select(HealthLabsNutritionCuratorDecision)
+                .where(
+                    HealthLabsNutritionCuratorDecision.group_id == group_id,
+                    HealthLabsNutritionCuratorDecision.kind == "food_match",
+                    HealthLabsNutritionCuratorDecision.state == "approved",
+                    HealthLabsNutritionCuratorDecision.target_id.in_(target_ids),
+                )
+                .order_by(
+                    HealthLabsNutritionCuratorDecision.update_at.desc(),
+                    HealthLabsNutritionCuratorDecision.id.desc(),
+                )
+            ):
+                decisions.setdefault((decision.target_id, decision.agent_user_id), decision)
+        for match in reviewed_matches:
+            reviewer = reviewers.get(match.reviewed_by_user_id)
+            self._review_attribution_cache[match.ingredient_food_id] = (
+                reviewer,
+                decisions.get((str(match.ingredient_food_id), reviewer.id)) if reviewer is not None else None,
+            )
 
     def food_facts(
         self,
@@ -613,6 +710,27 @@ class NutritionService:
         reviewed = match is not None and match.reviewed_by_user_id is not None and match.reviewed_at is not None
         auto_applied = match is not None and match.auto_applied
         group_id = self.session.scalar(sa.select(IngredientFoodModel.group_id).where(IngredientFoodModel.id == food_id))
+        reviewer, decision = self._review_attribution_cache.get(food_id, (None, None))
+        if reviewed and food_id not in self._review_attribution_cache and match is not None and group_id is not None:
+            reviewer = self.session.scalar(
+                sa.select(User).where(User.id == match.reviewed_by_user_id, User.group_id == group_id)
+            )
+            if reviewer is not None:
+                decision = self.session.scalar(
+                    sa.select(HealthLabsNutritionCuratorDecision)
+                    .where(
+                        HealthLabsNutritionCuratorDecision.group_id == group_id,
+                        HealthLabsNutritionCuratorDecision.kind == "food_match",
+                        HealthLabsNutritionCuratorDecision.target_id == str(food_id),
+                        HealthLabsNutritionCuratorDecision.state == "approved",
+                        HealthLabsNutritionCuratorDecision.agent_user_id == reviewer.id,
+                    )
+                    .order_by(
+                        HealthLabsNutritionCuratorDecision.update_at.desc(),
+                        HealthLabsNutritionCuratorDecision.id.desc(),
+                    )
+                    .limit(1)
+                )
         source_food = self._source_food_out(nutrient_food, source, group_id=group_id)
         return HealthLabsFoodMatchOut(
             id=match.id if match is not None else None,
@@ -637,6 +755,16 @@ class NutritionService:
             diets=match.diets if match is not None else None,
             reviewed_by_user_id=match.reviewed_by_user_id if match is not None else None,
             reviewed_at=match.reviewed_at if match is not None else None,
+            reviewed_by=(
+                HealthLabsReviewerOut(
+                    id=reviewer.id,
+                    display_name=reviewer.full_name or reviewer.username or "Unknown reviewer",
+                    user_type=reviewer.user_type,
+                )
+                if reviewer is not None
+                else None
+            ),
+            apple_note=public_curator_note(decision.rationale) if decision is not None else None,
             nutrients_per_100g=source_food.nutrients_per_100g,
             portions=source_food.portions,
             source=source_food.source,
@@ -718,6 +846,24 @@ class NutritionService:
         if unit is None:
             return None
 
+        group_id = self.session.scalar(sa.select(IngredientFoodModel.group_id).where(IngredientFoodModel.id == food_id))
+        if group_id is not None:
+            mapped_portion = self.session.scalar(
+                sa.select(HealthLabsFoodPortion)
+                .join(
+                    HealthLabsFoodPortionMapping,
+                    HealthLabsFoodPortionMapping.food_portion_id == HealthLabsFoodPortion.id,
+                )
+                .where(
+                    HealthLabsFoodPortionMapping.group_id == group_id,
+                    HealthLabsFoodPortionMapping.ingredient_food_id == food_id,
+                    HealthLabsFoodPortionMapping.ingredient_unit_id == unit_id,
+                    HealthLabsFoodPortion.nutrient_food_id == nutrient_food_id,
+                )
+            )
+            if mapped_portion is not None:
+                return quantity * self._decimal(mapped_portion.grams) / self._decimal(mapped_portion.amount)
+
         standard_quantity = self._decimal(unit.standard_quantity or 1)
         standard_unit = self._normalize_unit(unit.standard_unit or "")
         if standard_unit in MASS_GRAMS:
@@ -737,7 +883,6 @@ class NutritionService:
             else None
         )
 
-        group_id = self.session.scalar(sa.select(IngredientFoodModel.group_id).where(IngredientFoodModel.id == food_id))
         portions_statement = sa.select(HealthLabsFoodPortion).where(
             HealthLabsFoodPortion.nutrient_food_id == nutrient_food_id
         )

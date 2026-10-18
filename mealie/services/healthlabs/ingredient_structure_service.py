@@ -1,10 +1,17 @@
 from collections.abc import Callable, Iterable
 from typing import Any
+from uuid import UUID
 
+import sqlalchemy as sa
 from pydantic import UUID4
 from sqlalchemy.orm import Session
 
-from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel
+from mealie.db.models.recipe import (
+    IngredientFoodModel,
+    IngredientUnitModel,
+    RecipeIngredientModel,
+    RecipeModel,
+)
 from mealie.lang.providers import Translator
 from mealie.schema.recipe import CreateIngredientFood, CreateIngredientUnit, IngredientFood, IngredientUnit
 from mealie.schema.recipe.recipe_ingredient import RecipeIngredient
@@ -68,6 +75,8 @@ class _ExactDataMatcher:
 
 class IngredientStructureService:
     def __init__(self, session: Session, group_id: UUID4, translator: Translator) -> None:
+        self.session = session
+        self.group_id = group_id
         self.parser = BruteForceParser(group_id, session, translator)
         self.matcher = _ExactDataMatcher(self.parser)
         self.parser.data_matcher = self.matcher  # type: ignore[assignment]
@@ -125,3 +134,62 @@ class IngredientStructureService:
         if not original_text or not ingredient.note:
             ingredient.note = parsed.note.strip() if parsed.note else ""
         return True
+
+    def apply_selected(
+        self,
+        ingredient: RecipeIngredientModel,
+        *,
+        quantity: float,
+        food_id: UUID,
+        unit_id: UUID,
+        expected_input: str,
+    ) -> bool:
+        source = (ingredient.original_text or "").strip() or (ingredient.note or "").strip()
+        if quantity <= 0 or source != expected_input or ingredient.id is None:
+            return False
+
+        expected = (
+            ingredient.original_text,
+            ingredient.note,
+            ingredient.quantity,
+            ingredient.food_id,
+            ingredient.unit_id,
+            ingredient.title,
+            ingredient.referenced_recipe_id,
+        )
+        food_exists = sa.exists().where(
+            IngredientFoodModel.id == food_id,
+            IngredientFoodModel.group_id == self.group_id,
+        )
+        unit_exists = sa.exists().where(
+            IngredientUnitModel.id == unit_id,
+            IngredientUnitModel.group_id == self.group_id,
+        )
+        recipe_exists = sa.exists().where(
+            RecipeModel.id == RecipeIngredientModel.recipe_id,
+            RecipeModel.group_id == self.group_id,
+        )
+        updated = self.session.execute(
+            sa.update(RecipeIngredientModel)
+            .where(
+                RecipeIngredientModel.id == ingredient.id,
+                RecipeIngredientModel.original_text.is_not_distinct_from(expected[0]),
+                RecipeIngredientModel.note.is_not_distinct_from(expected[1]),
+                RecipeIngredientModel.quantity.is_not_distinct_from(expected[2]),
+                RecipeIngredientModel.food_id.is_not_distinct_from(expected[3]),
+                RecipeIngredientModel.unit_id.is_not_distinct_from(expected[4]),
+                RecipeIngredientModel.title.is_not_distinct_from(expected[5]),
+                RecipeIngredientModel.referenced_recipe_id.is_not_distinct_from(expected[6]),
+                ~RecipeIngredientModel.substitutions.any(),
+                food_exists,
+                unit_exists,
+                recipe_exists,
+            )
+            .values(quantity=quantity, food_id=food_id, unit_id=unit_id)
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if updated == 1:
+            self.session.expire(ingredient)
+            return True
+        self.session.refresh(ingredient)
+        return False

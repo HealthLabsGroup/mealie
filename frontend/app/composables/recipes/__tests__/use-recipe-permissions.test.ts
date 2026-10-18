@@ -31,6 +31,7 @@ describe("test use recipe permissions", () => {
     household: "my-household",
     email: "bender.rodriguez@example.com",
     cacheKey: "1234",
+    userType: "human",
     ...overrides,
   });
 

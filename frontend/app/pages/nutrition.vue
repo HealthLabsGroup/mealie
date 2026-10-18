@@ -78,6 +78,20 @@
             {{ workerStateLabel(state) }}: {{ workerStatus.counts[state] ?? 0 }}
           </v-chip>
         </div>
+        <div
+          v-if="workerStatus"
+          class="d-flex flex-wrap align-center ga-2 mb-3"
+        >
+          <span class="text-body-2 font-weight-medium">Apple:</span>
+          <v-chip
+            v-for="state in curatorStates"
+            :key="state"
+            size="small"
+            variant="outlined"
+          >
+            {{ curatorStateLabel(state) }}: {{ workerStatus.curatorCounts[state] ?? 0 }}
+          </v-chip>
+        </div>
         <v-alert
           v-if="workerStatus && !workerStatus.providerEnabled"
           type="info"
@@ -278,6 +292,30 @@
                     </p>
                     <p class="text-body-1 mb-0">
                       {{ selectedFood.nutrition.name }}
+                    </p>
+                    <div
+                      v-if="selectedFood.nutrition.reviewedBy"
+                      class="d-flex flex-wrap align-center ga-2 mt-2"
+                      data-testid="reviewed-by"
+                    >
+                      <span class="text-body-2">
+                        {{ $t("nutrition-curator.reviewed-by", {
+                          name: selectedFood.nutrition.reviewedBy.displayName,
+                        }) }}
+                      </span>
+                      <v-chip
+                        size="x-small"
+                        variant="tonal"
+                      >
+                        {{ reviewerTypeLabel(selectedFood.nutrition.reviewedBy.userType) }}
+                      </v-chip>
+                    </div>
+                    <p
+                      v-if="selectedFood.nutrition.appleNote"
+                      class="text-body-2 text-medium-emphasis mt-2 mb-0"
+                      data-testid="apple-note"
+                    >
+                      {{ $t("nutrition-curator.apple-note", { note: selectedFood.nutrition.appleNote }) }}
                     </p>
                     <p class="text-caption text-medium-emphasis mb-1">
                       {{ $t("nutrition-curator.source-id") }}: {{ selectedFood.nutrition.sourceFoodId }}
@@ -611,6 +649,7 @@ const {
 
 const countries = ["GB", "FR", "DE", "US", "OTHER"];
 const workerStates = ["pending", "running", "review_required", "completed", "failed"] as const;
+const curatorStates = ["pending", "running", "approved", "insufficient_evidence", "failed"] as const;
 const nutrientFields: ReadonlyArray<{
   id: string;
   key: keyof HealthLabsNutritionValues;
@@ -672,6 +711,18 @@ function workerStateLabel(value: string) {
   return i18n.t(`nutrition-curator.worker-${value.replaceAll("_", "-")}`);
 }
 
+function curatorStateLabel(value: string) {
+  return i18n.t(`nutrition-curator.curator-state-${value.replaceAll("_", "-")}`);
+}
+
+function reviewerTypeLabel(value: string) {
+  return i18n.t(`nutrition-curator.reviewer-${value}`);
+}
+
+function isCuratorProcessing(work: HealthLabsNutritionWorkOut) {
+  return work.curatorState === "pending" || work.curatorState === "running";
+}
+
 function workTitle(work: HealthLabsNutritionWorkOut) {
   if (work.kind !== "ingredient_structure") {
     return work.kind === "portion_resolution"
@@ -687,6 +738,19 @@ function workTitle(work: HealthLabsNutritionWorkOut) {
 }
 
 function workSubtitle(work: HealthLabsNutritionWorkOut) {
+  if (isCuratorProcessing(work)) {
+    return i18n.t("nutrition-curator.curator-processing");
+  }
+  if (work.curatorState === "insufficient_evidence") {
+    const reason = work.curatorReasonCode?.replaceAll("_", " ") ?? i18n.t("nutrition-curator.unknown-reason");
+    return [
+      i18n.t("nutrition-curator.curator-insufficient", { reason }),
+      work.appleNote,
+    ].filter(Boolean).join(" ");
+  }
+  if (work.curatorState === "failed") {
+    return i18n.t("nutrition-curator.curator-failed");
+  }
   if (work.kind !== "ingredient_structure") {
     return workerStateLabel(work.kind);
   }

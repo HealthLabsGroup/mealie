@@ -7,6 +7,7 @@ from mealie.repos.all_repositories import get_repositories
 from mealie.schema.user.user_passwords import SavePasswordResetToken
 from mealie.services._base_service import BaseService
 from mealie.services.email import EmailService
+from mealie.services.healthlabs.nutrition_curator_identity_service import assert_interactive_user
 
 
 class PasswordResetService(BaseService):
@@ -21,7 +22,12 @@ class PasswordResetService(BaseService):
             self.logger.error(f"failed to create password reset for {email=}: user doesn't exists")
             # Do not raise exception here as we don't want to confirm to the client that the Email doesn't exists
             return None
-        elif user.auth_method == AuthMethod.LDAP:
+        try:
+            assert_interactive_user(user)
+        except HTTPException:
+            self.logger.error("failed to create password reset: interactive login is disabled")
+            return None
+        if user.auth_method == AuthMethod.LDAP:
             self.logger.error(f"failed to create password reset for {email=}: user controlled by LDAP")
             return None
 
@@ -57,6 +63,7 @@ class PasswordResetService(BaseService):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid token")
 
         user = self.db.users.get_one(token_entry.user_id)
+        assert_interactive_user(user)
         # Update Password
         password_hash = hash_password(new_password)
 

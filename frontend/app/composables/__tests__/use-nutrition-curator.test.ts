@@ -101,6 +101,7 @@ const secondCandidate: HealthLabsNutrientFoodOut = {
 
 const workerStatus: HealthLabsNutritionWorkerStatus = {
   counts: { pending: 1, running: 0, review_required: 1, completed: 3, failed: 0 },
+  curatorCounts: { pending: 1, running: 0, approved: 0, insufficient_evidence: 0, failed: 0 },
   providerEnabled: false,
   providerBudgetExhausted: false,
   lastUpdatedAt: "2026-10-17T12:00:00Z",
@@ -112,6 +113,13 @@ const ingredientWork: HealthLabsNutritionWorkOut = {
   targetId: "42",
   state: "review_required",
   attemptCount: 0,
+  curatorState: "pending",
+  curatorAttemptCount: 0,
+  curatorAgent: {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    displayName: "Apple — Nutrition Curator",
+    userType: "agent",
+  },
   result: {
     reason: "ingredient_suggestion",
     suggestion: { quantity: 2, unit: "cup", food: "oats", note: "" },
@@ -219,6 +227,7 @@ describe("useNutritionCurator", () => {
     await curator.loadWorker();
     expect(curator.workerStatus.value).toEqual(workerStatus);
     expect(curator.reviewWork.value).toEqual([ingredientWork, portionWork]);
+    expect(curator.reviewWork.value[0]?.curatorAgent?.displayName).toBe("Apple — Nutrition Curator");
     expect(nutritionApi.getWork).toHaveBeenCalledTimes(3);
     expect(nutritionApi.getWork).toHaveBeenCalledWith({
       state: "review_required",

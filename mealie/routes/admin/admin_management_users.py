@@ -4,13 +4,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import UUID4
 
 from mealie.core import security
+from mealie.db.models.users import User
 from mealie.routes._base import BaseAdminController, controller
 from mealie.routes._base.mixins import HttpRepo
 from mealie.schema.response.pagination import PaginationQuery
 from mealie.schema.response.responses import ErrorResponse
 from mealie.schema.user.auth import UnlockResults
-from mealie.schema.user.user import UserIn, UserOut, UserPagination
+from mealie.schema.user.user import UserIn, UserOut, UserPagination, UserUpdate
 from mealie.schema.user.user_passwords import ForgotPassword, PasswordResetToken
+from mealie.services.healthlabs.nutrition_curator_identity_service import assert_interactive_user
 from mealie.services.user_services.password_reset_service import PasswordResetService
 from mealie.services.user_services.user_service import UserService
 
@@ -28,7 +30,7 @@ class AdminUserManagementRoutes(BaseAdminController):
 
     @property
     def mixins(self):
-        return HttpRepo[UserIn, UserOut, UserOut](self.repo, self.logger, self.registered_exceptions)
+        return HttpRepo[UserIn, UserUpdate, UserOut](self.repo, self.logger, self.registered_exceptions)
 
     @router.get("", response_model=UserPagination)
     def get_all(self, q: PaginationQuery = Depends(PaginationQuery)):
@@ -62,7 +64,11 @@ class AdminUserManagementRoutes(BaseAdminController):
         return self.mixins.get_one(item_id)
 
     @router.put("/{item_id}", response_model=UserOut)
-    def update_one(self, item_id: UUID4, data: UserOut):
+    def update_one(self, item_id: UUID4, data: UserUpdate):
+        target = self.session.get(User, item_id)
+        if target is not None:
+            assert_interactive_user(target)
+
         # Prevent self demotion
         if self.user.id == item_id and self.user.admin != data.admin:
             raise HTTPException(status_code=403, detail=ErrorResponse.respond("you cannot demote yourself"))
@@ -71,11 +77,17 @@ class AdminUserManagementRoutes(BaseAdminController):
 
     @router.delete("/{item_id}", response_model=UserOut)
     def delete_one(self, item_id: UUID4):
+        target = self.session.get(User, item_id)
+        if target is not None:
+            assert_interactive_user(target)
         return self.mixins.delete_one(item_id)
 
     @router.post("/password-reset-token", response_model=PasswordResetToken, status_code=201)
     def generate_token(self, email: ForgotPassword):
         """Generates a reset token and returns it. This is an authenticated endpoint"""
+        target = self.repos.users.get_one(email.email, "email", any_case=True)
+        if target is not None:
+            assert_interactive_user(target)
         f_service = PasswordResetService(self.session)
         token_entry = f_service.generate_reset_token(email.email)
         if not token_entry:

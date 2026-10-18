@@ -50,6 +50,13 @@ const matchedFood: HealthLabsFoodNutritionOut = {
     confidence: 1,
     autoApplied: false,
     reviewed: true,
+    reviewedByUserId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    reviewedBy: {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      displayName: "Apple — Nutrition Curator",
+      userType: "agent",
+    },
+    appleNote: "I selected the closest licensed source.",
     nutrientsPer100g: candidate.nutrientsPer100g,
     portions: [],
     source: candidate.source,
@@ -79,6 +86,7 @@ const suggestedFood: HealthLabsFoodNutritionOut = {
 
 const workerStatus: HealthLabsNutritionWorkerStatus = {
   counts: { pending: 2, running: 0, review_required: 2, completed: 4, failed: 0 },
+  curatorCounts: { pending: 1, running: 1, approved: 4, insufficient_evidence: 1, failed: 1 },
   providerEnabled: false,
   providerBudgetExhausted: false,
 };
@@ -110,6 +118,39 @@ const reviewWork: HealthLabsNutritionWorkOut[] = [
     state: "review_required",
     attemptCount: 0,
     result: { reason: "conversion_missing", food_id: matchedFood.id },
+  },
+  {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+    kind: "food_match",
+    targetId: "45",
+    state: "review_required",
+    attemptCount: 0,
+    curatorState: "running",
+    curatorAttemptCount: 1,
+    result: { reason: "no_unique_source_match" },
+  },
+  {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+    kind: "food_match",
+    targetId: "46",
+    state: "review_required",
+    attemptCount: 0,
+    curatorState: "insufficient_evidence",
+    curatorReasonCode: "insufficient_candidates",
+    curatorAttemptCount: 1,
+    appleNote: "I need a clearer source match.",
+    result: { reason: "no_unique_source_match" },
+  },
+  {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+    kind: "food_match",
+    targetId: "47",
+    state: "review_required",
+    attemptCount: 0,
+    curatorState: "failed",
+    curatorReasonCode: "provider_error",
+    curatorAttemptCount: 3,
+    result: { reason: "no_unique_source_match" },
   },
 ];
 
@@ -195,6 +236,10 @@ test("renders the curator workflow and keeps unavailable nutrients distinct from
     expect(wrapper.text()).toContain("GB");
     expect(wrapper.text()).toContain("GB-APPLE-1");
     expect(wrapper.text()).toContain("License");
+    expect(wrapper.text()).toContain("Reviewed by Apple — Nutrition Curator");
+    expect(wrapper.text()).toContain("Agent");
+    expect(wrapper.text()).toContain("Apple’s note:");
+    expect(wrapper.text()).toContain("I selected the closest licensed source.");
     expect(wrapper.get("[data-testid='candidate-nutrient-protein']").text()).toContain("—");
     expect(wrapper.get("[data-testid='candidate-nutrient-fat']").text()).toContain("0 g");
 
@@ -225,6 +270,11 @@ test("shows truthful ingredient states and actionable portion work", async () =>
     expect(wrapper.find("[data-testid='approve-ingredient-work']").exists()).toBe(false);
     expect(wrapper.text()).toContain("Waiting for provider calls to be enabled");
     expect(wrapper.text()).toContain("Add or map the suggested food and unit");
+    expect(wrapper.text()).toContain("Apple is processing this item");
+    expect(wrapper.text()).toContain("I need a clearer source match.");
+    expect(wrapper.text()).toContain("Apple found insufficient evidence (insufficient candidates)");
+    expect(wrapper.text()).toContain("Apple will retry after the nutrition input changes");
+    expect(wrapper.findAll("[data-testid='open-food-work']")).toHaveLength(3);
 
     await wrapper.get("[data-testid='open-portion-work']").trigger("click");
     expect(curator.openWork).toHaveBeenCalledWith(reviewWork.find(work => work.kind === "portion_resolution"));

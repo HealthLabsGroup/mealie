@@ -1,9 +1,12 @@
 from datetime import UTC, date, datetime
+from math import inf, nan
 from uuid import uuid4
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+import mealie.db.models.healthlabs as healthlabs_models
+import mealie.db.models.users.users as user_models
 from mealie.db.models.healthlabs import (
     HealthLabsBrandedProduct,
     HealthLabsFoodMatch,
@@ -13,7 +16,9 @@ from mealie.db.models.healthlabs import (
     HealthLabsNutritionProviderUsage,
     HealthLabsNutritionWork,
 )
-from mealie.schema.recipe import SaveIngredientFood
+from mealie.db.models.users import User
+from mealie.schema.recipe import SaveIngredientFood, SaveIngredientUnit
+from mealie.schema.user import PrivateUser, UserIn
 from tests.utils import TestUser
 
 
@@ -67,6 +72,183 @@ def _nutrition_work(
     )
     user.repos.session.add(work)
     return work
+
+
+def _curator_decision(
+    user: TestUser,
+    *,
+    state: str = "pending",
+    target_id: str | None = None,
+    curator_sha256: str | None = None,
+    work: HealthLabsNutritionWork | None = None,
+):
+    decision_type = getattr(healthlabs_models, "HealthLabsNutritionCuratorDecision", None)
+    assert decision_type is not None, "HealthLabsNutritionCuratorDecision is not implemented"
+    if work is None:
+        work = _nutrition_work(user, target_id=target_id)
+        user.repos.session.flush()
+    return decision_type(
+        work_id=work.id,
+        group_id=user.group_id,
+        kind=work.kind,
+        target_id=work.target_id,
+        work_input_sha256=work.input_sha256,
+        curator_sha256=curator_sha256 or uuid4().hex.ljust(64, "0"),
+        agent_user_id=user.user_id,
+        state=state,
+        next_attempt_at=datetime(2026, 10, 18, 9, 30, tzinfo=UTC),
+        candidate_snapshot={"foods": []},
+        provider_name="test-provider",
+        provider_model="test-model",
+        prompt_version="healthlabs-nutrition-curator-v1",
+    )
+
+
+def test_user_type_defaults_to_human(unique_user_fn_scoped: TestUser) -> None:
+    user_type = getattr(user_models, "UserType", None)
+    assert user_type is not None, "UserType is not implemented"
+    user = unique_user_fn_scoped.repos.session.get(User, unique_user_fn_scoped.user_id)
+    assert user is not None
+
+    assert user.user_type is user_type.HUMAN
+    assert PrivateUser.model_validate(user).user_type == "human"
+
+
+def test_user_type_is_read_only() -> None:
+    assert "user_type" not in UserIn.model_fields
+    assert "user_type" in PrivateUser.model_fields
+    assert PrivateUser.model_fields["user_type"].is_required()
+
+
+@pytest.mark.parametrize("state", ["approved", "insufficient_evidence", "failed"])
+def test_curator_decision_enforces_identity_state_and_scores(
+    unique_user_fn_scoped: TestUser,
+    state: str,
+) -> None:
+    decision = _curator_decision(unique_user_fn_scoped, state=state)
+    unique_user_fn_scoped.repos.session.add(decision)
+
+    unique_user_fn_scoped.repos.session.flush()
+
+    assert decision.agent_user_id == unique_user_fn_scoped.user_id
+    assert decision.state == state
+    unique_user_fn_scoped.repos.session.rollback()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("state", "completed"),
+        ("attempt_count", -1),
+        ("confidence", -0.01),
+        ("confidence", 1.01),
+        ("confidence", inf),
+        ("confidence", nan),
+        ("runner_up_confidence", -0.01),
+        ("runner_up_confidence", 1.01),
+        ("runner_up_confidence", inf),
+        ("runner_up_confidence", nan),
+    ],
+)
+def test_curator_decision_rejects_invalid_control_values(
+    unique_user_fn_scoped: TestUser,
+    field: str,
+    value: str | int | float,
+) -> None:
+    decision = _curator_decision(unique_user_fn_scoped)
+
+    with pytest.raises((IntegrityError, ValueError)):
+        setattr(decision, field, value)
+        unique_user_fn_scoped.repos.session.add(decision)
+        unique_user_fn_scoped.repos.session.flush()
+    unique_user_fn_scoped.repos.session.rollback()
+
+
+def test_curator_decision_is_unique_per_complete_fingerprint(unique_user_fn_scoped: TestUser) -> None:
+    session = unique_user_fn_scoped.repos.session
+    target_id = str(uuid4())
+    fingerprint = "f" * 64
+    first = _curator_decision(unique_user_fn_scoped, target_id=target_id, curator_sha256=fingerprint)
+    session.add(first)
+    session.flush()
+
+    work = session.get(HealthLabsNutritionWork, first.work_id)
+    assert work is not None
+    duplicate = _curator_decision(unique_user_fn_scoped, curator_sha256=fingerprint, work=work)
+    session.add(duplicate)
+    with pytest.raises(IntegrityError):
+        session.flush()
+    session.rollback()
+
+
+def test_terminal_curator_evidence_is_immutable(unique_user_fn_scoped: TestUser) -> None:
+    session = unique_user_fn_scoped.repos.session
+    decision = _curator_decision(unique_user_fn_scoped, state="insufficient_evidence")
+    decision.rationale = "I am not confident enough."
+    session.add(decision)
+    session.commit()
+
+    decision.rationale = "Changed"
+    with pytest.raises(ValueError, match="terminal Curator decisions are immutable"):
+        session.flush()
+    session.rollback()
+
+    decision = session.get(type(decision), decision.id)
+    assert decision is not None
+    session.delete(decision)
+    with pytest.raises(ValueError, match="terminal Curator decisions are immutable"):
+        session.flush()
+    session.rollback()
+
+
+def test_portion_mapping_is_group_scoped_and_unique(unique_user_fn_scoped: TestUser) -> None:
+    mapping_type = getattr(healthlabs_models, "HealthLabsFoodPortionMapping", None)
+    assert mapping_type is not None, "HealthLabsFoodPortionMapping is not implemented"
+    session = unique_user_fn_scoped.repos.session
+    ingredient_food = unique_user_fn_scoped.repos.ingredient_foods.create(
+        SaveIngredientFood(group_id=unique_user_fn_scoped.group_id, name=f"food-{uuid4()}")
+    )
+    ingredient_unit = unique_user_fn_scoped.repos.ingredient_units.create(
+        SaveIngredientUnit(group_id=unique_user_fn_scoped.group_id, name=f"unit-{uuid4()}")
+    )
+    nutrient_food = _nutrient_food(unique_user_fn_scoped, _source(unique_user_fn_scoped))
+    portion = HealthLabsFoodPortion(
+        nutrient_food_id=nutrient_food.id,
+        description="one scoop",
+        amount=1,
+        unit="scoop",
+        grams=40,
+    )
+    decision = _curator_decision(unique_user_fn_scoped, state="approved")
+    session.add_all([portion, decision])
+    session.commit()
+
+    mapping = mapping_type(
+        group_id=unique_user_fn_scoped.group_id,
+        ingredient_food_id=ingredient_food.id,
+        ingredient_unit_id=ingredient_unit.id,
+        food_portion_id=portion.id,
+        reviewed_by_user_id=unique_user_fn_scoped.user_id,
+        curator_decision_id=decision.id,
+    )
+    session.add(mapping)
+    session.commit()
+    assert str(mapping.group_id) == unique_user_fn_scoped.group_id
+
+    with pytest.raises(IntegrityError):
+        with session.begin_nested():
+            session.add(
+                mapping_type(
+                    group_id=unique_user_fn_scoped.group_id,
+                    ingredient_food_id=ingredient_food.id,
+                    ingredient_unit_id=ingredient_unit.id,
+                    food_portion_id=portion.id,
+                    reviewed_by_user_id=unique_user_fn_scoped.user_id,
+                    curator_decision_id=decision.id,
+                )
+            )
+            session.flush()
+    session.rollback()
 
 
 @pytest.mark.parametrize("kind", ["ingredient_structure", "food_match", "portion_resolution"])

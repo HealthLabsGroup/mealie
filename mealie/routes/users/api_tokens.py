@@ -12,6 +12,7 @@ from mealie.schema.user import (
     LongLiveTokenIn,
     LongLiveTokenInDB,
 )
+from mealie.services.healthlabs.nutrition_curator_identity_service import assert_interactive_user
 
 router = UserAPIRouter(prefix="/users", tags=["Users: Tokens"])
 
@@ -24,6 +25,7 @@ class UserApiTokensController(BaseUserController):
         token_params: LongLiveTokenIn,
     ):
         """Create api_token in the Database"""
+        assert_interactive_user(self.user)
 
         token_data = {
             "long_token": True,

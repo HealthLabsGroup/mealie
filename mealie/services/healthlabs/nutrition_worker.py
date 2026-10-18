@@ -4,12 +4,10 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from decimal import Decimal
 from uuid import UUID
 
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, aliased
 
 from mealie.db.models._model_utils.datetime import get_utc_now
@@ -17,7 +15,6 @@ from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
 from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
     HealthLabsFoodMatchSuppression,
-    HealthLabsNutritionProviderUsage,
     HealthLabsNutritionWork,
 )
 from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel, RecipeIngredientModel, RecipeModel
@@ -25,6 +22,7 @@ from mealie.lang.providers import get_locale_provider
 from mealie.schema.recipe import IngredientFood, IngredientUnit, RecipeIngredient
 from mealie.services.healthlabs.ingredient_structure_service import IngredientStructureService
 from mealie.services.healthlabs.nutrition_fingerprint_service import NutritionFingerprintService
+from mealie.services.healthlabs.nutrition_provider_budget import NutritionProviderBudget, ProviderReservation
 from mealie.services.healthlabs.nutrition_service import NutritionService
 from mealie.services.openai.openai import OpenAIRequestRejected
 from mealie.services.parser_services.openai.parser import OpenAIParser
@@ -62,20 +60,6 @@ class NutritionReconciliationWorker:
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
-        if provider_daily_request_limit < 0:
-            raise ValueError("provider_daily_request_limit cannot be negative")
-        provider_daily_budget_usd = Decimal(str(provider_daily_budget_usd))
-        provider_input_usd_per_million_tokens = Decimal(str(provider_input_usd_per_million_tokens))
-        provider_output_usd_per_million_tokens = Decimal(str(provider_output_usd_per_million_tokens))
-        if (
-            min(
-                provider_daily_budget_usd,
-                provider_input_usd_per_million_tokens,
-                provider_output_usd_per_million_tokens,
-            )
-            < 0
-        ):
-            raise ValueError("provider cost settings cannot be negative")
         if provider_max_output_tokens < 1:
             raise ValueError("provider_max_output_tokens must be positive")
         if not (country := country.strip().upper()):
@@ -83,18 +67,16 @@ class NutritionReconciliationWorker:
         self.session = session
         self.country = country
         self.batch_size = batch_size
-        self.provider_daily_request_limit = provider_daily_request_limit
-        self.provider_daily_budget_microusd = int(
-            (provider_daily_budget_usd * 1_000_000).to_integral_value(rounding=ROUND_FLOOR)
-        )
-        self.provider_input_usd_per_million_tokens = provider_input_usd_per_million_tokens
-        self.provider_output_usd_per_million_tokens = provider_output_usd_per_million_tokens
         self.provider_max_output_tokens = provider_max_output_tokens
-        self.provider_enabled = bool(
-            provider_daily_request_limit
-            and self.provider_daily_budget_microusd
-            and (provider_input_usd_per_million_tokens or provider_output_usd_per_million_tokens)
+        self.provider_budget = NutritionProviderBudget(
+            session,
+            daily_request_limit=provider_daily_request_limit,
+            daily_budget_usd=provider_daily_budget_usd,
+            input_usd_per_million_tokens=provider_input_usd_per_million_tokens,
+            output_usd_per_million_tokens=provider_output_usd_per_million_tokens,
+            now=lambda: self._current_time(),
         )
+        self.provider_enabled = self.provider_budget.enabled
         self.group_id = group_id
         self.should_stop = should_stop
         self.provider_exhausted = False
@@ -583,59 +565,12 @@ class NutritionReconciliationWorker:
         input_token_upper_bound: int,
         output_token_upper_bound: int,
     ) -> int | None:
-        request_now = self._current_time()
-        usage = self.session.scalar(
-            sa.select(HealthLabsNutritionProviderUsage).where(
-                HealthLabsNutritionProviderUsage.usage_date == request_now.date()
-            )
-        )
-        if usage is None:
-            values = {"usage_date": request_now.date(), "request_count": 0}
-            dialect = self.session.get_bind().dialect.name
-            if dialect == "sqlite":
-                self.session.execute(
-                    sqlite_insert(HealthLabsNutritionProviderUsage)
-                    .values(**values)
-                    .on_conflict_do_nothing(index_elements=[HealthLabsNutritionProviderUsage.usage_date])
-                )
-            elif dialect == "postgresql":
-                self.session.execute(
-                    postgresql_insert(HealthLabsNutritionProviderUsage)
-                    .values(**values)
-                    .on_conflict_do_nothing(index_elements=[HealthLabsNutritionProviderUsage.usage_date])
-                )
-            else:
-                self.session.add(HealthLabsNutritionProviderUsage(**values))
-            self.session.flush()
-            usage = self.session.scalar(
-                sa.select(HealthLabsNutritionProviderUsage).where(
-                    HealthLabsNutritionProviderUsage.usage_date == request_now.date()
-                )
-            )
-            if usage is None:
-                raise RuntimeError("provider usage reservation was not created")
-        reservation = self._provider_cost_microusd(input_token_upper_bound, output_token_upper_bound)
-        reserved = self.session.execute(
-            sa.update(HealthLabsNutritionProviderUsage)
-            .where(
-                HealthLabsNutritionProviderUsage.id == usage.id,
-                HealthLabsNutritionProviderUsage.request_count < self.provider_daily_request_limit,
-                HealthLabsNutritionProviderUsage.spent_microusd
-                + HealthLabsNutritionProviderUsage.reserved_microusd
-                + reservation
-                <= self.provider_daily_budget_microusd,
-            )
-            .values(
-                request_count=HealthLabsNutritionProviderUsage.request_count + 1,
-                reserved_microusd=HealthLabsNutritionProviderUsage.reserved_microusd + reservation,
-            )
-        ).rowcount
-        if reserved != 1:
-            self.session.rollback()
+        reservation = self.provider_budget.reserve(input_token_upper_bound, output_token_upper_bound)
+        if reservation is None:
             return None
-        work.provider_requested_at = request_now
+        work.provider_requested_at = reservation.requested_at
         self.session.commit()
-        return reservation
+        return reservation.reserved_microusd
 
     def _record_provider_usage(
         self,
@@ -643,39 +578,14 @@ class NutritionReconciliationWorker:
         reservation: int,
         usage: dict[str, int],
     ) -> None:
-        input_tokens = usage["input_tokens"]
-        cached_input_tokens = usage["cached_input_tokens"]
-        output_tokens = usage["output_tokens"]
-        if min(input_tokens, cached_input_tokens, output_tokens) < 0 or cached_input_tokens > input_tokens:
-            raise ValueError("provider returned invalid token usage")
-        actual = self._provider_cost_microusd(input_tokens, output_tokens)
-        if actual > reservation:
-            raise RuntimeError("provider token usage exceeded its reserved cost")
         assert work.provider_requested_at is not None
-        updated = self.session.execute(
-            sa.update(HealthLabsNutritionProviderUsage)
-            .where(
-                HealthLabsNutritionProviderUsage.usage_date == work.provider_requested_at.date(),
-                HealthLabsNutritionProviderUsage.reserved_microusd >= reservation,
-            )
-            .values(
-                reserved_microusd=HealthLabsNutritionProviderUsage.reserved_microusd - reservation,
-                spent_microusd=HealthLabsNutritionProviderUsage.spent_microusd + actual,
-                input_tokens=HealthLabsNutritionProviderUsage.input_tokens + input_tokens,
-                cached_input_tokens=HealthLabsNutritionProviderUsage.cached_input_tokens + cached_input_tokens,
-                output_tokens=HealthLabsNutritionProviderUsage.output_tokens + output_tokens,
-            )
-        ).rowcount
-        if updated != 1:
-            raise RuntimeError("provider usage reservation was not found")
-        self.session.commit()
+        self.provider_budget.record(
+            ProviderReservation(work.provider_requested_at.date(), reservation, work.provider_requested_at),
+            usage,
+        )
 
     def _provider_cost_microusd(self, input_tokens: int, output_tokens: int) -> int:
-        cost = (
-            input_tokens * self.provider_input_usd_per_million_tokens
-            + output_tokens * self.provider_output_usd_per_million_tokens
-        )
-        return int(cost.to_integral_value(rounding=ROUND_CEILING))
+        return self.provider_budget.cost_microusd(input_tokens, output_tokens)
 
     def _process_food(self, work: HealthLabsNutritionWork) -> None:
         food = self._food(work)

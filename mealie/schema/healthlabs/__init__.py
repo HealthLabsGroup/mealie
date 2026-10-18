@@ -9,6 +9,7 @@ from .nutrition import (
     HealthLabsFoodPortionOut,
     HealthLabsIngredientNutrition,
     HealthLabsNutrientFoodOut,
+    HealthLabsNutritionCuratorState,
     HealthLabsNutritionSourceOut,
     HealthLabsNutritionSourceReleaseOut,
     HealthLabsNutritionStatus,
@@ -18,6 +19,7 @@ from .nutrition import (
     HealthLabsNutritionWorkOut,
     HealthLabsNutritionWorkState,
     HealthLabsRecipeNutrition,
+    HealthLabsReviewerOut,
 )
 from .nutrition_source import NutrientValue, NutritionImportResult, SourceFoodRow, SourceManifest, SourcePortion
 from .plan import (
@@ -69,6 +71,7 @@ __all__ = [
     "HealthLabsFoodPortionOut",
     "HealthLabsIngredientNutrition",
     "HealthLabsNutrientFoodOut",
+    "HealthLabsNutritionCuratorState",
     "HealthLabsNutritionSourceOut",
     "HealthLabsNutritionSourceReleaseOut",
     "HealthLabsNutritionStatus",
@@ -78,6 +81,7 @@ __all__ = [
     "HealthLabsNutritionWorkState",
     "HealthLabsNutritionWorkerStatus",
     "HealthLabsRecipeNutrition",
+    "HealthLabsReviewerOut",
     "HealthLabsDraftIngredient",
     "HealthLabsFoodIn",
     "HealthLabsFoodOut",

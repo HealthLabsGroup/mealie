@@ -81,6 +81,7 @@ export interface HealthLabsFoodMatchOut {
   country: string;
   matchMethod: string;
   confidence: number;
+  autoApplied: boolean;
   reviewed: boolean;
   foodGroup?: string | null;
   plantId?: string | null;

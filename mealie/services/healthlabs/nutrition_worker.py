@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
@@ -15,6 +16,7 @@ from mealie.db.models._model_utils.datetime import get_utc_now
 from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
 from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
+    HealthLabsFoodMatchSuppression,
     HealthLabsNutritionProviderUsage,
     HealthLabsNutritionWork,
 )
@@ -39,6 +41,7 @@ class NutritionWorkerReport:
     completed: int
     review_required: int
     failed: int
+    provider_exhausted: bool
 
 
 class NutritionReconciliationWorker:
@@ -55,6 +58,7 @@ class NutritionReconciliationWorker:
         provider_max_output_tokens: int = 256,
         group_id: UUID | None = None,
         now: datetime | None = None,
+        should_stop: Callable[[], bool] = lambda: False,
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
@@ -92,6 +96,8 @@ class NutritionReconciliationWorker:
             and (provider_input_usd_per_million_tokens or provider_output_usd_per_million_tokens)
         )
         self.group_id = group_id
+        self.should_stop = should_stop
+        self.provider_exhausted = False
         self._fixed_now = now
         self.now = now or get_utc_now()
         self.fingerprints = NutritionFingerprintService(
@@ -106,6 +112,8 @@ class NutritionReconciliationWorker:
         processed = completed = review_required = failed = 0
 
         for work_id in self._due_work_ids():
+            if self.should_stop() or self.provider_exhausted:
+                break
             if not self._claim(work_id):
                 continue
             processed += 1
@@ -132,6 +140,7 @@ class NutritionReconciliationWorker:
             completed=completed,
             review_required=review_required,
             failed=failed,
+            provider_exhausted=self.provider_exhausted,
         )
 
     def _discover(self) -> int:
@@ -212,7 +221,22 @@ class NutritionReconciliationWorker:
                 ),
             )
             .outerjoin(HealthLabsFoodMatch, HealthLabsFoodMatch.ingredient_food_id == IngredientFoodModel.id)
-            .where(sa.or_(work_row.id.is_not(None), HealthLabsFoodMatch.id.is_(None)))
+            .outerjoin(
+                HealthLabsFoodMatchSuppression,
+                HealthLabsFoodMatchSuppression.ingredient_food_id == IngredientFoodModel.id,
+            )
+            .where(
+                HealthLabsFoodMatchSuppression.id.is_(None),
+                sa.or_(
+                    work_row.id.is_not(None),
+                    HealthLabsFoodMatch.id.is_(None),
+                    sa.and_(
+                        HealthLabsFoodMatch.auto_applied.is_(False),
+                        HealthLabsFoodMatch.reviewed_by_user_id.is_(None),
+                        HealthLabsFoodMatch.reviewed_at.is_(None),
+                    ),
+                ),
+            )
         )
         if self.group_id is not None:
             statement = statement.where(IngredientFoodModel.group_id == self.group_id)
@@ -249,8 +273,13 @@ class NutritionReconciliationWorker:
                 RecipeIngredientModel.unit_id.is_not(None),
                 RecipeIngredientModel.quantity.is_not(None),
                 RecipeIngredientModel.quantity > 0,
-                HealthLabsFoodMatch.reviewed_by_user_id.is_not(None),
-                HealthLabsFoodMatch.reviewed_at.is_not(None),
+                sa.or_(
+                    HealthLabsFoodMatch.auto_applied.is_(True),
+                    sa.and_(
+                        HealthLabsFoodMatch.reviewed_by_user_id.is_not(None),
+                        HealthLabsFoodMatch.reviewed_at.is_not(None),
+                    ),
+                ),
             )
         )
         if self.group_id is not None:
@@ -407,6 +436,7 @@ class NutritionReconciliationWorker:
             async with asyncio.timeout(PROVIDER_CALL_TIMEOUT_SECONDS):
                 parsed = await parser.parse_one(source)
         except OpenAIRequestRejected:
+            self.provider_exhausted = True
             request_now = self._current_time()
             work.state = "pending"
             work.next_attempt_at = datetime.combine(request_now.date() + timedelta(days=1), time.min, tzinfo=UTC)
@@ -652,12 +682,25 @@ class NutritionReconciliationWorker:
         if food is None:
             self.session.delete(work)
             return
+        if self.session.scalar(
+            sa.select(HealthLabsFoodMatchSuppression.id).where(
+                HealthLabsFoodMatchSuppression.ingredient_food_id == food.id
+            )
+        ):
+            self.session.delete(work)
+            return
         existing = self.session.scalar(
             sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food.id)
         )
-        if existing is None:
-            candidate = NutritionService(self.session).match_food(food.id, self.country)
-            if candidate is not None:
+        if existing is not None and existing.reviewed_at is not None and existing.reviewed_by_user_id is not None:
+            work.input_sha256 = self.fingerprints.food(food, existing)
+            work.state = "completed"
+            work.result = None
+            return
+
+        candidate = NutritionService(self.session).suggest_food_match(food.id, self.country)
+        if candidate is not None:
+            if existing is None:
                 existing = HealthLabsFoodMatch(
                     ingredient_food_id=food.id,
                     nutrient_food_id=candidate.nutrient_food_id,
@@ -667,11 +710,52 @@ class NutritionReconciliationWorker:
                 )
                 self.session.add(existing)
                 self.session.flush()
+            else:
+                updated = self.session.execute(
+                    sa.update(HealthLabsFoodMatch)
+                    .where(
+                        HealthLabsFoodMatch.id == existing.id,
+                        HealthLabsFoodMatch.reviewed_by_user_id.is_(None),
+                        HealthLabsFoodMatch.reviewed_at.is_(None),
+                        ~sa.select(HealthLabsFoodMatchSuppression.id)
+                        .where(HealthLabsFoodMatchSuppression.ingredient_food_id == food.id)
+                        .exists(),
+                    )
+                    .values(
+                        nutrient_food_id=candidate.nutrient_food_id,
+                        country=candidate.country,
+                        match_method=candidate.match_method,
+                        confidence=candidate.confidence,
+                        auto_applied=True,
+                    )
+                    .execution_options(synchronize_session=False)
+                ).rowcount
+                self.session.expire_all()
+                if self.session.scalar(
+                    sa.select(HealthLabsFoodMatchSuppression.id).where(
+                        HealthLabsFoodMatchSuppression.ingredient_food_id == food.id
+                    )
+                ):
+                    self.session.delete(work)
+                    return
+                existing = self.session.scalar(
+                    sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food.id)
+                )
+                if updated != 1 and existing is not None:
+                    if existing.reviewed_at is not None and existing.reviewed_by_user_id is not None:
+                        work.input_sha256 = self.fingerprints.food(food, existing)
+                        work.state = "completed"
+                        work.result = None
+                        return
+            if existing is not None:
+                existing.auto_applied = True
         work.input_sha256 = self.fingerprints.food(food, existing)
-        if existing is not None and existing.reviewed_at is not None and existing.reviewed_by_user_id is not None:
+        if existing is not None and existing.auto_applied:
             work.state = "completed"
             work.result = None
         else:
+            if existing is not None:
+                existing.auto_applied = False
             work.state = "review_required"
             work.result = {
                 "reason": "source_match_review" if existing is not None else "no_unique_source_match",
@@ -753,8 +837,13 @@ class NutritionReconciliationWorker:
                 RecipeIngredientModel.unit_id.is_not(None),
                 RecipeIngredientModel.quantity.is_not(None),
                 RecipeIngredientModel.quantity > 0,
-                HealthLabsFoodMatch.reviewed_by_user_id.is_not(None),
-                HealthLabsFoodMatch.reviewed_at.is_not(None),
+                sa.or_(
+                    HealthLabsFoodMatch.auto_applied.is_(True),
+                    sa.and_(
+                        HealthLabsFoodMatch.reviewed_by_user_id.is_not(None),
+                        HealthLabsFoodMatch.reviewed_at.is_not(None),
+                    ),
+                ),
             )
             .exists()
         )
@@ -825,10 +914,12 @@ class NutritionReconciliationWorker:
         except ValueError:
             return None
         return self.session.scalar(
-            sa.select(IngredientFoodModel).where(
+            sa.select(IngredientFoodModel)
+            .where(
                 IngredientFoodModel.id == target_id,
                 IngredientFoodModel.group_id == work.group_id,
             )
+            .with_for_update()
         )
 
     def _work(self, kind: str, target_id: str) -> HealthLabsNutritionWork | None:

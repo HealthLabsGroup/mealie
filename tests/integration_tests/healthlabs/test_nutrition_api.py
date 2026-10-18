@@ -27,6 +27,7 @@ def test_food_search_detail_match_replace_portion_and_clear(
     healthlabs_set_capabilities: Callable,
     healthlabs_recipe_food: Callable,
     healthlabs_nutrition_source: Callable,
+    unfiltered_database: AllRepositories,
 ) -> None:
     owner, owner_headers = healthlabs_provision()
     healthlabs_set_capabilities(
@@ -106,6 +107,40 @@ def test_food_search_detail_match_replace_portion_and_clear(
     assert cleared.status_code == 200, cleared.text
     assert cleared.json()["status"] in {"review_required", "unknown"}
     assert cleared.json()["nutrition"] is None or cleared.json()["nutrition"]["id"] is None
+
+    asyncio.run(
+        NutritionReconciliationWorker(
+            unfiltered_database.session,
+            group_id=UUID(owner["groupId"]),
+        ).run()
+    )
+    after_reconciliation = api_client.get(resource.removesuffix("/match"), headers=owner_headers)
+    assert after_reconciliation.status_code == 200
+    assert after_reconciliation.json()["status"] == "unknown"
+    assert after_reconciliation.json()["nutrition"] is None
+
+    unmatched_name = f"Suppressed nutrition food {uuid4()}"
+    _, unmatched_food_id = healthlabs_recipe_food(owner_headers, unmatched_name)
+    healthlabs_nutrition_source(name=unmatched_name)
+    unmatched_resource = f"/api/healthlabs/v1/nutrition/foods/{unmatched_food_id}/match"
+    suppressed = api_client.delete(
+        unmatched_resource,
+        headers={
+            **owner_headers,
+            "Idempotency-Key": f"clear-unmatched-{uuid4()}",
+            "X-HealthLabs-Access-Reason": "Reject automatic source match",
+        },
+    )
+    assert suppressed.status_code == 200, suppressed.text
+    asyncio.run(
+        NutritionReconciliationWorker(
+            unfiltered_database.session,
+            group_id=UUID(owner["groupId"]),
+        ).run()
+    )
+    after_unmatched_reconciliation = api_client.get(unmatched_resource.removesuffix("/match"), headers=owner_headers)
+    assert after_unmatched_reconciliation.json()["status"] == "unknown"
+    assert after_unmatched_reconciliation.json()["nutrition"] is None
 
     sources = api_client.get("/api/healthlabs/v1/nutrition/sources", headers=owner_headers)
     assert sources.status_code == 200

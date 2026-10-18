@@ -102,6 +102,7 @@ class HealthLabsFoodMatchOut(MealieModel):
     country: str
     match_method: str
     confidence: float = Field(ge=0, le=1)
+    auto_applied: bool
     reviewed: bool
     food_group: str | None = None
     plant_id: str | None = None

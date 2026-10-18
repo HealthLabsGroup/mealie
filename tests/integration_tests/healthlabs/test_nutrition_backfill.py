@@ -104,7 +104,15 @@ def test_backfill_is_idempotent_and_classifies_every_food(unique_user_fn_scoped:
         reviewed_by_user_id=unique_user_fn_scoped.user_id,
         reviewed_at=get_utc_now(),
     )
-    session.add(reviewed_match)
+    auto_match = HealthLabsFoodMatch(
+        ingredient_food_id=exact.id,
+        nutrient_food_id=source_foods[0].id,
+        country="GB",
+        match_method="exact",
+        confidence=1,
+        auto_applied=True,
+    )
+    session.add_all([reviewed_match, auto_match])
     session.commit()
     reviewed_snapshot = (reviewed_match.id, reviewed_match.nutrient_food_id, reviewed_match.reviewed_at)
     backfill = _script("backfill-food-matches.py")["backfill_food_matches"]
@@ -118,6 +126,20 @@ def test_backfill_is_idempotent_and_classifies_every_food(unique_user_fn_scoped:
     assert first["total"] == session.scalar(sa.select(sa.func.count()).select_from(IngredientFoodModel))
     assert second == {**first, "created": 0}
     assert first["total"] == first["matched"] + first["review_required"] + first["unknown"]
+    effective_matches = session.scalar(
+        sa.select(sa.func.count())
+        .select_from(HealthLabsFoodMatch)
+        .where(
+            sa.or_(
+                HealthLabsFoodMatch.auto_applied.is_(True),
+                sa.and_(
+                    HealthLabsFoodMatch.reviewed_at.is_not(None),
+                    HealthLabsFoodMatch.reviewed_by_user_id.is_not(None),
+                ),
+            )
+        )
+    )
+    assert first["matched"] == effective_matches
     persisted = session.scalars(
         sa.select(HealthLabsFoodMatch).where(
             HealthLabsFoodMatch.ingredient_food_id.in_([exact.id, alias.id, ambiguous.id, unknown.id, reviewed.id])
@@ -162,10 +184,9 @@ def test_coverage_report_contains_only_aggregate_workspace_data(
             ingredient_food_id=food_id,
             nutrient_food_id=source_foods[0].id,
             country="GB",
-            match_method="manual",
+            match_method="exact",
             confidence=1,
-            reviewed_by_user_id=provisioned["userId"],
-            reviewed_at=get_utc_now(),
+            auto_applied=True,
         )
     )
     session.commit()

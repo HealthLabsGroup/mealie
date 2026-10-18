@@ -67,6 +67,7 @@ const matchedFood: HealthLabsFoodNutritionOut = {
     country: "GB",
     matchMethod: "manual",
     confidence: 1,
+    autoApplied: false,
     reviewed: true,
     nutrientsPer100g: candidate.nutrientsPer100g,
     portions: [],

@@ -66,6 +66,7 @@ async def lifespan_fn(_: FastAPI) -> AsyncGenerator[None]:
     init_db.main()
     logger.info("end: database initialization")
 
+    tasks.resume_nutrition_reconciliation()
     await start_scheduler()
 
     logger.info("-----SYSTEM STARTUP-----")
@@ -92,6 +93,7 @@ async def lifespan_fn(_: FastAPI) -> AsyncGenerator[None]:
 
     yield
 
+    tasks.request_nutrition_reconciliation_shutdown()
     logger.info("-----SYSTEM SHUTDOWN----- \n")
 
 

@@ -11,7 +11,7 @@ Mealie must continuously resolve nutrition work created by imported, edited, or 
 - Run the existing deterministic ingredient structurer before using the configured group provider.
 - Use the configured provider only for ingredient structure; nutrient values and gram conversions always come from imported authoritative source releases or nutrition-editor-reviewed portions.
 - Automatically persist an ingredient structure only when quantity is positive and food and unit resolve uniquely to existing group-scoped catalogue records.
-- Create source-backed food matches as `review_required`; only a nutrition editor may approve them.
+- Apply unique exact and curated-alias source matches automatically; leave missing or ambiguous matches for a nutrition editor.
 - Persist progress, retry transient failures three times, recover expired leases after restart, and stop retrying unchanged ambiguous or terminal work.
 - Discover conversion gaps after a reviewed food match, and leave only gaps without a unique authoritative conversion for a nutrition editor.
 - Show pending, running, review-required, completed, and failed counts plus actionable review items in the Nutrition Curator.
@@ -30,14 +30,14 @@ The existing five-minute `SchedulerRegistry` callback starts one synchronous sch
 Work has three kinds:
 
 1. `ingredient_structure`: first run `IngredientStructureService`; if that cannot resolve the text and the daily provider allowance permits it, parse with the group's default provider. Apply the result only through the same exact catalogue resolver. Otherwise retain the suggestion as `review_required` without changing the recipe.
-2. `food_match`: run the existing country-aware authoritative-source matcher. A unique exact or alias candidate is persisted as an unreviewed `HealthLabsFoodMatch`, so it immediately appears in the Curator queue. No candidate becomes reviewed automatically.
-3. `portion_resolution`: after a reviewed match, re-check an ingredient whose quantity/unit cannot convert to grams. Existing exact source-managed portions resolve automatically through `NutritionService`; any remaining gap becomes `review_required` and links the nutrition editor to the existing audited portion editor. The worker never invents grams.
+2. `food_match`: run the existing country-aware authoritative-source matcher. A unique exact or curated-alias candidate is persisted with `auto_applied=true` and can feed deterministic nutrition immediately without claiming human review. Missing or ambiguous candidates become `review_required`; an editor-cleared match creates a durable suppression until an editor explicitly sets another match.
+3. `portion_resolution`: after an automatic or reviewed match, re-check an ingredient whose quantity/unit cannot convert to grams. Existing exact source-managed portions resolve automatically through `NutritionService` before any group-scoped editor portion; any remaining gap becomes `review_required` and links the nutrition editor to the existing audited portion editor. The worker never invents grams.
 
 The worker defaults to country `GB`, batch size `20`, a five-minute schedule, a 15-minute lease, and three total attempts with retry delays of 5 minutes and 30 minutes. Work is processed deterministically by `next_attempt_at`, kind, then target ID. A changed input fingerprint resets terminal work to pending. Missing targets are removed. Work is group-scoped.
 
 Ingredient fingerprints contain source text plus the group's food/unit catalogue revision. Food-match fingerprints contain normalized food name/aliases, country, and the current source-release checksum. Portion fingerprints contain ingredient quantity/unit, reviewed match, country, and source-release checksum. Changing provider configuration wakes provider-waiting ingredient work without re-spending unchanged review-required work.
 
-Budget exhaustion defers provider-waiting work until the next UTC day without consuming an attempt. Missing provider configuration waits until configuration changes. No unique deterministic/provider candidate becomes `review_required` until its fingerprint changes. Transient provider failures consume an attempt and follow the two retry delays; the third failure becomes `failed`.
+Budget exhaustion defers provider-waiting work until the next UTC day without consuming an attempt and stops that scheduler drain. Missing provider configuration waits until configuration changes. No unique deterministic/provider candidate becomes `review_required` until its fingerprint changes. Transient provider failures consume an attempt and follow the two retry delays; the third failure becomes `failed`. Application shutdown stops the worker before it claims another target.
 
 ## Provider Budget Boundary
 
@@ -63,7 +63,7 @@ Provider calls are disabled by default. `HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQ
 3. A restart reclaims expired running work and continues.
 4. Exact deterministic work continues when the provider is unavailable or its allowance is exhausted.
 5. A provider result cannot change a recipe unless quantity, food, and unit pass exact validation.
-6. Source matches remain unreviewed until a nutrition editor approves them.
+6. Automatic source matches remain visibly distinct from nutrition-editor-reviewed matches.
 7. Curator status and tests prove pending, retry, review, completed, failed, budget-exhausted, and input-changed behavior.
 8. Conversion gaps are discovered automatically; only authoritative exact conversions resolve without review, and adding an editor-reviewed portion completes the gap on a later tick.
 9. An editor can act on food-match and portion rows; unresolved ingredient rows truthfully show their provider/catalogue waiting state without offering an invalid action.

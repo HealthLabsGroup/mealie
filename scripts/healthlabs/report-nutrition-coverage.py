@@ -92,7 +92,7 @@ def nutrition_coverage_report(session: Session, *, external_subject_id: str | No
     missing_core_nutrient = 0
     for row in structured:
         match = matches.get(row.food_id)
-        if match is None or match.reviewed_at is None:
+        if not _is_effective_match(match):
             continue
         nutrient_food = nutrient_foods.get(match.nutrient_food_id)
         if nutrient_food is None:
@@ -164,7 +164,13 @@ def nutrition_coverage_report(session: Session, *, external_subject_id: str | No
 def _status(match: HealthLabsFoodMatch | None) -> str:
     if match is None:
         return "unknown"
-    return "matched" if match.reviewed_at is not None else "review_required"
+    return "matched" if _is_effective_match(match) else "review_required"
+
+
+def _is_effective_match(match: HealthLabsFoodMatch | None) -> bool:
+    return match is not None and (
+        match.auto_applied or (match.reviewed_at is not None and match.reviewed_by_user_id is not None)
+    )
 
 
 def _has_conversion(

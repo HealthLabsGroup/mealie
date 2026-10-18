@@ -91,20 +91,7 @@ class NutritionCuratorService:
             )
         )
         if existing is not None:
-            if existing.state == "pending" and existing.next_attempt_at <= self.now:
-                existing.state = "running"
-                existing.attempt_count += 1
-                existing.requested_at = self.now
-                existing.lease_expires_at = self.now + _LEASE
-                self.session.flush()
-                return self._started(existing, agent, provider, candidate_set)
-            if existing.state == "running" and (
-                existing.lease_expires_at is None or existing.lease_expires_at <= self.now
-            ):
-                existing.attempt_count += 1
-                existing.requested_at = self.now
-                existing.lease_expires_at = self.now + _LEASE
-                self.session.flush()
+            if self._claim_existing(existing):
                 return self._started(existing, agent, provider, candidate_set)
             return None
 
@@ -140,6 +127,39 @@ class NutritionCuratorService:
         if empty:
             return None
         return self._started(decision, agent, provider, candidate_set)
+
+    def _claim_existing(self, decision: HealthLabsNutritionCuratorDecision) -> bool:
+        claimed = self.session.execute(
+            sa.update(HealthLabsNutritionCuratorDecision)
+            .where(
+                HealthLabsNutritionCuratorDecision.id == decision.id,
+                sa.or_(
+                    sa.and_(
+                        HealthLabsNutritionCuratorDecision.state == "pending",
+                        HealthLabsNutritionCuratorDecision.next_attempt_at <= self.now,
+                    ),
+                    sa.and_(
+                        HealthLabsNutritionCuratorDecision.state == "running",
+                        sa.or_(
+                            HealthLabsNutritionCuratorDecision.lease_expires_at.is_(None),
+                            HealthLabsNutritionCuratorDecision.lease_expires_at <= self.now,
+                        ),
+                    ),
+                ),
+            )
+            .values(
+                state="running",
+                attempt_count=HealthLabsNutritionCuratorDecision.attempt_count + 1,
+                requested_at=self.now,
+                lease_expires_at=self.now + _LEASE,
+            )
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        self.session.expire(decision)
+        if claimed != 1:
+            return False
+        self.session.refresh(decision)
+        return True
 
     def apply(
         self,

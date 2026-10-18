@@ -61,6 +61,20 @@ def test_nutrition_provider_cost_controls_default_off_and_reject_negative_values
         get_app_settings()
 
 
+def test_nutrition_curator_defaults_disabled_and_requires_positive_poll(monkeypatch):
+    monkeypatch.delenv("HEALTHLABS_NUTRITION_CURATOR_ENABLED", raising=False)
+    monkeypatch.delenv("HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS", raising=False)
+    get_app_settings.cache_clear()
+    settings = get_app_settings()
+    assert settings.HEALTHLABS_NUTRITION_CURATOR_ENABLED is False
+    assert settings.HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS == 30
+
+    monkeypatch.setenv("HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS", "0")
+    get_app_settings.cache_clear()
+    with pytest.raises(ValidationError):
+        get_app_settings()
+
+
 def test_allowed_iframe_hosts_defaults(monkeypatch):
     monkeypatch.delenv("ALLOWED_IFRAME_HOSTS", raising=False)
     get_app_settings.cache_clear()

@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -29,6 +30,7 @@ from mealie.schema.recipe import (
     SaveIngredientFood,
     SaveIngredientUnit,
 )
+from mealie.services.healthlabs.nutrition_provider_budget import NutritionProviderBudget
 from mealie.services.healthlabs.nutrition_service import NutritionService
 from mealie.services.healthlabs.nutrition_worker import NutritionReconciliationWorker
 from mealie.services.openai.openai import OpenAIRequestRejected
@@ -1021,6 +1023,53 @@ def test_provider_budget_reservation_caps_spend_and_records_sanitized_usage(
         usage.cached_input_tokens,
         usage.output_tokens,
     ) == (1, 0, 2, 1, 0, 1)
+
+
+def test_provider_budget_is_shared_and_invalid_usage_keeps_reservation(
+    unique_user_fn_scoped: TestUser,
+) -> None:
+    user = unique_user_fn_scoped
+    budget_now = datetime(2039, 4, 5, tzinfo=UTC)
+    budget = NutritionProviderBudget(
+        user.repos.session,
+        daily_request_limit=1,
+        daily_budget_usd=Decimal("0.000003"),
+        input_usd_per_million_tokens=Decimal("1"),
+        output_usd_per_million_tokens=Decimal("1"),
+        now=lambda: budget_now,
+    )
+    reservation = budget.reserve(1, 1)
+    assert reservation is not None
+
+    worker = NutritionReconciliationWorker(
+        user.repos.session,
+        provider_daily_request_limit=1,
+        provider_daily_budget_usd=Decimal("0.000003"),
+        provider_input_usd_per_million_tokens=Decimal("1"),
+        provider_output_usd_per_million_tokens=Decimal("1"),
+        now=budget_now,
+    )
+    work = HealthLabsNutritionWork(
+        group_id=user.group_id,
+        kind="ingredient_structure",
+        target_id="shared-budget",
+        input_sha256="f" * 64,
+        state="running",
+        next_attempt_at=budget_now,
+    )
+    user.repos.session.add(work)
+    user.repos.session.commit()
+    assert worker._reserve_provider_request(work, 1, 1) is None
+
+    with pytest.raises(ValueError, match="invalid token usage"):
+        budget.record(reservation, {"input_tokens": -1, "cached_input_tokens": 0, "output_tokens": 1})
+    usage = user.repos.session.scalar(
+        sa.select(HealthLabsNutritionProviderUsage).where(
+            HealthLabsNutritionProviderUsage.usage_date == budget_now.date()
+        )
+    )
+    assert usage is not None
+    assert (usage.request_count, usage.reserved_microusd, usage.spent_microusd) == (1, 2, 0)
 
 
 def test_provider_configuration_wakes_waiting_work_and_applies_only_exact_results(

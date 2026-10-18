@@ -142,6 +142,39 @@ def _decision(
     )
 
 
+def test_existing_decision_claim_is_compare_and_set_across_stale_sessions(
+    unique_user_fn_scoped: TestUser,
+) -> None:
+    user = unique_user_fn_scoped
+    now = datetime(2026, 10, 18, 12, tzinfo=UTC)
+    _, _, _, _, work = _food_case(user)
+    started = NutritionCuratorService(user.repos.session, now=now).start(work.id)
+    assert started is not None
+    user.repos.session.commit()
+    decision = user.repos.session.get(HealthLabsNutritionCuratorDecision, started.decision_id)
+    assert decision is not None
+    decision.state = "pending"
+    decision.next_attempt_at = now
+    decision.lease_expires_at = None
+    user.repos.session.commit()
+
+    second_session = Session(bind=user.repos.session.get_bind())
+    try:
+        first_view = user.repos.session.get(HealthLabsNutritionCuratorDecision, decision.id)
+        stale_view = second_session.get(HealthLabsNutritionCuratorDecision, decision.id)
+        assert first_view is not None and stale_view is not None
+        assert NutritionCuratorService(user.repos.session, now=now)._claim_existing(first_view)
+        user.repos.session.commit()
+        assert not NutritionCuratorService(second_session, now=now)._claim_existing(stale_view)
+        second_session.rollback()
+    finally:
+        second_session.close()
+
+    user.repos.session.refresh(decision)
+    assert (decision.state, decision.attempt_count) == ("running", 2)
+    user.repos.session.commit()
+
+
 @pytest.mark.parametrize(
     ("confidence", "runner_up", "expected"),
     [(0.949, 0.1, "insufficient_evidence"), (0.95, 0.801, "insufficient_evidence"), (0.95, 0.8, "approved")],

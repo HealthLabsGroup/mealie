@@ -540,7 +540,7 @@ def test_worker_status_and_review_queue_expose_only_sanitized_curator_state(
     session.add(work)
     session.flush()
     now = get_utc_now()
-    safe_note = f"I {'x' * 278}"
+    safe_note = f"I {'x' * 270}"
     for index, state in enumerate(("pending", "running", "approved", "failed", "insufficient_evidence")):
         session.add(
             HealthLabsNutritionCuratorDecision(

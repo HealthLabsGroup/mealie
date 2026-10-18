@@ -346,6 +346,37 @@ async def test_get_response_sends_schema_as_response_format(settings_stub):
 
 
 @pytest.mark.asyncio
+async def test_get_response_disables_reasoning_only_for_openrouter(settings_stub):
+    svc = OpenAIService(_make_mock_repos())
+    completions = _FakeCompletions(parse_result=_make_body('{"answer": "hi"}'))
+    svc.get_client = MagicMock(return_value=_FakeClient(completions))
+    provider = _make_provider()
+    provider.base_url = "https://openrouter.ai/api/v1"
+
+    await svc.get_response(
+        "system prompt",
+        "hello",
+        response_schema=_SampleSchema,
+        provider=provider,
+        disable_reasoning=True,
+    )
+
+    assert completions.parse_calls[0]["extra_body"] == {"reasoning": {"enabled": False}}
+
+    completions.parse_calls.clear()
+    provider.base_url = "https://provider.example/v1"
+    await svc.get_response(
+        "system prompt",
+        "hello",
+        response_schema=_SampleSchema,
+        provider=provider,
+        disable_reasoning=True,
+    )
+
+    assert "extra_body" not in completions.parse_calls[0]
+
+
+@pytest.mark.asyncio
 async def test_get_response_bounds_output_and_reports_sanitized_usage(settings_stub):
     svc = OpenAIService(_make_mock_repos())
     completions = _FakeCompletions(

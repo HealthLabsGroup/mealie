@@ -1,7 +1,7 @@
 # HealthLabs ingredient nutrition service v1
 
 Date: 2026-10-16
-Status: Implemented for `v3.28.0-healthlabs.11`; DEV deployment pending
+Status: Implemented; deployment and provider enablement pending
 Owner: HealthLabsGroup
 
 The additive schema, pinned-source import, deterministic calculations, audited
@@ -41,7 +41,7 @@ claims. They are never treated as calculated HealthLabs nutrition.
 
 - Nutrient targets or clinical recommendations in Mealie.
 - Automatic clinical conclusions from nutrient figures.
-- Language-model-generated nutrient values or source matches.
+- Language-model-generated nutrient values, gram conversions, or source truth.
 - Treating imported recipe nutrition as verified food composition data.
 - Making Ephra source, credentials, health profiles, or private plan rationale
   public.
@@ -89,6 +89,8 @@ The HealthLabs extension adds these Mealie-owned records:
 | `healthlabs_food_portions` | Conversion from a portion or standardized unit to edible grams: source-managed rows are global, while editor-measured rows belong to one workspace. |
 | `healthlabs_branded_products` | Barcode product facts kept logically separate from the generic catalogue because Open Food Facts uses ODbL. |
 | `healthlabs_nutrition_work` | Group-scoped, fingerprinted ingredient, food-match, and portion work with retry and lease state. |
+| `healthlabs_nutrition_curator_decisions` | Immutable, fingerprinted evidence for Apple decisions, including bounded candidates, selected IDs, confidence, reason, sanitized rationale, provider/model/prompt versions, attempts, and usage. |
+| `healthlabs_food_portion_mappings` | Group-scoped accepted links from one food/unit pair to an existing authoritative portion, with agent and decision provenance. |
 | `healthlabs_nutrition_provider_usage` | Deployment-wide daily provider requests, reserved/spent micro-USD, and sanitized token totals. |
 
 `healthlabs_food_matches` is the only editable link between a Mealie food and
@@ -137,10 +139,30 @@ under an existing version is rejected.
 
 ## Matching and review
 
-Automatic matching may use only a unique normalized name or curated alias from
-an imported, checksummed source release. It records `auto_applied` separately
-from human review and may not claim review or fill a value not present in the
-source. Missing or ambiguous candidates remain in the Curator queue.
+Deterministic matching may use only a unique normalized name or curated alias
+from an imported, checksummed source release. A unique result is applied with
+`auto_applied=true`; it is not represented as human or agent review. Missing or
+ambiguous candidates enter the bounded Curator flow instead of being guessed.
+
+Apple is the managed nutrition-curator agent for each workspace. Apple may
+select only IDs in the captured candidate set and only when confidence is at
+least `0.95` with at least a `0.15` lead over the runner-up. A valid selection
+is revalidated against the current fingerprint before any write. Food matches
+use the same domain authorization and audit path as an editor action and become
+ordinary reviewed matches: `reviewed_by_user_id` points to Apple's
+`user_type=agent` identity. Ingredient structure uses a same-tenant
+compare-and-set, while portion resolution writes an agent/decision-attributed
+mapping to an existing authoritative portion. All three retain immutable
+decision evidence. The optional sanitized first-person note is display metadata
+only; it never affects the decision or write.
+
+Explicit abstention, an empty set, a low score, a narrow margin, stale data, or
+a schema-valid but inconsistent/non-supplied selection produces immutable
+`insufficient_evidence` evidence and no nutrition mutation. Malformed or
+schema-invalid provider output follows the provider-failure retry policy and may
+end as `failed` on attempt three. Candidate snapshots, selected IDs, provider
+usage, raw prompts, private recipe text, and credentials are not returned by
+the public status/work APIs.
 
 `nutrition:write` is a separate HealthLabs capability. Only a principal with
 that capability may accept, replace, or clear a food match or edit manually
@@ -225,6 +247,12 @@ returns only the requested country plus country-neutral `OTHER` records, and
 never creates or approves a match. Editors pass a selected source-food ID to
 the existing audited match route.
 
+The page also shows sanitized Apple state and notes plus `Reviewed by Apple —
+Nutrition Curator` with an `agent` badge. Existing source and measured-portion
+controls remain available as audited human break-glass controls while Apple is
+pending, running, abstained, or failed. The page is not required for autonomous
+operation and exposes no retry/delete operation for immutable decisions.
+
 ## Background reconciliation
 
 Mealie's existing scheduler runs reconciliation every five minutes. A tick
@@ -240,47 +268,93 @@ configuration, reviewed match, source release, or portion data changes the
 relevant fingerprint and makes the target eligible again. Unchanged review
 work is not retried and does not spend another provider request.
 
-Processing stays deterministic:
+Deterministic reconciliation always remains in the Mealie process:
 
-1. Resolve free-text ingredients against exact group food/unit records.
-2. Create exact or alias source matches as unreviewed Curator work.
+1. Resolve free-text ingredients against unique exact group food/unit records.
+2. Apply a unique exact normalized-name or curated-alias source match with
+   `auto_applied=true`.
 3. Resolve grams only from mass units or authoritative source/editor portions.
-4. Use the group's configured parser provider only for unresolved ingredient
-   structure, and apply its result only when it resolves exactly.
+4. Leave ambiguous or missing ingredient, food, and portion work in
+   `review_required` for Apple or a human break-glass editor.
 
-Paid parsing is enabled only when all required controls are positive:
-`HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT`,
-`HEALTHLABS_NUTRITION_PROVIDER_DAILY_BUDGET_USD`, and at least one of the input
-or output USD-per-million-token rates. They all default to `0`, so deterministic
-work continues without provider calls. `HEALTHLABS_NUTRITION_PROVIDER_MAX_OUTPUT_TOKENS`
-defaults to `256`. Before every request, the worker atomically reserves the
-worst-case input-byte/token bound plus the output cap; the response replaces
-that reservation with sanitized token and micro-USD totals when usage is
-returned. Missing usage or a crash leaves the reservation charged for that UTC
-day rather than risking an overspend.
+Apple runs as a second process from the same application image, database, and
+configuration:
 
-Provider credentials stay in runtime provider settings; they are never copied
-into the image, repository, work result, usage record, or logs. Automatic food
-approval remains disabled until a representative labelled evaluation set proves
-the exact/alias policy; source candidates continue to require Curator review.
+```sh
+uv run python scripts/healthlabs/run-nutrition-curator.py
+```
 
-`nutrition:write` editors see current group status and up to 50 review rows
-above the existing food queue. Exact provider results are applied automatically;
-non-exact suggestions are informational until the group food/unit catalogue is
-updated. Food matches open the existing source reviewer, and conversion gaps
-open the existing audited measured-portion editor. Cross-group work is never
-returned.
+`HEALTHLABS_NUTRITION_CURATOR_ENABLED=false` and
+`HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS=30` are the defaults. When disabled,
+the process exits successfully and deterministic reconciliation is unchanged.
+When enabled, deploy exactly one Curator process initially. It evaluates at
+most one due decision per iteration, then immediately checks for more work; it
+waits for the poll interval only while idle. Add replicas only after observing
+lease and budget behavior under production load.
 
-Operators can monitor state counts through `worker-status` and the sanitized
-scheduler summary. A growing `failed` count indicates provider or data errors;
-long-lived `running` rows are automatically reclaimed after the lease. To stop
-paid processing without stopping deterministic reconciliation, set the request
-limit or USD budget to `0` and restart. To roll back the feature, unregister the
-scheduler
-callback and revert the additive API/UI while retaining the work tables; only
-drop them with the paired migration after confirming no review state is needed.
+Paid work is possible only when all of these prerequisites are present:
+
+- `HEALTHLABS_NUTRITION_CURATOR_ENABLED=true`;
+- the group has a valid default provider and model;
+- `HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT` is positive;
+- `HEALTHLABS_NUTRITION_PROVIDER_DAILY_BUDGET_USD` is positive; and
+- at least one input/output USD-per-million-token rate is positive.
+
+`HEALTHLABS_NUTRITION_PROVIDER_MAX_OUTPUT_TOKENS` defaults to `256`. The regular
+reconciliation parser and Apple share the deployment-wide daily request/USD
+budget. Before network I/O, each call atomically reserves its worst-case token
+cost; returned usage settles only that reservation. Missing usage or a crash
+leaves the reservation charged for the UTC day. Provider credentials stay in
+runtime provider settings and never enter the image, repository, evidence,
+public responses, or logs.
+
+Apple claims work with a 15-minute lease and a provider timeout that leaves one
+minute to finalize. Provider failures retry after 5 and 30 minutes. The third
+failed attempt is terminal for that complete fingerprint; it is eligible again
+only when target, candidates, catalogue/source, provider/model, prompt/policy,
+or persona input changes and creates a new fingerprint. `insufficient_evidence`
+is also terminal for an unchanged fingerprint. Expired running leases are
+reclaimable; accepted writes are compare-and-set and idempotent across restart
+or competing workers.
+
+SIGTERM or SIGINT stops new claims and interrupts idle waiting immediately. A
+signal received during a bounded provider call lets that call finalize or fail,
+then exits before another claim. Decision evidence remains durable across the
+restart.
+
+Apple uses identity/persona version
+`healthlabs-nutrition-curator-apple-v1`, prompt version
+`healthlabs-nutrition-curator-v1`, and policy version
+`healthlabs-nutrition-curator-policy-v1`. Before enabling any new prompt/model
+pair, an operator must run the representative live golden set twice—once with
+Apple and once with the policy-only control—and confirm identical validated
+selections/abstentions and zero invalid writes. Recorded offline fixtures guard
+the same boundary in automated tests; the live comparison is an external
+pre-enable operation and is not performed by this branch.
+
+`nutrition:write` editors see work counts, five-state `curatorCounts`,
+`lastUpdatedAt`, and `curatorLastUpdatedAt` through `worker-status`; `/work`
+returns only the latest decision for the current work-input fingerprint: state,
+reason, attempt count, Apple note, and agent display identity. Process logs
+contain aggregate claimed/approved/abstained/failed counts. Monitor a growing
+curator `failed` count, repeated budget exhaustion, or leases that stay
+`running` past expiry.
+
+Rollback is disable-first: set `HEALTHLABS_NUTRITION_CURATOR_ENABLED=false`
+and restart the Curator process before reverting API/UI code. Setting the shared
+request limit or USD budget to `0` also prevents paid calls, but disabling the
+Curator is the unambiguous stop control. Retain decision/work tables as audit
+evidence. Already accepted matches remain valid ordinary reviewed matches tied
+to the Apple agent; rollback does not delete them. Retain portion mappings while
+any production calculation depends on them. The paired downgrade refuses while
+agent users, decision evidence, or portion mappings remain; remove mappings only
+after replacing/reviewing their conversions and proving no production
+calculation depends on them.
 
 ## Ephra consumption and snapshots
+
+Ephra ownership cutover is a separate downstream project. This Mealie branch
+does not switch Ephra reads, remove Ephra writers, or migrate/delete Ephra data.
 
 Ephra removes its food catalogue and enrichment code only after the Mealie
 catalogue is populated, all current Mealie foods are matched or explicitly
@@ -299,6 +373,9 @@ truth. Existing Ephra enrichment tables remain read-only for one rollback
 release, then are removed in a later migration.
 
 ## Migration and rollback
+
+The following sequence describes that later Ephra project; it is not authorized
+or executed by the nutrition-curator rollout:
 
 1. Deploy the additive Mealie schema and APIs without changing Ephra reads.
 2. Import pinned food-source releases and match current Mealie foods.

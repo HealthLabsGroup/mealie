@@ -184,6 +184,7 @@ export function usePageUser(): { user: UserOut } {
         householdSlug: "",
         cacheKey: "",
         email: "",
+        userType: "human",
       },
     };
   }

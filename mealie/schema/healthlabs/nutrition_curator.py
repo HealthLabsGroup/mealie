@@ -6,6 +6,8 @@ from typing import Any, Literal, Self
 
 from pydantic import UUID4, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from mealie.schema.openai._base import OpenAIBase
+
 NutritionCuratorKind = Literal["ingredient_structure", "food_match", "portion_resolution"]
 ProviderReasonCode = Literal[
     "name_and_context_match",
@@ -52,7 +54,7 @@ class NutritionCuratorCandidateSet(BaseModel):
         return value
 
 
-class NutritionCuratorProviderDecision(BaseModel):
+class NutritionCuratorProviderDecision(OpenAIBase):
     decision: Literal["select", "insufficient_evidence"]
     kind: NutritionCuratorKind
     food_id: UUID4 | None = None

@@ -13,8 +13,9 @@ from mealie.db.models.healthlabs import (
     HealthLabsFoodPortion,
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
+    HealthLabsNutritionWork,
 )
-from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel, RecipeIngredientModel
+from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel, RecipeIngredientModel, RecipeModel
 from mealie.db.models.recipe.ingredient import IngredientFoodAliasModel, IngredientUnitAliasModel
 
 
@@ -164,6 +165,51 @@ class NutritionFingerprintService:
             source.sha256 if source is not None else None,
             portions,
         )
+
+    def current_work_input(self, work: HealthLabsNutritionWork) -> str | None:
+        if work.kind == "ingredient_structure":
+            try:
+                ingredient_id = int(work.target_id)
+            except ValueError:
+                return None
+            ingredient = self.session.scalar(
+                sa.select(RecipeIngredientModel)
+                .join(RecipeModel, RecipeModel.id == RecipeIngredientModel.recipe_id)
+                .where(RecipeIngredientModel.id == ingredient_id, RecipeModel.group_id == work.group_id)
+            )
+            return self.ingredient(ingredient, work.group_id) if ingredient is not None else None
+
+        if work.kind == "food_match":
+            try:
+                food_id = UUID(work.target_id)
+            except ValueError:
+                return None
+            food = self.session.scalar(
+                sa.select(IngredientFoodModel).where(
+                    IngredientFoodModel.id == food_id,
+                    IngredientFoodModel.group_id == work.group_id,
+                )
+            )
+            if food is None:
+                return None
+            match = self.session.scalar(
+                sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food.id)
+            )
+            return self.food(food, match)
+
+        if work.kind == "portion_resolution":
+            try:
+                ingredient_id = int(work.target_id)
+            except ValueError:
+                return None
+            row = self.session.execute(
+                sa.select(RecipeIngredientModel, HealthLabsFoodMatch)
+                .join(RecipeModel, RecipeModel.id == RecipeIngredientModel.recipe_id)
+                .join(HealthLabsFoodMatch, HealthLabsFoodMatch.ingredient_food_id == RecipeIngredientModel.food_id)
+                .where(RecipeIngredientModel.id == ingredient_id, RecipeModel.group_id == work.group_id)
+            ).one_or_none()
+            return self.portion(row[0], row[1], work.group_id) if row is not None else None
+        return None
 
     def _source_release(self) -> str:
         if self._source_hash is None:

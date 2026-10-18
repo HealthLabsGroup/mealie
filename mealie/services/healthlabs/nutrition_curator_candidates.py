@@ -81,16 +81,23 @@ class NutritionCuratorCandidateService:
         if ingredient is None or not self._ingredient_is_eligible(ingredient):
             return None
         source = (ingredient.original_text or "").strip() or (ingredient.note or "").strip()
-        parser = IngredientStructureService(self.session, work.group_id, get_locale_provider()).parser
-        try:
-            parsed = parser.parse_one_sync(source).ingredient
-        except IndexError, TypeError, ValueError:
-            parsed = None
-
-        quantity = parsed.quantity if parsed is not None else None
-        food_query = parsed.food.name if parsed is not None and parsed.food is not None else ""
-        unit_query = parsed.unit.name if parsed is not None and parsed.unit is not None else ""
-        if quantity is None or quantity <= 0:
+        suggestion = work.result.get("suggestion") if isinstance(work.result, dict) else None
+        if isinstance(suggestion, dict):
+            quantity = suggestion.get("quantity")
+            food_value = suggestion.get("food")
+            unit_value = suggestion.get("unit")
+            food_query = food_value if isinstance(food_value, str) else ""
+            unit_query = unit_value if isinstance(unit_value, str) else ""
+        else:
+            parser = IngredientStructureService(self.session, work.group_id, get_locale_provider()).parser
+            try:
+                parsed = parser.parse_one_sync(source).ingredient
+            except IndexError, TypeError, ValueError:
+                parsed = None
+            quantity = parsed.quantity if parsed is not None else None
+            food_query = parsed.food.name if parsed is not None and parsed.food is not None else ""
+            unit_query = parsed.unit.name if parsed is not None and parsed.unit is not None else ""
+        if not isinstance(quantity, int | float) or isinstance(quantity, bool) or quantity <= 0:
             foods: list[dict[str, Any]] = []
             units: list[dict[str, Any]] = []
         else:
@@ -347,11 +354,13 @@ class NutritionCuratorCandidateService:
         for item in rows:
             if item.id in ambiguous_ids:
                 continue
-            eligible_names = [
-                name
-                for name in names(item)
-                if name and unique.get(normalize(name)) is not None and unique.get(normalize(name)).id == item.id
-            ]
+            eligible_names = []
+            for name in names(item):
+                if not name:
+                    continue
+                unique_item = unique.get(normalize(name))
+                if unique_item is not None and unique_item.id == item.id:
+                    eligible_names.append(name)
             score = max((fuzz.token_set_ratio(normalized_query, normalize(name)) for name in eligible_names), default=0)
             if score <= 0:
                 continue

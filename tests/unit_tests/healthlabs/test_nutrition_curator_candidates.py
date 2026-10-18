@@ -199,6 +199,35 @@ def test_ingredient_candidates_require_positive_quantity_and_exclude_ambiguous_a
     assert candidate_ids.isdisjoint({str(item.id) for item in [*foods, *units]})
 
 
+def test_ingredient_candidates_use_sanitized_work_suggestion_without_exposing_note(
+    unique_user_fn_scoped: TestUser,
+) -> None:
+    user = unique_user_fn_scoped
+    token = uuid4().hex[:8]
+    food = user.repos.ingredient_foods.create(
+        SaveIngredientFood(group_id=user.group_id, name=f"suggested apple {token}")
+    )
+    unit = user.repos.ingredient_units.create(
+        SaveIngredientUnit(group_id=user.group_id, name=f"suggested spoon {token}")
+    )
+    ingredient = _ingredient(user, "")
+    ingredient.note = f"private note {token}"
+    work = _work(user, "ingredient_structure", str(ingredient.id))
+    work.result = {
+        "reason": "ingredient_suggestion",
+        "suggestion": {"quantity": 2, "food": food.name, "unit": unit.name, "note": "sanitized"},
+    }
+    user.repos.session.commit()
+
+    candidate_set = NutritionCuratorCandidateService(user.repos.session).build(work, _provider(user))
+
+    assert candidate_set is not None
+    assert candidate_set.prompt_payload["candidates"]["foods"][0]["id"] == str(food.id)
+    assert candidate_set.prompt_payload["candidates"]["units"][0]["id"] == str(unit.id)
+    assert token not in candidate_set.prompt_payload["target"]["input"]
+    assert "private note" not in candidate_set.model_dump_json()
+
+
 def test_food_candidates_are_country_preparation_scoped_capped_and_public(
     unique_user_fn_scoped: TestUser,
 ) -> None:

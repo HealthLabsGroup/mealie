@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Literal
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -11,6 +12,7 @@ from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
     HealthLabsFoodMatchSuppression,
     HealthLabsFoodPortion,
+    HealthLabsFoodPortionMapping,
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
     HealthLabsNutritionWork,
@@ -115,6 +117,7 @@ class NutritionService:
         *,
         access_reason: str | None,
         break_glass_reason: str | None,
+        match_method: Literal["manual", "agent"] = "manual",
     ) -> HealthLabsFoodNutritionOut:
         food = self._get_food_for_user(food_id, for_update=True)
         self._authorize_write(food_id, "nutrition.match.set", access_reason, break_glass_reason)
@@ -131,7 +134,9 @@ class NutritionService:
                 HealthLabsFoodMatchSuppression.ingredient_food_id == food_id
             )
         )
-        if suppression is not None:
+        if match_method == "agent" and suppression is not None:
+            raise NutritionConflict("Suppressed matches cannot be changed by an agent")
+        if match_method == "manual" and suppression is not None:
             self.session.delete(suppression)
 
         match = self.session.scalar(
@@ -140,15 +145,20 @@ class NutritionService:
         if match is None:
             match = HealthLabsFoodMatch(ingredient_food_id=food_id)
             self.session.add(match)
+        elif match_method == "agent" and (
+            match.auto_applied or (match.reviewed_by_user_id is not None and match.reviewed_at is not None)
+        ):
+            raise NutritionConflict("Reviewed matches cannot be changed by an agent")
         match.nutrient_food_id = nutrient_food.id
         match.country = country
-        match.match_method = "manual"
+        match.match_method = match_method
         match.confidence = data.confidence
         match.auto_applied = False
-        match.food_group = data.food_group
-        match.plant_id = data.plant_id
-        match.allergens = data.allergens
-        match.diets = data.diets
+        if match_method == "manual":
+            match.food_group = data.food_group
+            match.plant_id = data.plant_id
+            match.allergens = data.allergens
+            match.diets = data.diets
         match.reviewed_by_user_id = self._require_user().id
         match.reviewed_at = get_utc_now()
         self.session.flush()
@@ -718,6 +728,24 @@ class NutritionService:
         if unit is None:
             return None
 
+        group_id = self.session.scalar(sa.select(IngredientFoodModel.group_id).where(IngredientFoodModel.id == food_id))
+        if group_id is not None:
+            mapped_portion = self.session.scalar(
+                sa.select(HealthLabsFoodPortion)
+                .join(
+                    HealthLabsFoodPortionMapping,
+                    HealthLabsFoodPortionMapping.food_portion_id == HealthLabsFoodPortion.id,
+                )
+                .where(
+                    HealthLabsFoodPortionMapping.group_id == group_id,
+                    HealthLabsFoodPortionMapping.ingredient_food_id == food_id,
+                    HealthLabsFoodPortionMapping.ingredient_unit_id == unit_id,
+                    HealthLabsFoodPortion.nutrient_food_id == nutrient_food_id,
+                )
+            )
+            if mapped_portion is not None:
+                return quantity * self._decimal(mapped_portion.grams) / self._decimal(mapped_portion.amount)
+
         standard_quantity = self._decimal(unit.standard_quantity or 1)
         standard_unit = self._normalize_unit(unit.standard_unit or "")
         if standard_unit in MASS_GRAMS:
@@ -737,7 +765,6 @@ class NutritionService:
             else None
         )
 
-        group_id = self.session.scalar(sa.select(IngredientFoodModel.group_id).where(IngredientFoodModel.id == food_id))
         portions_statement = sa.select(HealthLabsFoodPortion).where(
             HealthLabsFoodPortion.nutrient_food_id == nutrient_food_id
         )

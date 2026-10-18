@@ -187,6 +187,15 @@ class NutritionCuratorCandidateService:
                 ),
                 default=0,
             )
+            specificity_score = max(
+                (
+                    fuzz.token_sort_ratio(
+                        IngredientFoodModel.normalize(name), IngredientFoodModel.normalize(nutrient_food.name)
+                    )
+                    for name in names
+                ),
+                default=0,
+            )
             if score <= 0:
                 continue
             candidates.append(
@@ -197,11 +206,13 @@ class NutritionCuratorCandidateService:
                     "country": release.country.upper(),
                     "sourceLabel": f"{release.provider} {release.version}",
                     "score": round(score, 3),
+                    "specificityScore": round(specificity_score, 3),
                 }
             )
         candidates.sort(
             key=lambda item: (
                 -item["score"],
+                -item["specificityScore"],
                 0 if item["country"] == self.country else 1,
                 item["label"].casefold(),
                 item["id"],

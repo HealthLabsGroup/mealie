@@ -9,6 +9,7 @@ from uuid import UUID
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
+from mealie.core import root_logger
 from mealie.core.config import get_app_settings
 from mealie.db.models._model_utils.datetime import get_utc_now
 from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
@@ -23,6 +24,7 @@ from mealie.services.openai.openai import OpenAIRequestRejected
 
 PROVIDER_CALL_TIMEOUT_SECONDS = 14 * 60
 FINALIZATION_MARGIN_SECONDS = 60
+logger = root_logger.get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +196,7 @@ class NutritionCuratorWorker:
             )
 
     def _fail(self, decision_id: UUID, exc: Exception, now: datetime) -> NutritionCuratorReport:
+        logger.warning("Nutrition curator provider failure error_type=%s", type(exc).__name__)
         state = NutritionCuratorService(self.session, country=self.country, now=now).fail(decision_id, exc)
         self.session.commit()
         return NutritionCuratorReport(1, 0, 0, int(state == "failed"), False)

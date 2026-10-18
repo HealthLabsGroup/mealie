@@ -261,6 +261,30 @@ def test_food_candidates_are_country_preparation_scoped_capped_and_public(
     assert "nutrient_values" not in serialized
 
 
+def test_food_candidate_specificity_breaks_token_subset_score_ties(
+    unique_user_fn_scoped: TestUser,
+) -> None:
+    user = unique_user_fn_scoped
+    token = uuid4().hex[:8]
+    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"lettuce {token}"))
+    release = _source(user, "GB")
+    direct = _source_food(user, release, f"lettuce {token}, average, raw", "raw")
+    incidental = _source_food(user, release, f"sandwich with lettuce {token} and tomato")
+    user.repos.session.commit()
+
+    candidate_set = NutritionCuratorCandidateService(user.repos.session, country="GB").build(
+        _work(user, "food_match", str(food.id)),
+        _provider(user),
+    )
+
+    assert candidate_set is not None
+    candidates = candidate_set.prompt_payload["candidates"]["foods"]
+    assert [item["score"] for item in candidates[:2]] == [100, 100]
+    assert candidates[0]["id"] == str(direct.id)
+    assert candidates[1]["id"] == str(incidental.id)
+    assert candidates[0]["specificityScore"] > candidates[1]["specificityScore"]
+
+
 def test_portion_candidates_use_current_match_and_never_expose_grams(
     unique_user_fn_scoped: TestUser,
     session: Session,

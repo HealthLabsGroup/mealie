@@ -60,6 +60,16 @@ def test_system_prompt_has_ordered_persona_policy_method_and_five_examples() -> 
         assert f"`{field}`" in prompt
 
 
+def test_system_prompt_defines_food_match_evidence_contract() -> None:
+    prompt = NutritionCuratorPrompt.system()
+
+    assert "`OTHER` is a compatible generic fallback" in prompt
+    assert "`food_match` requires only `nutrient_food_id`" in prompt
+    assert "Do not require a unit or portion for `food_match`" in prompt
+    assert "`score` and `specificityScore` are 0–100 retrieval signals" in prompt
+    assert "Do not copy them directly into 0–1 confidence" in prompt
+
+
 def test_policy_control_removes_only_identity_block() -> None:
     system = NutritionCuratorPrompt.system()
     identity = re.search(r"<identity>.*?</identity>\n?", system, flags=re.DOTALL)

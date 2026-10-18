@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -11,13 +12,16 @@ from mealie.core.config import get_app_settings
 from mealie.db.models._model_utils.datetime import get_utc_now
 from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
 from mealie.db.models.healthlabs import (
+    HealthLabsFoodMatch,
     HealthLabsFoodPortion,
+    HealthLabsNutritionCuratorDecision,
     HealthLabsNutritionProviderUsage,
     HealthLabsNutritionWork,
 )
 from mealie.db.models.recipe import RecipeIngredientModel
 from mealie.repos.repository_factory import AllRepositories
 from mealie.schema.healthlabs.identity import HealthLabsCapability
+from mealie.services.healthlabs.nutrition_curator_identity_service import NutritionCuratorIdentityService
 from mealie.services.healthlabs.nutrition_worker import NutritionReconciliationWorker
 
 
@@ -49,6 +53,10 @@ def test_food_search_detail_match_replace_portion_and_clear(
 
     source_id, nutrient_food_id = healthlabs_nutrition_source(name=food_name)
     resource = f"/api/healthlabs/v1/nutrition/foods/{food_id}/match"
+    suggested = api_client.get(resource.removesuffix("/match"), params={"country": "GB"}, headers=owner_headers)
+    assert suggested.status_code == 200, suggested.text
+    assert suggested.json()["nutrition"]["reviewedBy"] is None
+    assert suggested.json()["nutrition"]["appleNote"] is None
     body = {
         "nutrientFoodId": nutrient_food_id,
         "country": "GB",
@@ -156,7 +164,11 @@ def test_nutrition_mutations_reject_foods_from_another_workspace(
 ) -> None:
     _, owner_headers = healthlabs_provision()
     editor, editor_headers = healthlabs_provision()
-    healthlabs_set_capabilities(editor["userId"], HealthLabsCapability.NUTRITION_WRITE)
+    healthlabs_set_capabilities(
+        editor["userId"],
+        HealthLabsCapability.RECIPES_WRITE_OWN,
+        HealthLabsCapability.NUTRITION_WRITE,
+    )
     _, food_id = healthlabs_recipe_food(owner_headers, f"Foreign nutrition food {uuid4()}")
     _, nutrient_food_id = healthlabs_nutrition_source(name=f"Unrelated source {uuid4()}")
     resource = f"/api/healthlabs/v1/nutrition/foods/{food_id}"
@@ -501,6 +513,223 @@ def test_worker_status_and_review_queue_are_group_scoped(
     assert queue_response.json()[0]["result"] == work.result
     assert outsider_queue.status_code == 200
     assert outsider_queue.json() == []
+
+
+def test_worker_status_and_review_queue_expose_only_sanitized_curator_state(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_set_capabilities: Callable,
+    unfiltered_database: AllRepositories,
+) -> None:
+    editor, headers = healthlabs_provision()
+    outsider, outsider_headers = healthlabs_provision()
+    healthlabs_set_capabilities(editor["userId"], HealthLabsCapability.NUTRITION_WRITE)
+    healthlabs_set_capabilities(outsider["userId"], HealthLabsCapability.NUTRITION_WRITE)
+    session = unfiltered_database.session
+    group_id = UUID(editor["groupId"])
+    agent = NutritionCuratorIdentityService(session).get_or_create(group_id)
+    outsider_agent = NutritionCuratorIdentityService(session).get_or_create(UUID(outsider["groupId"]))
+    work = HealthLabsNutritionWork(
+        group_id=group_id,
+        kind="food_match",
+        target_id=str(uuid4()),
+        input_sha256=f"{5:064x}",
+        state="review_required",
+        result={"reason": "no_unique_source_match"},
+    )
+    session.add(work)
+    session.flush()
+    now = get_utc_now()
+    safe_note = f"I {'x' * 278}"
+    for index, state in enumerate(("pending", "running", "approved", "failed", "insufficient_evidence")):
+        session.add(
+            HealthLabsNutritionCuratorDecision(
+                work_id=work.id if state == "insufficient_evidence" else None,
+                group_id=group_id,
+                kind="food_match",
+                target_id=work.target_id if state == "insufficient_evidence" else str(uuid4()),
+                work_input_sha256=f"{index + 1:064x}",
+                curator_sha256=f"{index + 11:064x}",
+                agent_user_id=agent.id,
+                state=state,
+                attempt_count=index,
+                candidate_snapshot={"recipeText": "PRIVATE RECIPE", "secret": "PRIVATE SECRET"},
+                reason_code="insufficient_candidates",
+                rationale=f"<b>{safe_note}</b>\x00",
+                provider_name="test-provider",
+                provider_model="test-model",
+                prompt_version="test-v1",
+                usage={"input_tokens": 999},
+                update_at=now + timedelta(seconds=index),
+            )
+        )
+    stale_work = HealthLabsNutritionWork(
+        group_id=group_id,
+        kind="food_match",
+        target_id=str(uuid4()),
+        input_sha256="f" * 64,
+        state="review_required",
+        result={"reason": "no_unique_source_match"},
+    )
+    session.add(stale_work)
+    session.flush()
+    session.add(
+        HealthLabsNutritionCuratorDecision(
+            work_id=stale_work.id,
+            group_id=group_id,
+            kind="food_match",
+            target_id=stale_work.target_id,
+            work_input_sha256="e" * 64,
+            curator_sha256="f" * 64,
+            agent_user_id=agent.id,
+            state="failed",
+            candidate_snapshot={"recipeText": "STALE PRIVATE RECIPE"},
+            reason_code="provider_error",
+            provider_name="stale-provider",
+            provider_model="stale-model",
+            prompt_version="stale-v1",
+            update_at=now + timedelta(minutes=1),
+        )
+    )
+    session.add(
+        HealthLabsNutritionCuratorDecision(
+            group_id=UUID(outsider["groupId"]),
+            kind="food_match",
+            target_id=str(uuid4()),
+            work_input_sha256="d" * 64,
+            curator_sha256="e" * 64,
+            agent_user_id=outsider_agent.id,
+            state="approved",
+            candidate_snapshot={},
+            reason_code="name_and_context_match",
+            rationale="I selected an unrelated workspace source.",
+            provider_name="outsider-provider",
+            provider_model="outsider-model",
+            prompt_version="outsider-v1",
+            update_at=now + timedelta(minutes=5),
+        )
+    )
+    session.commit()
+
+    status = api_client.get("/api/healthlabs/v1/nutrition/worker-status", headers=headers)
+    queue = api_client.get(
+        "/api/healthlabs/v1/nutrition/work",
+        params={"state": "review_required", "kind": "food_match"},
+        headers=headers,
+    )
+    outsider_status = api_client.get("/api/healthlabs/v1/nutrition/worker-status", headers=outsider_headers)
+
+    assert status.status_code == 200, status.text
+    assert status.json()["curatorCounts"] == {
+        "pending": 1,
+        "running": 1,
+        "approved": 1,
+        "insufficient_evidence": 1,
+        "failed": 2,
+    }
+    assert datetime.fromisoformat(status.json()["curatorLastUpdatedAt"]) == now + timedelta(minutes=1)
+    assert outsider_status.json()["curatorCounts"]["approved"] == 1
+    assert queue.status_code == 200, queue.text
+    item = next(value for value in queue.json() if value["id"] == str(work.id))
+    assert item["curatorState"] == "insufficient_evidence"
+    assert item["curatorReasonCode"] == "insufficient_candidates"
+    assert item["curatorAttemptCount"] == 4
+    assert item["appleNote"] == safe_note
+    assert item["curatorAgent"] == {
+        "id": str(agent.id),
+        "displayName": "Apple — Nutrition Curator",
+        "userType": "agent",
+    }
+    stale_item = next(value for value in queue.json() if value["id"] == str(stale_work.id))
+    assert stale_item["curatorState"] is None
+    assert stale_item["curatorReasonCode"] is None
+    assert stale_item["appleNote"] is None
+    assert stale_item["curatorAgent"] is None
+    for private_value in (
+        "PRIVATE RECIPE",
+        "PRIVATE SECRET",
+        "input_tokens",
+        "candidateSnapshot",
+        "selectedIds",
+        "test-provider",
+        "test-model",
+        "test-v1",
+        "STALE PRIVATE RECIPE",
+        "stale-provider",
+        '"rationale"',
+    ):
+        assert private_value not in queue.text
+
+
+def test_food_match_exposes_apple_as_agent_reviewer(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_set_capabilities: Callable,
+    healthlabs_recipe_food: Callable,
+    healthlabs_nutrition_source: Callable,
+    unfiltered_database: AllRepositories,
+) -> None:
+    editor, headers = healthlabs_provision()
+    healthlabs_set_capabilities(
+        editor["userId"],
+        HealthLabsCapability.RECIPES_WRITE_OWN,
+        HealthLabsCapability.NUTRITION_WRITE,
+    )
+    group_id = UUID(editor["groupId"])
+    _, food_id = healthlabs_recipe_food(headers, f"Apple reviewed food {uuid4()}")
+    _, nutrient_food_id = healthlabs_nutrition_source(name=f"Apple source {uuid4()}")
+    session = unfiltered_database.session
+    agent = NutritionCuratorIdentityService(session).get_or_create(group_id)
+    match = HealthLabsFoodMatch(
+        ingredient_food_id=UUID(food_id),
+        nutrient_food_id=UUID(nutrient_food_id),
+        country="GB",
+        match_method="agent",
+        confidence=0.98,
+        auto_applied=False,
+        reviewed_by_user_id=agent.id,
+        reviewed_at=get_utc_now(),
+    )
+    session.add(match)
+    now = get_utc_now()
+    for curator_sha256, rationale, updated_at in (
+        ("d" * 64, "I selected an older source.", now - timedelta(minutes=1)),
+        ("c" * 64, "I selected the closest licensed source.", now),
+    ):
+        session.add(
+            HealthLabsNutritionCuratorDecision(
+                group_id=group_id,
+                kind="food_match",
+                target_id=food_id,
+                work_input_sha256="b" * 64,
+                curator_sha256=curator_sha256,
+                agent_user_id=agent.id,
+                state="approved",
+                candidate_snapshot={},
+                selected_ids={"nutrient_food_id": nutrient_food_id},
+                confidence=0.98,
+                runner_up_confidence=0.3,
+                reason_code="name_and_context_match",
+                rationale=rationale,
+                provider_name="test-provider",
+                provider_model="test-model",
+                prompt_version="test-v1",
+                update_at=updated_at,
+            )
+        )
+    session.commit()
+
+    response = api_client.get(f"/api/healthlabs/v1/nutrition/foods/{food_id}", headers=headers)
+
+    assert response.status_code == 200, response.text
+    nutrition = response.json()["nutrition"]
+    assert nutrition["reviewedByUserId"] == str(agent.id)
+    assert nutrition["reviewedBy"] == {
+        "id": str(agent.id),
+        "displayName": "Apple — Nutrition Curator",
+        "userType": "agent",
+    }
+    assert nutrition["appleNote"] == "I selected the closest licensed source."
 
 
 def test_worker_review_queue_is_bounded(

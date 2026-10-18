@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import UUID4, Field, StringConstraints
 
+from mealie.db.models.users import UserType
 from mealie.schema._mealie import MealieModel
 
 
@@ -28,11 +29,27 @@ class HealthLabsNutritionWorkState(StrEnum):
     FAILED = "failed"
 
 
+class HealthLabsNutritionCuratorState(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    APPROVED = "approved"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    FAILED = "failed"
+
+
+class HealthLabsReviewerOut(MealieModel):
+    id: UUID4
+    display_name: str
+    user_type: UserType
+
+
 class HealthLabsNutritionWorkerStatus(MealieModel):
     counts: dict[str, int]
+    curator_counts: dict[str, int]
     provider_enabled: bool
     provider_budget_exhausted: bool
     last_updated_at: datetime | None = None
+    curator_last_updated_at: datetime | None = None
 
 
 class HealthLabsNutritionWorkOut(MealieModel):
@@ -44,6 +61,11 @@ class HealthLabsNutritionWorkOut(MealieModel):
     result: dict[str, Any] | None = None
     last_error: str | None = None
     updated_at: datetime | None = None
+    curator_state: HealthLabsNutritionCuratorState | None = None
+    curator_reason_code: str | None = None
+    curator_attempt_count: int | None = Field(default=None, ge=0)
+    apple_note: str | None = Field(default=None, max_length=280)
+    curator_agent: HealthLabsReviewerOut | None = None
 
 
 class HealthLabsNutritionValues(MealieModel):
@@ -110,6 +132,8 @@ class HealthLabsFoodMatchOut(MealieModel):
     diets: dict[str, str] | None = None
     reviewed_by_user_id: UUID4 | None = None
     reviewed_at: datetime | None = None
+    reviewed_by: HealthLabsReviewerOut | None = None
+    apple_note: str | None = Field(default=None, max_length=280)
     nutrients_per_100g: HealthLabsNutritionValues
     portions: list[HealthLabsFoodPortionOut] = Field(default_factory=list)
     source: HealthLabsNutritionSourceOut

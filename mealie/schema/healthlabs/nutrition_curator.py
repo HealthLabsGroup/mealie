@@ -28,6 +28,26 @@ _PRIVATE_CANDIDATE_KEYS = frozenset(
 )
 
 
+def sanitize_curator_rationale(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("rationale must be text")
+    value = re.sub(r"<[^>]*>", "", value)
+    value = "".join(" " if unicodedata.category(char).startswith("C") else char for char in value)
+    value = " ".join(value.split())
+    if not value or len(value) > 280:
+        raise ValueError("rationale must contain at most 280 characters")
+    if re.search(r"\bI(?:\b|'m|'ve|'d|'ll)", value) is None:
+        raise ValueError("rationale must use Apple's concise first-person voice")
+    return value
+
+
+def public_curator_note(value: Any) -> str | None:
+    try:
+        return sanitize_curator_rationale(value)
+    except ValueError:
+        return None
+
+
 class NutritionCuratorCandidateSet(BaseModel):
     kind: NutritionCuratorKind
     target_id: str
@@ -70,16 +90,7 @@ class NutritionCuratorProviderDecision(OpenAIBase):
     @field_validator("rationale", mode="before")
     @classmethod
     def sanitize_rationale(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            raise ValueError("rationale must be text")
-        value = re.sub(r"<[^>]*>", "", value)
-        value = "".join(" " if unicodedata.category(char).startswith("C") else char for char in value)
-        value = " ".join(value.split())
-        if not value or len(value) > 280:
-            raise ValueError("rationale must contain at most 280 characters")
-        if re.search(r"\bI(?:\b|'m|'ve|'d|'ll)", value) is None:
-            raise ValueError("rationale must use Apple's concise first-person voice")
-        return value
+        return sanitize_curator_rationale(value)
 
     @model_validator(mode="after")
     def validate_selection_shape(self) -> Self:

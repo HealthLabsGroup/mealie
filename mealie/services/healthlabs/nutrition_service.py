@@ -15,10 +15,12 @@ from mealie.db.models.healthlabs import (
     HealthLabsFoodPortionMapping,
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
+    HealthLabsNutritionCuratorDecision,
     HealthLabsNutritionWork,
 )
 from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel
 from mealie.db.models.recipe.ingredient import IngredientFoodAliasModel
+from mealie.db.models.users import User
 from mealie.schema.healthlabs.identity import HealthLabsCapability
 from mealie.schema.healthlabs.nutrition import (
     HealthLabsFoodMatchOut,
@@ -34,7 +36,9 @@ from mealie.schema.healthlabs.nutrition import (
     HealthLabsNutritionStatus,
     HealthLabsNutritionValues,
     HealthLabsRecipeNutrition,
+    HealthLabsReviewerOut,
 )
+from mealie.schema.healthlabs.nutrition_curator import public_curator_note
 from mealie.schema.recipe import Recipe
 from mealie.schema.user import PrivateUser
 from mealie.services.healthlabs.access_policy import BreakGlassContext, RecipeAccessDenied, RecipeAccessPolicy
@@ -83,6 +87,11 @@ class NutritionService:
             str,
             dict[str, list[tuple[HealthLabsNutrientFood, HealthLabsNutrientSourceRelease]]],
         ] = {}
+        self._match_cache: dict[UUID, HealthLabsFoodMatch | None] = {}
+        self._review_attribution_cache: dict[
+            UUID,
+            tuple[User | None, HealthLabsNutritionCuratorDecision | None],
+        ] = {}
 
     def list_foods(
         self,
@@ -102,6 +111,7 @@ class NutritionService:
                 )
             )
         foods = self.session.scalars(query.order_by(IngredientFoodModel.name, IngredientFoodModel.id)).all()
+        self._preload_review_attribution(foods, user.group_id)
         items = [self._food_out(food, country) for food in foods]
         if status is not None:
             items = [item for item in items if item.status == status]
@@ -307,9 +317,12 @@ class NutritionService:
             )
         ):
             return None
-        existing = self.session.scalar(
-            sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
-        )
+        if food_id in self._match_cache:
+            existing = self._match_cache[food_id]
+        else:
+            existing = self.session.scalar(
+                sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
+            )
         if existing is not None:
             return self._match_out(existing)
 
@@ -425,6 +438,50 @@ class NutritionService:
     def _clear_cache(self) -> None:
         self._food_facts_cache.clear()
         self._candidate_cache.clear()
+        self._match_cache.clear()
+        self._review_attribution_cache.clear()
+
+    def _preload_review_attribution(self, foods: list[IngredientFoodModel], group_id: UUID) -> None:
+        food_ids = [food.id for food in foods]
+        if not food_ids:
+            return
+        matches = self.session.scalars(
+            sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id.in_(food_ids))
+        ).all()
+        matches_by_food = {match.ingredient_food_id: match for match in matches}
+        self._match_cache.update({food_id: matches_by_food.get(food_id) for food_id in food_ids})
+
+        reviewed_matches = [match for match in matches if match.reviewed_by_user_id is not None]
+        reviewer_ids = {match.reviewed_by_user_id for match in reviewed_matches}
+        reviewers = {
+            reviewer.id: reviewer
+            for reviewer in self.session.scalars(
+                sa.select(User).where(User.id.in_(reviewer_ids), User.group_id == group_id)
+            )
+        }
+        decisions: dict[tuple[str, UUID], HealthLabsNutritionCuratorDecision] = {}
+        if reviewed_matches:
+            target_ids = [str(match.ingredient_food_id) for match in reviewed_matches]
+            for decision in self.session.scalars(
+                sa.select(HealthLabsNutritionCuratorDecision)
+                .where(
+                    HealthLabsNutritionCuratorDecision.group_id == group_id,
+                    HealthLabsNutritionCuratorDecision.kind == "food_match",
+                    HealthLabsNutritionCuratorDecision.state == "approved",
+                    HealthLabsNutritionCuratorDecision.target_id.in_(target_ids),
+                )
+                .order_by(
+                    HealthLabsNutritionCuratorDecision.update_at.desc(),
+                    HealthLabsNutritionCuratorDecision.id.desc(),
+                )
+            ):
+                decisions.setdefault((decision.target_id, decision.agent_user_id), decision)
+        for match in reviewed_matches:
+            reviewer = reviewers.get(match.reviewed_by_user_id)
+            self._review_attribution_cache[match.ingredient_food_id] = (
+                reviewer,
+                decisions.get((str(match.ingredient_food_id), reviewer.id)) if reviewer is not None else None,
+            )
 
     def food_facts(
         self,
@@ -623,6 +680,27 @@ class NutritionService:
         reviewed = match is not None and match.reviewed_by_user_id is not None and match.reviewed_at is not None
         auto_applied = match is not None and match.auto_applied
         group_id = self.session.scalar(sa.select(IngredientFoodModel.group_id).where(IngredientFoodModel.id == food_id))
+        reviewer, decision = self._review_attribution_cache.get(food_id, (None, None))
+        if reviewed and food_id not in self._review_attribution_cache and match is not None and group_id is not None:
+            reviewer = self.session.scalar(
+                sa.select(User).where(User.id == match.reviewed_by_user_id, User.group_id == group_id)
+            )
+            if reviewer is not None:
+                decision = self.session.scalar(
+                    sa.select(HealthLabsNutritionCuratorDecision)
+                    .where(
+                        HealthLabsNutritionCuratorDecision.group_id == group_id,
+                        HealthLabsNutritionCuratorDecision.kind == "food_match",
+                        HealthLabsNutritionCuratorDecision.target_id == str(food_id),
+                        HealthLabsNutritionCuratorDecision.state == "approved",
+                        HealthLabsNutritionCuratorDecision.agent_user_id == reviewer.id,
+                    )
+                    .order_by(
+                        HealthLabsNutritionCuratorDecision.update_at.desc(),
+                        HealthLabsNutritionCuratorDecision.id.desc(),
+                    )
+                    .limit(1)
+                )
         source_food = self._source_food_out(nutrient_food, source, group_id=group_id)
         return HealthLabsFoodMatchOut(
             id=match.id if match is not None else None,
@@ -647,6 +725,16 @@ class NutritionService:
             diets=match.diets if match is not None else None,
             reviewed_by_user_id=match.reviewed_by_user_id if match is not None else None,
             reviewed_at=match.reviewed_at if match is not None else None,
+            reviewed_by=(
+                HealthLabsReviewerOut(
+                    id=reviewer.id,
+                    display_name=reviewer.full_name or reviewer.username or "Unknown reviewer",
+                    user_type=reviewer.user_type,
+                )
+                if reviewer is not None
+                else None
+            ),
+            apple_note=public_curator_note(decision.rationale) if decision is not None else None,
             nutrients_per_100g=source_food.nutrients_per_100g,
             portions=source_food.portions,
             source=source_food.source,

@@ -117,3 +117,10 @@ def test_worker_status_and_review_queue_require_nutrition_write(
                 "completed": 0,
                 "failed": 0,
             }
+            assert allowed.json()["curatorCounts"] == {
+                "pending": 0,
+                "running": 0,
+                "approved": 0,
+                "insufficient_evidence": 0,
+                "failed": 0,
+            }

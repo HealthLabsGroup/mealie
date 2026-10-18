@@ -6,6 +6,7 @@ from sqlalchemy.orm.session import Session
 from mealie.core.security.tokens import create_access_token
 from mealie.repos.all_repositories import get_repositories
 from mealie.schema.user.user import PrivateUser
+from mealie.services.healthlabs.nutrition_curator_identity_service import assert_interactive_user
 
 
 class AuthProvider[T](metaclass=abc.ABCMeta):
@@ -28,6 +29,7 @@ class AuthProvider[T](metaclass=abc.ABCMeta):
         the end of the browser session, not how long it is valid for, so it travels on the token as
         the `rme` claim for the client to act on — and survives refreshes intact.
         """
+        assert_interactive_user(user)
         return create_access_token({"sub": str(user.id), "rme": remember_me})
 
     def try_get_user(self, username: str) -> PrivateUser | None:

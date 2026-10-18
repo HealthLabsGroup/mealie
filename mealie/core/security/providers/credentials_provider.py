@@ -7,7 +7,7 @@ from mealie.core.config import get_app_settings
 from mealie.core.exceptions import UserLockedOut
 from mealie.core.security.hasher import get_hasher
 from mealie.core.security.providers.auth_provider import AuthProvider
-from mealie.db.models.users.users import AuthMethod
+from mealie.db.models.users.users import AuthMethod, UserType
 from mealie.repos.all_repositories import get_repositories
 from mealie.schema.user.auth import CredentialsRequest
 from mealie.services.user_services.user_service import UserService
@@ -28,6 +28,10 @@ class CredentialsProvider(AuthProvider[CredentialsRequest]):
         user = self.try_get_user(self.data.username)
 
         if not user:
+            self.verify_fake_password()
+            return None
+
+        if user.user_type is UserType.AGENT:
             self.verify_fake_password()
             return None
 

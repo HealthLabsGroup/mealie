@@ -1,14 +1,17 @@
 from functools import cached_property
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import UUID4
 
+from mealie.db.models.users import User, UserType
 from mealie.schema.group.group import GroupAdminUpdate
 from mealie.schema.mapper import mapper
 from mealie.schema.response.pagination import PaginationQuery
 from mealie.schema.response.responses import ErrorResponse
 from mealie.schema.user.user import GroupBase, GroupInDB, GroupPagination
 from mealie.services.group_services.group_service import GroupService
+from mealie.services.healthlabs.nutrition_curator_identity_service import delete_group_curator_identities
 
 from .._base import BaseAdminController, controller
 from .._base.mixins import HttpRepo
@@ -78,11 +81,14 @@ class AdminGroupManagementRoutes(BaseAdminController):
     @router.delete("/{item_id}", response_model=GroupInDB)
     def delete_one(self, item_id: UUID4):
         item = self.repo.get_one(item_id)
+        users = self.session.scalars(sa.select(User).where(User.group_id == item_id)).all()
 
-        if item and len(item.users) > 0:
+        if item and any(user.user_type is not UserType.AGENT or not user.healthlabs_managed for user in users):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ErrorResponse.respond(message="Cannot delete group with users"),
             )
+
+        delete_group_curator_identities(self.session, item_id)
 
         return self.mixins.delete_one(item_id)

@@ -20,6 +20,7 @@ from mealie.db.db_setup import generate_session
 from mealie.repos.all_repositories import get_repositories
 from mealie.schema.user import PrivateUser, TokenData
 from mealie.schema.user.user import DEFAULT_INTEGRATION_ID, GroupInDB
+from mealie.services.healthlabs.nutrition_curator_identity_service import assert_interactive_user
 
 oauth2_scheme_soft_fail = OAuth2PasswordBearer(tokenUrl="/api/auth/token", auto_error=False)
 app_dirs = get_app_dirs()
@@ -113,6 +114,7 @@ async def get_current_user(
 
         if long_token is not None:
             user = validate_long_live_token(session, token, payload.get("id"))
+            assert_interactive_user(user)
             enforce_healthlabs_managed_route_boundary(request, user)
             return user
 
@@ -132,6 +134,8 @@ async def get_current_user(
     session.commit()
     if user is None:
         raise credentials_exception
+
+    assert_interactive_user(user)
 
     # A password change invalidates everything issued before it. Tokens minted before `iat` existed
     # carry no issue time, and since they necessarily predate any password change, they fail closed.

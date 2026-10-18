@@ -232,6 +232,8 @@ def test_structure_backfill_requires_exact_complete_parse(
 ) -> None:
     identity, headers = healthlabs_provision()
     session = unfiltered_database.session
+    backfill = _script("backfill-ingredient-structure.py")["backfill_ingredient_structure"]
+    existing_candidates = backfill(session, apply=False, batch_size=2)["candidates"]
     user = session.get(User, identity["userId"])
     assert user is not None
     repos = get_repositories(session, group_id=user.group_id)
@@ -284,8 +286,6 @@ def test_structure_backfill_requires_exact_complete_parse(
     legacy_rows[-1].food_id = None
     session.add(RecipeIngredientSubstitutionModel(ingredient_id=legacy_rows[-1].id, note="preserve"))
     session.commit()
-    backfill = _script("backfill-ingredient-structure.py")["backfill_ingredient_structure"]
-
     dry_run = backfill(session, apply=False, batch_size=2)
     rows = list(
         session.scalars(
@@ -295,7 +295,7 @@ def test_structure_backfill_requires_exact_complete_parse(
         )
     )
 
-    assert dry_run["candidates"] == 1
+    assert dry_run["candidates"] == existing_candidates + 1
     assert dry_run["updated"] == 0
     assert all(row.food_id is None and row.unit_id is None for row in rows)
 
@@ -309,8 +309,8 @@ def test_structure_backfill_requires_exact_complete_parse(
         )
     )
 
-    assert applied["candidates"] == 1
-    assert applied["updated"] == 1
+    assert applied["candidates"] == existing_candidates + 1
+    assert applied["updated"] == existing_candidates + 1
     assert (rows[0].quantity, rows[0].unit_id, rows[0].food_id, rows[0].original_text) == (
         2,
         unit.id,

@@ -23,7 +23,7 @@ from mealie.services.openai import OpenAIService
 from mealie.services.openai.openai import OpenAIRequestRejected
 from tests.utils import TestUser
 
-NOW = datetime(2026, 10, 18, 12, tzinfo=UTC)
+NOW = datetime(2000, 1, 1, 12, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -360,7 +360,7 @@ def test_budget_exhaustion_defers_without_consuming_attempt(
     assert (decision.state, decision.attempt_count, decision.next_attempt_at) == (
         "pending",
         0,
-        datetime(2026, 10, 19, tzinfo=UTC),
+        datetime(2000, 1, 2, tzinfo=UTC),
     )
     usage = user.repos.session.scalar(
         sa.select(HealthLabsNutritionProviderUsage).where(HealthLabsNutritionProviderUsage.usage_date == NOW.date())

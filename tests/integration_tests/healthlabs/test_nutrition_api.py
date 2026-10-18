@@ -555,7 +555,7 @@ def test_worker_status_and_review_queue_expose_only_sanitized_curator_state(
                 attempt_count=index,
                 candidate_snapshot={"recipeText": "PRIVATE RECIPE", "secret": "PRIVATE SECRET"},
                 reason_code="insufficient_candidates",
-                rationale=f"<b>{safe_note}</b>\x00",
+                rationale=f"<b>{safe_note}</b>\x01",
                 provider_name="test-provider",
                 provider_model="test-model",
                 prompt_version="test-v1",

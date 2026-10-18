@@ -75,8 +75,10 @@ class AlchemyExporter(BaseService):
         "occurred_at",
         "published_at",
         "provider_requested_at",
+        "requested_at",
         "reviewed_at",
         "revoked_at",
+        "suppressed_at",
         "superseded_at",
         "tokens_valid_after",
     }

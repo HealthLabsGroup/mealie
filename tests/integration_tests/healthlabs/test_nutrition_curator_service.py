@@ -45,6 +45,8 @@ def _provider(user: TestUser) -> AIProvider:
         api_key="offline-test-key",
         model="test/model-v1",
         timeout=30,
+        request_headers={"X-Deployment": "test-deployment-v1"},
+        request_params={"api-version": "2026-10"},
     )
     session.add(provider)
     session.flush()
@@ -283,6 +285,8 @@ def test_rationale_does_not_change_application_outcome(unique_user_fn_scoped: Te
         "source",
         "catalogue",
         "provider",
+        "provider_header",
+        "provider_param",
         "capability",
         "reviewed",
         "suppression",
@@ -316,6 +320,10 @@ def test_apply_revalidates_every_stale_boundary(
         user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"extra-{uuid4()}"))
     elif mutation == "provider":
         provider.model = "test/model-v2"
+    elif mutation == "provider_header":
+        provider.request_headers[0].value = "test-deployment-v2"
+    elif mutation == "provider_param":
+        provider.request_params[0].value = "2026-11"
     elif mutation == "capability":
         grant = user.repos.session.scalar(
             sa.select(HealthLabsCapabilityGrant).where(HealthLabsCapabilityGrant.user_id == started.agent_user_id)

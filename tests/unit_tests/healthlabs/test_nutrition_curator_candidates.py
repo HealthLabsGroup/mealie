@@ -356,6 +356,11 @@ def test_curator_fingerprint_covers_context_but_not_candidate_order(
     assert baseline is not None and repeated is not None
     assert repeated.curator_sha256 == baseline.curator_sha256
 
+    provider.api_key = "rotated-offline-test-key"
+    user.repos.session.commit()
+    rotated_credentials = service.build(work, provider)
+    assert rotated_credentials is not None and rotated_credentials.curator_sha256 == baseline.curator_sha256
+
     provider.model = "test/model-v2"
     user.repos.session.commit()
     changed_provider = service.build(work, provider)

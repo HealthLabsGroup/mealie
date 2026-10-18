@@ -423,9 +423,14 @@ class NutritionCuratorCandidateService:
                 "baseUrl": provider.base_url,
                 "model": provider.model,
                 "timeout": provider.timeout,
-                "apiKeySha256": hashlib.sha256(provider.api_key.encode()).hexdigest(),
-                "headers": sorted((item.key_name or "", item.value or "") for item in provider.request_headers),
-                "params": sorted((item.key_name or "", item.value or "") for item in provider.request_params),
+                "headers": sorted(
+                    (item.key_name or "", item.update_at.isoformat() if item.update_at else "")
+                    for item in provider.request_headers
+                ),
+                "params": sorted(
+                    (item.key_name or "", item.update_at.isoformat() if item.update_at else "")
+                    for item in provider.request_params
+                ),
             },
             "personaVersion": PERSONA_VERSION,
             "promptVersion": PROMPT_VERSION,

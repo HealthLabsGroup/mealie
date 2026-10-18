@@ -46,10 +46,14 @@ def _service(session: Session, user: PrivateUser) -> NutritionService:
 
 
 def _work_service(session: Session, user: PrivateUser) -> NutritionWorkService:
+    settings = get_app_settings()
     return NutritionWorkService(
         session,
         user,
-        provider_daily_request_limit=get_app_settings().HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT,
+        provider_daily_request_limit=settings.HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT,
+        provider_daily_budget_usd=settings.HEALTHLABS_NUTRITION_PROVIDER_DAILY_BUDGET_USD,
+        provider_input_usd_per_million_tokens=(settings.HEALTHLABS_NUTRITION_PROVIDER_INPUT_USD_PER_MILLION_TOKENS),
+        provider_output_usd_per_million_tokens=(settings.HEALTHLABS_NUTRITION_PROVIDER_OUTPUT_USD_PER_MILLION_TOKENS),
     )
 
 

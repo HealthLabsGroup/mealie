@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -30,10 +31,24 @@ from mealie.schema.recipe import (
 )
 from mealie.services.healthlabs.nutrition_service import NutritionService
 from mealie.services.healthlabs.nutrition_worker import NutritionReconciliationWorker
+from mealie.services.openai.openai import OpenAIRequestRejected
 from tests.fixtures.fixture_users import build_unique_user
 from tests.utils import TestUser
 
 NOW = datetime(2026, 10, 17, 12, tzinfo=UTC)
+PROVIDER_BUDGET = {
+    "provider_daily_budget_usd": Decimal("1"),
+    "provider_input_usd_per_million_tokens": Decimal("1"),
+    "provider_output_usd_per_million_tokens": Decimal("1"),
+}
+
+
+def _complete_provider_request(parser) -> None:
+    assert parser.request_guard is not None
+    assert parser.max_completion_tokens is not None
+    if not parser.request_guard(1, parser.max_completion_tokens):
+        raise OpenAIRequestRejected
+    parser.last_usage = {"input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1}
 
 
 def _recipe_ingredients(
@@ -100,6 +115,7 @@ def _run(
     *,
     batch_size: int = 20,
     provider_daily_request_limit: int = 0,
+    provider_budget: dict | None = None,
     now: datetime = NOW,
 ):
     return asyncio.run(
@@ -108,6 +124,7 @@ def _run(
             group_id=user.group_id,
             batch_size=batch_size,
             provider_daily_request_limit=provider_daily_request_limit,
+            **(provider_budget if provider_budget is not None else PROVIDER_BUDGET),
             now=now,
         ).run()
     )
@@ -732,6 +749,88 @@ def test_provider_is_disabled_by_default_without_spending(
     assert user.repos.session.scalar(sa.select(sa.func.count()).select_from(HealthLabsNutritionProviderUsage)) == 0
 
 
+def test_zero_dollar_budget_disables_provider_even_with_request_allowance(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch,
+) -> None:
+    user = unique_user_fn_scoped
+    ingredient = _recipe_ingredients(user, [f"zero-budget-{uuid4()}"])[0]
+    _configure_provider(user)
+
+    async def unexpected_call(*_args, **_kwargs):
+        raise AssertionError("zero-dollar budget must not call provider")
+
+    monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", unexpected_call)
+    for _ in range(100):
+        _run(
+            user,
+            provider_daily_request_limit=5,
+            provider_budget={**PROVIDER_BUDGET, "provider_daily_budget_usd": Decimal("0")},
+        )
+        work = user.repos.session.scalar(
+            sa.select(HealthLabsNutritionWork).where(
+                HealthLabsNutritionWork.kind == "ingredient_structure",
+                HealthLabsNutritionWork.target_id == str(ingredient.id),
+            )
+        )
+        if work is not None:
+            break
+
+    assert work is not None
+    assert work.state == "review_required"
+    assert work.result == {"reason": "provider_disabled"}
+    assert work.provider_requested_at is None
+
+
+def test_provider_budget_reservation_caps_spend_and_records_sanitized_usage(
+    unique_user_fn_scoped: TestUser,
+) -> None:
+    user = unique_user_fn_scoped
+    works = [
+        HealthLabsNutritionWork(
+            group_id=user.group_id,
+            kind="ingredient_structure",
+            target_id=str(8_100_000 + index),
+            input_sha256=str(index).zfill(64),
+            state="running",
+            next_attempt_at=NOW,
+        )
+        for index in range(2)
+    ]
+    user.repos.session.add_all(works)
+    user.repos.session.commit()
+    worker = NutritionReconciliationWorker(
+        user.repos.session,
+        provider_daily_request_limit=2,
+        provider_daily_budget_usd=Decimal("0.000003"),
+        provider_input_usd_per_million_tokens=Decimal("1"),
+        provider_output_usd_per_million_tokens=Decimal("1"),
+        now=NOW,
+    )
+
+    reservation = worker._reserve_provider_request(works[0], 1, 1)
+    assert reservation == 2
+    assert worker._reserve_provider_request(works[1], 1, 1) is None
+
+    worker._record_provider_usage(
+        works[0],
+        reservation,
+        {"input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1},
+    )
+    usage = user.repos.session.scalar(
+        sa.select(HealthLabsNutritionProviderUsage).where(HealthLabsNutritionProviderUsage.usage_date == NOW.date())
+    )
+    assert usage is not None
+    assert (
+        usage.request_count,
+        usage.reserved_microusd,
+        usage.spent_microusd,
+        usage.input_tokens,
+        usage.cached_input_tokens,
+        usage.output_tokens,
+    ) == (1, 0, 2, 1, 0, 1)
+
+
 def test_provider_configuration_wakes_waiting_work_and_applies_only_exact_results(
     unique_user_fn_scoped: TestUser,
     monkeypatch,
@@ -756,8 +855,9 @@ def test_provider_configuration_wakes_waiting_work_and_applies_only_exact_result
         timeouts.append(seconds)
         return Timeout()
 
-    async def parse_one(_parser, source: str):
+    async def parse_one(parser, source: str):
         nonlocal calls
+        _complete_provider_request(parser)
         calls += 1
         return _parsed(source, quantity=2, unit=unit.name, food=food.name)
 
@@ -808,6 +908,7 @@ def test_provider_headers_change_the_worker_fingerprint(unique_user_fn_scoped: T
     before = NutritionReconciliationWorker(
         user.repos.session,
         provider_daily_request_limit=1,
+        **PROVIDER_BUDGET,
         now=NOW,
     )._provider_fingerprint(user.group_id)
 
@@ -817,6 +918,7 @@ def test_provider_headers_change_the_worker_fingerprint(unique_user_fn_scoped: T
     after = NutritionReconciliationWorker(
         user.repos.session,
         provider_daily_request_limit=1,
+        **PROVIDER_BUDGET,
         now=NOW,
     )._provider_fingerprint(user.group_id)
     assert after != before
@@ -835,8 +937,9 @@ def test_provider_result_does_not_overwrite_a_concurrent_ingredient_edit(
     edited_note = f"user-edited-{token}"
     calls = 0
 
-    async def parse_one(_parser, source: str):
+    async def parse_one(parser, source: str):
         nonlocal calls
+        _complete_provider_request(parser)
         calls += 1
         with Session(user.repos.session.get_bind()) as concurrent:
             edited = concurrent.get(RecipeIngredientModel, ingredient.id)
@@ -884,8 +987,9 @@ def test_provider_result_is_requeued_after_a_concurrent_catalogue_change(
     assert original_food_name is not None
     calls = 0
 
-    async def parse_one(_parser, source: str):
+    async def parse_one(parser, source: str):
         nonlocal calls
+        _complete_provider_request(parser)
         calls += 1
         with Session(user.repos.session.get_bind()) as concurrent:
             edited = concurrent.get(IngredientFoodModel, food.id)
@@ -898,6 +1002,7 @@ def test_provider_result_is_requeued_after_a_concurrent_catalogue_change(
     worker = NutritionReconciliationWorker(
         user.repos.session,
         provider_daily_request_limit=1,
+        **PROVIDER_BUDGET,
         now=datetime(2032, 10, 17, 12, tzinfo=UTC),
     )
     work = HealthLabsNutritionWork(
@@ -932,7 +1037,8 @@ def test_provider_apply_requeues_when_a_selected_catalogue_row_changes(
     ingredient = _recipe_ingredients(user, [f"provider-catalogue-guard-{token}"])[0]
     _configure_provider(user)
 
-    async def parse_one(_parser, source: str):
+    async def parse_one(parser, source: str):
+        _complete_provider_request(parser)
         return _parsed(source, quantity=2, unit=unit.name, food=food.name)
 
     monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
@@ -950,6 +1056,7 @@ def test_provider_apply_requeues_when_a_selected_catalogue_row_changes(
     worker = NutritionReconciliationWorker(
         user.repos.session,
         provider_daily_request_limit=1,
+        **PROVIDER_BUDGET,
         now=datetime(2033, 10, 17, 12, tzinfo=UTC),
     )
     work = HealthLabsNutritionWork(
@@ -994,13 +1101,14 @@ def test_provider_requests_crossing_midnight_use_each_utc_day(
     worker = NutritionReconciliationWorker(
         user.repos.session,
         provider_daily_request_limit=1,
+        **PROVIDER_BUDGET,
         now=first_now,
     )
     times = iter((first_now, second_now))
     monkeypatch.setattr(worker, "_current_time", lambda: next(times))
 
-    assert worker._reserve_provider_request(works[0])
-    assert worker._reserve_provider_request(works[1])
+    assert worker._reserve_provider_request(works[0], 1, 1)
+    assert worker._reserve_provider_request(works[1], 1, 1)
 
     usage = user.repos.session.scalars(
         sa.select(HealthLabsNutritionProviderUsage)
@@ -1026,7 +1134,8 @@ def test_provider_apply_requeues_when_target_changes_after_the_final_check(
     ingredient = _recipe_ingredients(user, [f"provider-final-check-{token}"])[0]
     _configure_provider(user)
 
-    async def parse_one(_parser, source: str):
+    async def parse_one(parser, source: str):
+        _complete_provider_request(parser)
         return _parsed(source, quantity=2, unit=unit.name, food=food.name)
 
     monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
@@ -1046,6 +1155,7 @@ def test_provider_apply_requeues_when_target_changes_after_the_final_check(
     worker = NutritionReconciliationWorker(
         user.repos.session,
         provider_daily_request_limit=1,
+        **PROVIDER_BUDGET,
         now=datetime(2041, 10, 17, 12, tzinfo=UTC),
     )
     work = HealthLabsNutritionWork(
@@ -1080,13 +1190,19 @@ def test_ambiguous_provider_suggestion_is_sanitized_and_not_repeated(
     ingredient = _recipe_ingredients(user, [source])[0]
     calls = 0
 
-    async def parse_one(_parser, value: str):
+    async def parse_one(parser, value: str):
         nonlocal calls
+        _complete_provider_request(parser)
         calls += 1
         return _parsed(value, quantity=3, unit="mystery unit", food="mystery food")
 
     monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", parse_one)
-    worker = NutritionReconciliationWorker(user.repos.session, provider_daily_request_limit=10, now=NOW)
+    worker = NutritionReconciliationWorker(
+        user.repos.session,
+        provider_daily_request_limit=10,
+        **PROVIDER_BUDGET,
+        now=NOW,
+    )
     work = HealthLabsNutritionWork(
         group_id=user.group_id,
         kind="ingredient_structure",
@@ -1120,8 +1236,9 @@ def test_provider_allowance_defers_without_attempt_and_resets_next_utc_day(
     calls = 0
     budget_now = datetime(2026, 10, 20, tzinfo=UTC)
 
-    async def parse_one(_parser, source: str):
+    async def parse_one(parser, source: str):
         nonlocal calls
+        _complete_provider_request(parser)
         calls += 1
         return _parsed(source, quantity=1, unit="unknown unit", food="unknown food")
 
@@ -1173,11 +1290,17 @@ def test_provider_failures_retry_after_five_and_thirty_minutes_then_stop(
     ingredient = _recipe_ingredients(user, [f"malformed-{uuid4()}"])[0]
     retry_now = datetime(2026, 10, 22, tzinfo=UTC)
 
-    async def malformed(*_args, **_kwargs):
+    async def malformed(parser, *_args, **_kwargs):
+        _complete_provider_request(parser)
         raise ValueError("raw provider response must not be stored")
 
     monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.OpenAIParser.parse_one", malformed)
-    worker = NutritionReconciliationWorker(user.repos.session, provider_daily_request_limit=3, now=retry_now)
+    worker = NutritionReconciliationWorker(
+        user.repos.session,
+        provider_daily_request_limit=3,
+        **PROVIDER_BUDGET,
+        now=retry_now,
+    )
     work = HealthLabsNutritionWork(
         group_id=user.group_id,
         kind="ingredient_structure",
@@ -1194,6 +1317,7 @@ def test_provider_failures_retry_after_five_and_thirty_minutes_then_stop(
         current_worker = NutritionReconciliationWorker(
             user.repos.session,
             provider_daily_request_limit=3,
+            **PROVIDER_BUDGET,
             now=now,
         )
         current_work = user.repos.session.get(HealthLabsNutritionWork, work_id)

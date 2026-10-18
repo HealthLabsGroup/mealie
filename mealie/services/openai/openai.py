@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 from textwrap import dedent
 from typing import TYPE_CHECKING, TypeVar
@@ -27,12 +28,18 @@ from .._base_service import BaseService
 
 T = TypeVar("T", bound=OpenAIBase)
 logger = root_logger.get_logger(__name__)
+# Covers provider message/schema framing outside the serialized request content.
+REQUEST_TOKEN_OVERHEAD = 1024
 
 
 class OpenAINotEnabledException(Exception):
     def __init__(self, message: str = "OpenAI not enabled"):
         self.message = message
         super().__init__(self.message)
+
+
+class OpenAIRequestRejected(Exception):
+    pass
 
 
 class OpenAIDataInjection(BaseModel):
@@ -342,7 +349,15 @@ class OpenAIService(BaseService):
         return "\n".join(content_parts)
 
     async def _get_raw_response(
-        self, prompt: str, content: list[dict], response_schema: type[T], provider: AIProviderOut
+        self,
+        prompt: str,
+        content: list[dict],
+        response_schema: type[T],
+        provider: AIProviderOut,
+        *,
+        max_completion_tokens: int | None = None,
+        request_guard: Callable[[int, int], bool] | None = None,
+        usage_callback: Callable[[dict[str, int]], None] | None = None,
     ) -> T | None:
         import openai
         from openai.types.chat import ChatCompletion
@@ -352,21 +367,47 @@ class OpenAIService(BaseService):
         # client-side validation runs as a post_parser that the raw-response path never
         # triggers, so we read the body ourselves and let parse_openai_response() below
         # do the parsing (e.g. of markdown-fenced JSON the SDK would otherwise discard).
-        async with client.chat.completions.with_streaming_response.parse(
-            messages=[
-                {
-                    "role": "system",
-                    "content": prompt,
-                },
-                {
-                    "role": "user",
-                    "content": content,
-                },
-            ],
-            model=provider.model,
-            response_format=response_schema,
-        ) as response:
+        messages = [
+            {
+                "role": "system",
+                "content": prompt,
+            },
+            {
+                "role": "user",
+                "content": content,
+            },
+        ]
+        if request_guard is not None:
+            if max_completion_tokens is None:
+                raise ValueError("max_completion_tokens is required with request_guard")
+            input_token_upper_bound = REQUEST_TOKEN_OVERHEAD + len(
+                json.dumps(
+                    {"messages": messages, "response_format": response_schema.model_json_schema()},
+                    separators=(",", ":"),
+                ).encode()
+            )
+            if not request_guard(input_token_upper_bound, max_completion_tokens):
+                raise OpenAIRequestRejected("request guard rejected provider request")
+
+        request: dict = {
+            "messages": messages,
+            "model": provider.model,
+            "response_format": response_schema,
+        }
+        if max_completion_tokens is not None:
+            request["max_completion_tokens"] = max_completion_tokens
+        async with client.chat.completions.with_streaming_response.parse(**request) as response:
             completion = ChatCompletion.model_validate(json.loads(await response.text()))
+
+        if completion.usage is not None and usage_callback is not None:
+            details = completion.usage.prompt_tokens_details
+            usage_callback(
+                {
+                    "input_tokens": completion.usage.prompt_tokens,
+                    "cached_input_tokens": (details.cached_tokens or 0) if details is not None else 0,
+                    "output_tokens": completion.usage.completion_tokens,
+                }
+            )
 
         for choice in completion.choices:
             if choice.finish_reason == "length":
@@ -387,6 +428,9 @@ class OpenAIService(BaseService):
         response_schema: type[T],
         attachments: list[OpenAIAttachment] | None = None,
         provider: AIProviderOut | None = None,
+        max_completion_tokens: int | None = None,
+        request_guard: Callable[[int, int], bool] | None = None,
+        usage_callback: Callable[[dict[str, int]], None] | None = None,
     ) -> T | None:
         """Send data to OpenAI and return the response message content"""
         import openai
@@ -397,7 +441,17 @@ class OpenAIService(BaseService):
             for attachment in attachments or []:
                 user_messages.append(attachment.build_message())
 
-            return await self._get_raw_response(prompt, user_messages, response_schema, provider)
+            return await self._get_raw_response(
+                prompt,
+                user_messages,
+                response_schema,
+                provider,
+                max_completion_tokens=max_completion_tokens,
+                request_guard=request_guard,
+                usage_callback=usage_callback,
+            )
+        except OpenAIRequestRejected:
+            raise
         except openai.RateLimitError as e:
             raise exceptions.RateLimitError(str(e)) from e
         except Exception as e:

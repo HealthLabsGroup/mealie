@@ -88,7 +88,7 @@ The HealthLabs extension adds these Mealie-owned records:
 | `healthlabs_food_portions` | Conversion from a portion or standardized unit to edible grams: source-managed rows are global, while editor-measured rows belong to one workspace. |
 | `healthlabs_branded_products` | Barcode product facts kept logically separate from the generic catalogue because Open Food Facts uses ODbL. |
 | `healthlabs_nutrition_work` | Group-scoped, fingerprinted ingredient, food-match, and portion work with retry and lease state. |
-| `healthlabs_nutrition_provider_usage` | One persisted request counter per UTC day for the deployment-wide provider allowance. |
+| `healthlabs_nutrition_provider_usage` | Deployment-wide daily provider requests, reserved/spent micro-USD, and sanitized token totals. |
 
 `healthlabs_food_matches` is the only editable link between a Mealie food and
 nutrient truth. A source re-import may update source records but must not replace
@@ -225,10 +225,11 @@ the existing audited match route.
 
 ## Background reconciliation
 
-Mealie's existing scheduler runs a bounded reconciliation tick every five
-minutes. Each tick discovers at most 20 changed targets, claims due work with a
-15-minute lease, and commits each target independently. A concurrent in-process
-tick exits immediately; after a restart, an expired lease is reclaimable.
+Mealie's existing scheduler runs reconciliation every five minutes. A tick
+repeats 20-target batches until the queue is idle or its four-minute wall-time
+limit is reached. It claims due work with a 15-minute lease and commits each
+target independently. A concurrent in-process tick exits immediately; after a
+restart, an expired lease is reclaimable.
 
 The persisted states are `pending`, `running`, `review_required`, `completed`,
 and `failed`. Provider errors retry after 5 and 30 minutes, then stop after the
@@ -245,13 +246,21 @@ Processing stays deterministic:
 4. Use the group's configured parser provider only for unresolved ingredient
    structure, and apply its result only when it resolves exactly.
 
-`HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT` is the deployment-wide
-maximum provider requests per UTC day and defaults to `0`. Zero disables paid
-calls while deterministic work continues. The counter is persisted before a
-request, so a crash cannot cause an uncounted repeat. Provider credentials stay
-in runtime provider settings; they are never copied into the image, repository,
-work result, or logs. A positive DEV value requires an explicitly approved
-daily monetary ceiling.
+Paid parsing is enabled only when all required controls are positive:
+`HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT`,
+`HEALTHLABS_NUTRITION_PROVIDER_DAILY_BUDGET_USD`, and at least one of the input
+or output USD-per-million-token rates. They all default to `0`, so deterministic
+work continues without provider calls. `HEALTHLABS_NUTRITION_PROVIDER_MAX_OUTPUT_TOKENS`
+defaults to `256`. Before every request, the worker atomically reserves the
+worst-case input-byte/token bound plus the output cap; the response replaces
+that reservation with sanitized token and micro-USD totals when usage is
+returned. Missing usage or a crash leaves the reservation charged for that UTC
+day rather than risking an overspend.
+
+Provider credentials stay in runtime provider settings; they are never copied
+into the image, repository, work result, usage record, or logs. Automatic food
+approval remains disabled until a representative labelled evaluation set proves
+the exact/alias policy; source candidates continue to require Curator review.
 
 `nutrition:write` editors see current group status and up to 50 review rows
 above the existing food queue. Exact provider results are applied automatically;
@@ -263,8 +272,9 @@ returned.
 Operators can monitor state counts through `worker-status` and the sanitized
 scheduler summary. A growing `failed` count indicates provider or data errors;
 long-lived `running` rows are automatically reclaimed after the lease. To stop
-paid processing without stopping deterministic reconciliation, set the daily
-limit to `0` and restart. To roll back the feature, unregister the scheduler
+paid processing without stopping deterministic reconciliation, set the request
+limit or USD budget to `0` and restart. To roll back the feature, unregister the
+scheduler
 callback and revert the additive API/UI while retaining the work tables; only
 drop them with the paired migration after confirming no review state is needed.
 

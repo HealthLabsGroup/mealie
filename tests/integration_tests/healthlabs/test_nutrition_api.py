@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Callable
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 import sqlalchemy as sa
@@ -518,7 +519,14 @@ def test_worker_status_reports_configured_exhausted_provider_without_exposing_ot
 ) -> None:
     editor, headers = healthlabs_provision()
     healthlabs_set_capabilities(editor["userId"], HealthLabsCapability.NUTRITION_WRITE)
-    monkeypatch.setattr(get_app_settings(), "HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT", 1)
+    app_settings = get_app_settings()
+    monkeypatch.setattr(app_settings, "HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT", 1)
+    monkeypatch.setattr(app_settings, "HEALTHLABS_NUTRITION_PROVIDER_DAILY_BUDGET_USD", Decimal("1"))
+    monkeypatch.setattr(
+        app_settings,
+        "HEALTHLABS_NUTRITION_PROVIDER_INPUT_USD_PER_MILLION_TOKENS",
+        Decimal("1"),
+    )
     session = unfiltered_database.session
     settings = session.scalar(
         sa.select(AIProviderSettings).where(AIProviderSettings.group_id == UUID(editor["groupId"]))

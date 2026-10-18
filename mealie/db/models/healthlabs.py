@@ -315,11 +315,28 @@ class HealthLabsNutritionProviderUsage(SqlAlchemyBase, BaseMixins):
             "request_count >= 0",
             name="healthlabs_nutrition_provider_usage_count_nonnegative",
         ),
+        sa.CheckConstraint(
+            "reserved_microusd >= 0",
+            name="healthlabs_nutrition_provider_usage_reserved_nonnegative",
+        ),
+        sa.CheckConstraint(
+            "spent_microusd >= 0",
+            name="healthlabs_nutrition_provider_usage_spent_nonnegative",
+        ),
+        sa.CheckConstraint(
+            "input_tokens >= 0 AND cached_input_tokens >= 0 AND output_tokens >= 0",
+            name="healthlabs_nutrition_provider_usage_tokens_nonnegative",
+        ),
     )
 
     id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
     usage_date: Mapped[date] = mapped_column(sa.Date, nullable=False)
     request_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
+    reserved_microusd: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
+    spent_microusd: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
+    input_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
+    cached_input_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
 
 
 class HealthLabsBrandedProduct(SqlAlchemyBase, BaseMixins):

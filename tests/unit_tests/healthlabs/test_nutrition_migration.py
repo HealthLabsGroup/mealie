@@ -29,6 +29,11 @@ def _worker_migration():
     return import_file("add_healthlabs_nutrition_work", path)
 
 
+def _provider_budget_migration():
+    path = next(ALEMBIC_MIGRATIONS.glob("*af24c6e18d7b*.py"))
+    return import_file("track_healthlabs_provider_cost", path)
+
+
 def _prepare_legacy_portion(connection, *, matched_groups: int) -> tuple[str, tuple[str, ...]]:
     connection.execute(sa.text("PRAGMA foreign_keys=ON"))
     connection.execute(sa.text("CREATE TABLE users (id CHAR(32) PRIMARY KEY)"))
@@ -177,6 +182,44 @@ def test_worker_migration_adds_and_removes_persisted_work_tables() -> None:
             assert {"healthlabs_nutrition_work", "healthlabs_nutrition_provider_usage"}.isdisjoint(
                 sa.inspect(connection).get_table_names()
             )
+    finally:
+        engine.dispose()
+
+
+def test_provider_budget_migration_tracks_reserved_cost_and_token_usage() -> None:
+    worker_migration = _worker_migration()
+    budget_migration = _provider_budget_migration()
+    engine = sa.create_engine("sqlite://")
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(sa.text("CREATE TABLE groups (id CHAR(32) PRIMARY KEY)"))
+            with Operations.context(MigrationContext.configure(connection)):
+                worker_migration.upgrade()
+                budget_migration.upgrade()
+
+            inspector = sa.inspect(connection)
+            assert {
+                "reserved_microusd",
+                "spent_microusd",
+                "input_tokens",
+                "cached_input_tokens",
+                "output_tokens",
+            } <= {column["name"] for column in inspector.get_columns("healthlabs_nutrition_provider_usage")}
+            assert {
+                constraint["name"]
+                for constraint in inspector.get_check_constraints("healthlabs_nutrition_provider_usage")
+            } >= {
+                "healthlabs_nutrition_provider_usage_reserved_nonnegative",
+                "healthlabs_nutrition_provider_usage_spent_nonnegative",
+                "healthlabs_nutrition_provider_usage_tokens_nonnegative",
+            }
+
+            with Operations.context(MigrationContext.configure(connection)):
+                budget_migration.downgrade()
+            assert "reserved_microusd" not in {
+                column["name"] for column in sa.inspect(connection).get_columns("healthlabs_nutrition_provider_usage")
+            }
     finally:
         engine.dispose()
 

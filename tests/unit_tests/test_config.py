@@ -1,6 +1,7 @@
 import json
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,27 @@ def test_nutrition_provider_daily_request_limit_defaults_off_and_rejects_negativ
     assert get_app_settings().HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT == 0
 
     monkeypatch.setenv("HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT", "-1")
+    get_app_settings.cache_clear()
+    with pytest.raises(ValidationError):
+        get_app_settings()
+
+
+def test_nutrition_provider_cost_controls_default_off_and_reject_negative_values(monkeypatch):
+    names = (
+        "HEALTHLABS_NUTRITION_PROVIDER_DAILY_BUDGET_USD",
+        "HEALTHLABS_NUTRITION_PROVIDER_INPUT_USD_PER_MILLION_TOKENS",
+        "HEALTHLABS_NUTRITION_PROVIDER_OUTPUT_USD_PER_MILLION_TOKENS",
+    )
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    get_app_settings.cache_clear()
+    settings = get_app_settings()
+    assert settings.HEALTHLABS_NUTRITION_PROVIDER_DAILY_BUDGET_USD == Decimal("0")
+    assert settings.HEALTHLABS_NUTRITION_PROVIDER_INPUT_USD_PER_MILLION_TOKENS == Decimal("0")
+    assert settings.HEALTHLABS_NUTRITION_PROVIDER_OUTPUT_USD_PER_MILLION_TOKENS == Decimal("0")
+    assert settings.HEALTHLABS_NUTRITION_PROVIDER_MAX_OUTPUT_TOKENS == 256
+
+    monkeypatch.setenv("HEALTHLABS_NUTRITION_PROVIDER_DAILY_BUDGET_USD", "-0.01")
     get_app_settings.cache_clear()
     with pytest.raises(ValidationError):
         get_app_settings()

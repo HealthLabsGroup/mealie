@@ -7,8 +7,8 @@ from pathlib import Path
 from mealie.schema.healthlabs.nutrition_curator import NutritionCuratorCandidateSet
 
 PERSONA_VERSION = "healthlabs-nutrition-curator-apple-v1"
-PROMPT_VERSION = "healthlabs-nutrition-curator-v1"
-POLICY_VERSION = "healthlabs-nutrition-curator-policy-v1"
+PROMPT_VERSION = "healthlabs-nutrition-curator-v2"
+POLICY_VERSION = "healthlabs-nutrition-curator-policy-v2"
 _PROMPT_PATH = Path(__file__).resolve().parents[1] / "openai/prompts/healthlabs/nutrition-curator.txt"
 
 

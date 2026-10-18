@@ -248,6 +248,7 @@ def test_provider_failures_retry_after_five_and_thirty_minutes_then_stop(
     unique_user_fn_scoped: TestUser,
     monkeypatch: pytest.MonkeyPatch,
     curator_settings,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     user = unique_user_fn_scoped
     _, _, work = _food_work(user)
@@ -276,6 +277,8 @@ def test_provider_failures_retry_after_five_and_thirty_minutes_then_stop(
     report = NutritionCuratorWorker(user.repos.session, now=NOW + timedelta(days=1)).run_once()
     assert report.claimed == 0
     assert user.repos.session.get(HealthLabsNutritionCuratorDecision, decision_id).state == "failed"
+    assert caplog.text.count("Nutrition curator provider failure error_type=RuntimeError") == 3
+    assert "secret provider body" not in caplog.text
 
 
 def test_lease_bounds_call_and_retry_starts_after_provider_finishes(

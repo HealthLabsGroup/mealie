@@ -7,6 +7,7 @@
 
 export type WebhookType = "mealplan";
 export type AuthMethod = "Mealie" | "LDAP" | "OIDC";
+export type UserType = "human" | "agent";
 
 export interface ChangePassword {
   currentPassword?: string;
@@ -148,6 +149,7 @@ export interface PrivateUser {
   groupSlug: string;
   householdId: string;
   householdSlug: string;
+  userType: UserType;
   tokens?: LongLiveTokenOut[] | null;
   cacheKey: string;
   password: string;
@@ -272,6 +274,7 @@ export interface UserOut {
   groupSlug: string;
   householdId: string;
   householdSlug: string;
+  userType: UserType;
   tokens?: LongLiveTokenOut[] | null;
   cacheKey: string;
 }

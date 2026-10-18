@@ -39,6 +39,11 @@ def _auto_match_migration():
     return import_file("auto_apply_nutrition_matches", path)
 
 
+def _curator_migration():
+    path = next(ALEMBIC_MIGRATIONS.glob("*c146e8a30f9d*.py"))
+    return import_file("add_healthlabs_nutrition_curator", path)
+
+
 def _prepare_legacy_portion(connection, *, matched_groups: int) -> tuple[str, tuple[str, ...]]:
     connection.execute(sa.text("PRAGMA foreign_keys=ON"))
     connection.execute(sa.text("CREATE TABLE users (id CHAR(32) PRIMARY KEY)"))
@@ -319,5 +324,167 @@ def test_portion_scope_migration_rejects_unknown_or_ambiguous_legacy_owners(matc
             assert "group_id" not in {
                 column["name"] for column in sa.inspect(connection).get_columns("healthlabs_food_portions")
             }
+    finally:
+        engine.dispose()
+
+
+def test_curator_migration_backfills_users_protects_evidence_and_downgrades_empty_state() -> None:
+    migration = _curator_migration()
+    engine = sa.create_engine("sqlite://")
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(sa.text("PRAGMA foreign_keys=ON"))
+            connection.execute(sa.text("CREATE TABLE users (id CHAR(32) PRIMARY KEY)"))
+            connection.execute(sa.text("CREATE TABLE groups (id CHAR(32) PRIMARY KEY)"))
+            connection.execute(sa.text("CREATE TABLE ai_providers (id CHAR(32) PRIMARY KEY)"))
+            connection.execute(
+                sa.text("CREATE TABLE healthlabs_nutrition_work (id CHAR(32) PRIMARY KEY, group_id CHAR(32) NOT NULL)")
+            )
+            connection.execute(
+                sa.text("CREATE TABLE ingredient_foods (id CHAR(32) PRIMARY KEY, group_id CHAR(32) NOT NULL)")
+            )
+            connection.execute(
+                sa.text("CREATE TABLE ingredient_units (id CHAR(32) PRIMARY KEY, group_id CHAR(32) NOT NULL)")
+            )
+            connection.execute(sa.text("CREATE TABLE healthlabs_food_portions (id CHAR(32) PRIMARY KEY)"))
+            connection.execute(sa.text("INSERT INTO users (id) VALUES ('11111111111111111111111111111111')"))
+            connection.execute(sa.text("INSERT INTO groups (id) VALUES ('22222222222222222222222222222222')"))
+            connection.execute(
+                sa.text(
+                    "INSERT INTO healthlabs_nutrition_work (id, group_id) VALUES "
+                    "('33333333333333333333333333333333', '22222222222222222222222222222222')"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO ingredient_foods (id, group_id) VALUES "
+                    "('44444444444444444444444444444444', '22222222222222222222222222222222')"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO ingredient_units (id, group_id) VALUES "
+                    "('55555555555555555555555555555555', '22222222222222222222222222222222')"
+                )
+            )
+            connection.execute(
+                sa.text("INSERT INTO healthlabs_food_portions (id) VALUES ('66666666666666666666666666666666')")
+            )
+
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.upgrade()
+
+            assert migration.down_revision == "b035d7f29e8c"
+            inspector = sa.inspect(connection)
+            assert connection.scalar(sa.text("SELECT user_type FROM users")) == "human"
+            assert {
+                "healthlabs_nutrition_curator_decisions",
+                "healthlabs_food_portion_mappings",
+            } <= set(inspector.get_table_names())
+            assert {
+                constraint["name"]
+                for constraint in inspector.get_check_constraints("healthlabs_nutrition_curator_decisions")
+            } >= {
+                "healthlabs_nutrition_curator_attempt_nonnegative",
+                "healthlabs_nutrition_curator_confidence_valid",
+                "healthlabs_nutrition_curator_kind_valid",
+                "healthlabs_nutrition_curator_runner_up_confidence_valid",
+                "healthlabs_nutrition_curator_state_valid",
+            }
+            assert {index["name"] for index in inspector.get_indexes("healthlabs_nutrition_curator_decisions")} >= {
+                "healthlabs_nutrition_curator_due_idx",
+                "ix_healthlabs_nutrition_curator_decisions_group_id",
+            }
+            decision_foreign_keys = {
+                tuple(foreign_key["constrained_columns"]): (
+                    foreign_key["referred_table"],
+                    foreign_key["options"].get("ondelete"),
+                )
+                for foreign_key in inspector.get_foreign_keys("healthlabs_nutrition_curator_decisions")
+            }
+            assert decision_foreign_keys[("work_id",)] == ("healthlabs_nutrition_work", "SET NULL")
+            assert decision_foreign_keys[("group_id",)] == ("groups", "CASCADE")
+            assert decision_foreign_keys[("agent_user_id",)] == ("users", "RESTRICT")
+
+            connection.execute(
+                sa.text(
+                    "INSERT INTO healthlabs_nutrition_curator_decisions "
+                    "(id, work_id, group_id, kind, target_id, work_input_sha256, curator_sha256, "
+                    "agent_user_id, state, attempt_count, candidate_snapshot, provider_name, provider_model, "
+                    "prompt_version, next_attempt_at) VALUES "
+                    "('77777777777777777777777777777777', '33333333333333333333333333333333', "
+                    "'22222222222222222222222222222222', 'portion_resolution', "
+                    "'44444444444444444444444444444444', :work_sha, :curator_sha, "
+                    "'11111111111111111111111111111111', 'approved', 0, '{}', "
+                    "'test-provider', 'test-model', 'healthlabs-nutrition-curator-v1', '2026-10-18')"
+                ),
+                {"work_sha": "a" * 64, "curator_sha": "b" * 64},
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO healthlabs_food_portion_mappings "
+                    "(id, group_id, ingredient_food_id, ingredient_unit_id, food_portion_id, "
+                    "reviewed_by_user_id, curator_decision_id) VALUES "
+                    "('88888888888888888888888888888888', '22222222222222222222222222222222', "
+                    "'44444444444444444444444444444444', '55555555555555555555555555555555', "
+                    "'66666666666666666666666666666666', '11111111111111111111111111111111', "
+                    "'77777777777777777777777777777777')"
+                )
+            )
+            mapping_foreign_keys = {
+                tuple(foreign_key["constrained_columns"]): (
+                    foreign_key["referred_table"],
+                    foreign_key["options"].get("ondelete"),
+                )
+                for foreign_key in inspector.get_foreign_keys("healthlabs_food_portion_mappings")
+            }
+            assert mapping_foreign_keys == {
+                ("curator_decision_id",): ("healthlabs_nutrition_curator_decisions", "RESTRICT"),
+                ("food_portion_id",): ("healthlabs_food_portions", "RESTRICT"),
+                ("group_id",): ("groups", "CASCADE"),
+                ("ingredient_food_id",): ("ingredient_foods", "RESTRICT"),
+                ("ingredient_unit_id",): ("ingredient_units", "RESTRICT"),
+                ("reviewed_by_user_id",): ("users", "RESTRICT"),
+            }
+            with pytest.raises(sa.exc.IntegrityError):
+                with connection.begin_nested():
+                    connection.execute(
+                        sa.text("DELETE FROM healthlabs_food_portions WHERE id = '66666666666666666666666666666666'")
+                    )
+            connection.execute(
+                sa.text("DELETE FROM healthlabs_nutrition_work WHERE id = '33333333333333333333333333333333'")
+            )
+            assert (
+                connection.scalar(
+                    sa.text(
+                        "SELECT work_id FROM healthlabs_nutrition_curator_decisions "
+                        "WHERE id = '77777777777777777777777777777777'"
+                    )
+                )
+                is None
+            )
+
+            with pytest.raises(RuntimeError, match="Curator evidence still exists"):
+                with Operations.context(MigrationContext.configure(connection)):
+                    migration.downgrade()
+
+            connection.execute(sa.text("DELETE FROM healthlabs_food_portion_mappings"))
+            connection.execute(sa.text("DELETE FROM healthlabs_nutrition_curator_decisions"))
+            connection.execute(sa.text("UPDATE users SET user_type = 'agent'"))
+            with pytest.raises(RuntimeError, match="agent users still exist"):
+                with Operations.context(MigrationContext.configure(connection)):
+                    migration.downgrade()
+
+            connection.execute(sa.text("UPDATE users SET user_type = 'human'"))
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.downgrade()
+
+            inspector = sa.inspect(connection)
+            assert "user_type" not in {column["name"] for column in inspector.get_columns("users")}
+            assert {
+                "healthlabs_nutrition_curator_decisions",
+                "healthlabs_food_portion_mappings",
+            }.isdisjoint(inspector.get_table_names())
     finally:
         engine.dispose()

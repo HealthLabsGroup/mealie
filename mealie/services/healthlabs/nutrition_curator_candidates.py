@@ -15,6 +15,7 @@ from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
     HealthLabsFoodMatchSuppression,
     HealthLabsFoodPortion,
+    HealthLabsFoodPortionMapping,
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
     HealthLabsNutritionWork,
@@ -245,6 +246,17 @@ class NutritionCuratorCandidateService:
         )
         if food is None or unit is None or match is None:
             return None
+        mapping = self.session.scalar(
+            sa.select(HealthLabsFoodPortionMapping).where(
+                HealthLabsFoodPortionMapping.group_id == work.group_id,
+                HealthLabsFoodPortionMapping.ingredient_food_id == food.id,
+                HealthLabsFoodPortionMapping.ingredient_unit_id == unit.id,
+            )
+        )
+        if mapping is not None:
+            mapped_portion = self.session.get(HealthLabsFoodPortion, mapping.food_portion_id)
+            if mapped_portion is not None and mapped_portion.nutrient_food_id == match.nutrient_food_id:
+                return None
         if not match.auto_applied and (match.reviewed_by_user_id is None or match.reviewed_at is None):
             return None
 

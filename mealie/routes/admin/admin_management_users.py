@@ -10,7 +10,7 @@ from mealie.routes._base.mixins import HttpRepo
 from mealie.schema.response.pagination import PaginationQuery
 from mealie.schema.response.responses import ErrorResponse
 from mealie.schema.user.auth import UnlockResults
-from mealie.schema.user.user import UserIn, UserOut, UserPagination
+from mealie.schema.user.user import UserIn, UserOut, UserPagination, UserUpdate
 from mealie.schema.user.user_passwords import ForgotPassword, PasswordResetToken
 from mealie.services.healthlabs.nutrition_curator_identity_service import assert_interactive_user
 from mealie.services.user_services.password_reset_service import PasswordResetService
@@ -30,7 +30,7 @@ class AdminUserManagementRoutes(BaseAdminController):
 
     @property
     def mixins(self):
-        return HttpRepo[UserIn, UserOut, UserOut](self.repo, self.logger, self.registered_exceptions)
+        return HttpRepo[UserIn, UserUpdate, UserOut](self.repo, self.logger, self.registered_exceptions)
 
     @router.get("", response_model=UserPagination)
     def get_all(self, q: PaginationQuery = Depends(PaginationQuery)):
@@ -64,7 +64,7 @@ class AdminUserManagementRoutes(BaseAdminController):
         return self.mixins.get_one(item_id)
 
     @router.put("/{item_id}", response_model=UserOut)
-    def update_one(self, item_id: UUID4, data: UserOut):
+    def update_one(self, item_id: UUID4, data: UserUpdate):
         target = self.session.get(User, item_id)
         if target is not None:
             assert_interactive_user(target)

@@ -200,12 +200,46 @@ def test_worker_calls_only_bounded_prompt_and_finalizes_one_decision(
     assert message.startswith("<untrusted_context>\n") and message.endswith("\n</untrusted_context>")
     assert "offline-test-key" not in prompt + message
     assert "nutrient_values" not in message and "kcal" not in message
-    decisions = user.repos.session.scalars(sa.select(HealthLabsNutritionCuratorDecision)).all()
+    decisions = user.repos.session.scalars(
+        sa.select(HealthLabsNutritionCuratorDecision).where(
+            HealthLabsNutritionCuratorDecision.group_id == user.group_id
+        )
+    ).all()
     assert len(decisions) == 1 and decisions[0].state == "approved"
     untouched = second_work if decisions[0].work_id == first_work.id else first_work
     assert user.repos.session.get(HealthLabsNutritionWork, untouched.id).state == "review_required"
     untouched.state = "completed"
     user.repos.session.commit()
+
+
+def test_terminal_decision_is_skipped_before_next_eligible_work(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch: pytest.MonkeyPatch,
+    curator_settings,
+) -> None:
+    user = unique_user_fn_scoped
+    skipped_food, _, skipped_work = _food_work(user)
+    _, _, eligible_work = _food_work(user, provider=False)
+    skipped_work.next_attempt_at = NOW - timedelta(minutes=1)
+    skipped_work.input_sha256 = NutritionFingerprintService(
+        user.repos.session, country="GB", provider_enabled=True
+    ).food(skipped_food, None)
+    service = NutritionCuratorService(user.repos.session, now=NOW)
+    skipped = service.start(skipped_work.id)
+    assert skipped is not None
+    decision = user.repos.session.get(HealthLabsNutritionCuratorDecision, skipped.decision_id)
+    assert decision is not None
+    decision.state = "insufficient_evidence"
+    decision.lease_expires_at = None
+    user.repos.session.commit()
+    calls: list[tuple[str, str]] = []
+    _install_success(monkeypatch, calls)
+
+    report = NutritionCuratorWorker(user.repos.session, now=NOW).run_once()
+
+    assert (report.claimed, report.approved) == (1, 1)
+    assert len(calls) == 1
+    assert user.repos.session.get(HealthLabsNutritionWork, eligible_work.id).state == "completed"
 
 
 def test_provider_failures_retry_after_five_and_thirty_minutes_then_stop(

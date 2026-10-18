@@ -300,6 +300,23 @@ export interface UserRatingUpdate {
   rating?: number | null;
   isFavorite?: boolean | null;
 }
+export interface UserUpdate {
+  id: string;
+  username?: string | null;
+  fullName?: string | null;
+  email: string;
+  authMethod?: AuthMethod;
+  admin?: boolean;
+  group: string;
+  household: string;
+  advanced?: boolean;
+  showAnnouncements?: boolean;
+  lastReadAnnouncement?: string | null;
+  canInvite?: boolean;
+  canManage?: boolean;
+  canManageHousehold?: boolean;
+  canOrganize?: boolean;
+}
 export interface ValidateResetToken {
   token: string;
 }

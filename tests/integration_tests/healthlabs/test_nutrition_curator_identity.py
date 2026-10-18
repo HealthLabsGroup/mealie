@@ -7,6 +7,7 @@ import sqlalchemy as sa
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from mealie.core.config import get_app_settings
 from mealie.core.security import create_access_token, hash_password
 from mealie.core.security.providers.openid_provider import OpenIDProvider
 from mealie.db.db_setup import session_context
@@ -171,6 +172,65 @@ def test_agent_cannot_authenticate_or_use_an_already_signed_jwt(
         session.scalar(sa.select(sa.func.count()).select_from(LongLiveToken).where(LongLiveToken.user_id == agent.id))
         == 0
     )
+
+
+def test_oidc_rejects_agent_before_profile_mutation(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = unique_user_fn_scoped.repos.session
+    agent = NutritionCuratorIdentityService(session).get_or_create(unique_user_fn_scoped._group_id)
+    monkeypatch.setenv("OIDC_REQUIRES_GROUP_CLAIM", "true")
+    monkeypatch.setenv("OIDC_GROUPS_CLAIM", "groups")
+    monkeypatch.setenv("OIDC_ADMIN_GROUP", "admins")
+    get_app_settings.cache_clear()
+    try:
+        with pytest.raises(HTTPException) as error:
+            OpenIDProvider(
+                session,
+                {
+                    "sub": agent.external_subject_id,
+                    "preferred_username": agent.username,
+                    "email": agent.email,
+                    "email_verified": True,
+                    "name": agent.full_name,
+                    "groups": ["admins"],
+                    "picture": "https://images.example/apple.png",
+                },
+            ).authenticate()
+        assert error.value.status_code == 403
+        session.expire_all()
+        unchanged = session.get(User, agent.id)
+        assert unchanged is not None
+        assert unchanged.admin is False
+        assert unchanged.external_avatar_hash is None
+    finally:
+        get_app_settings.cache_clear()
+
+
+def test_admin_update_cannot_change_human_user_type(
+    api_client: TestClient,
+    admin_token: dict[str, str],
+    unique_user_fn_scoped: TestUser,
+) -> None:
+    response = api_client.get(
+        api_routes.admin_users_item_id(unique_user_fn_scoped.user_id),
+        headers=admin_token,
+    )
+    assert response.status_code == 200
+    update = response.json()
+    update["userType"] = "agent"
+
+    response = api_client.put(
+        api_routes.admin_users_item_id(unique_user_fn_scoped.user_id),
+        headers=admin_token,
+        json=update,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["userType"] == "human"
+    unique_user_fn_scoped.repos.session.expire_all()
+    assert unique_user_fn_scoped.repos.session.get(User, unique_user_fn_scoped.user_id).user_type is UserType.HUMAN
 
 
 def test_password_reset_and_admin_user_management_cannot_mutate_agent(

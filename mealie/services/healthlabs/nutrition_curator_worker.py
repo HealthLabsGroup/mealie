@@ -107,6 +107,7 @@ class NutritionCuratorWorker:
             if after > before:
                 self.session.commit()
                 return NutritionCuratorReport(1, 0, 1, 0, False)
+            self.session.rollback()
         if started is None:
             self.session.commit()
             return empty

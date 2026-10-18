@@ -295,6 +295,7 @@ class NutritionCuratorService:
                     access_reason=f"Nutrition curator decision {decision.id}",
                     break_glass_reason=None,
                     match_method="agent",
+                    expected_input_sha256=decision.work_input_sha256,
                 )
             except LookupError, NutritionConflict, PermissionError, ValueError:
                 return False
@@ -329,17 +330,41 @@ class NutritionCuratorService:
                 HealthLabsFoodPortionMapping.ingredient_unit_id == unit.id,
             )
         )
-        if mapping is None:
-            mapping = HealthLabsFoodPortionMapping(
-                group_id=decision.group_id,
-                ingredient_food_id=food.id,
-                ingredient_unit_id=unit.id,
-            )
-            self.session.add(mapping)
-        mapping.food_portion_id = portion.id
-        mapping.reviewed_by_user_id = agent.id
-        mapping.curator_decision_id = decision.id
-        self.session.flush()
+        if mapping is not None:
+            mapped_portion = self.session.get(HealthLabsFoodPortion, mapping.food_portion_id)
+            if mapped_portion is not None and mapped_portion.nutrient_food_id == match.nutrient_food_id:
+                return False
+            replaced = self.session.execute(
+                sa.update(HealthLabsFoodPortionMapping)
+                .where(
+                    HealthLabsFoodPortionMapping.id == mapping.id,
+                    HealthLabsFoodPortionMapping.food_portion_id == mapping.food_portion_id,
+                )
+                .values(
+                    food_portion_id=portion.id,
+                    reviewed_by_user_id=agent.id,
+                    curator_decision_id=decision.id,
+                )
+                .execution_options(synchronize_session=False)
+            ).rowcount
+            if replaced != 1:
+                return False
+            self.session.expire(mapping)
+            return True
+        mapping = HealthLabsFoodPortionMapping(
+            group_id=decision.group_id,
+            ingredient_food_id=food.id,
+            ingredient_unit_id=unit.id,
+            food_portion_id=portion.id,
+            reviewed_by_user_id=agent.id,
+            curator_decision_id=decision.id,
+        )
+        try:
+            with self.session.begin_nested():
+                self.session.add(mapping)
+                self.session.flush()
+        except IntegrityError:
+            return False
         return True
 
     def _finalize(

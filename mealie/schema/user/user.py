@@ -167,6 +167,12 @@ class UserIn(UserBase):
     password: str
 
 
+class UserUpdate(UserBase):
+    id: UUID4
+    group: str
+    household: str
+
+
 class UserOut(UserBase):
     id: UUID4
     group: str

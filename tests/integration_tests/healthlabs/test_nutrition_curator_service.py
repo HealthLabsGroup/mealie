@@ -5,8 +5,10 @@ import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from mealie.db.db_setup import session_context
 from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
 from mealie.db.models.healthlabs import (
     HealthLabsAccessAudit,
@@ -353,6 +355,127 @@ def test_apply_revalidates_every_stale_boundary(
     assert match is None or match.reviewed_by_user_id == user.user_id
 
 
+def test_food_apply_rejects_concurrent_target_edit(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = unique_user_fn_scoped
+    _, food, _, nutrient_food, work = _food_case(user)
+    service = NutritionCuratorService(user.repos.session)
+    started = service.start(work.id)
+    assert started is not None
+    user.repos.session.commit()
+    original = NutritionService.set_match
+
+    def edit_before_set_match(self, food_id, data, **kwargs):
+        with session_context() as concurrent:
+            current = concurrent.get(IngredientFoodModel, food_id)
+            assert current is not None
+            current.name = f"raw beef {uuid4().hex[:8]}"
+            concurrent.commit()
+        return original(self, food_id, data, **kwargs)
+
+    monkeypatch.setattr(NutritionService, "set_match", edit_before_set_match)
+
+    assert service.apply(started.decision_id, _decision(nutrient_food.id), {}) == "insufficient_evidence"
+    user.repos.session.commit()
+    assert (
+        user.repos.session.scalar(
+            sa.select(HealthLabsFoodMatch.id).where(HealthLabsFoodMatch.ingredient_food_id == food.id)
+        )
+        is None
+    )
+
+
+def test_food_apply_serializes_edit_after_fingerprint_check(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = unique_user_fn_scoped
+    if user.repos.session.bind is None or user.repos.session.bind.dialect.name != "sqlite":
+        pytest.skip("SQLite write-lock regression")
+    _, food, _, nutrient_food, work = _food_case(user)
+    service = NutritionCuratorService(user.repos.session)
+    started = service.start(work.id)
+    assert started is not None
+    user.repos.session.commit()
+    original_name = food.name
+    original = NutritionService._authorize_write
+    blocked = False
+
+    def edit_before_authorize(self, food_id, *args, **kwargs):
+        nonlocal blocked
+        with session_context() as concurrent:
+            concurrent.execute(sa.text("PRAGMA busy_timeout = 0"))
+            current = concurrent.get(IngredientFoodModel, food_id)
+            assert current is not None
+            current.name = f"raw beef {uuid4().hex[:8]}"
+            try:
+                concurrent.commit()
+            except OperationalError:
+                blocked = True
+                concurrent.rollback()
+        return original(self, food_id, *args, **kwargs)
+
+    monkeypatch.setattr(NutritionService, "_authorize_write", edit_before_authorize)
+
+    assert service.apply(started.decision_id, _decision(nutrient_food.id), {}) == "approved"
+    user.repos.session.commit()
+    assert blocked
+    user.repos.session.expire_all()
+    assert user.repos.session.get(IngredientFoodModel, food.id).name == original_name
+
+
+def test_food_apply_preserves_human_review_before_write_lock(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = unique_user_fn_scoped
+    _, food, _, nutrient_food, work = _food_case(user)
+    match = HealthLabsFoodMatch(
+        ingredient_food_id=food.id,
+        nutrient_food_id=nutrient_food.id,
+        country="GB",
+        match_method="provider_ranked",
+        confidence=0.9,
+    )
+    user.repos.session.add(match)
+    user.repos.session.flush()
+    work.input_sha256 = NutritionFingerprintService(user.repos.session, country="GB", provider_enabled=True).food(
+        food, match
+    )
+    user.repos.session.commit()
+    service = NutritionCuratorService(user.repos.session)
+    started = service.start(work.id)
+    assert started is not None
+    user.repos.session.commit()
+    original_execute = user.repos.session.execute
+    injected = False
+
+    def review_before_food_lock(statement, *args, **kwargs):
+        nonlocal injected
+        if not injected and getattr(statement, "is_update", False) and statement.table.name == "ingredient_foods":
+            with session_context() as concurrent:
+                current = concurrent.get(HealthLabsFoodMatch, match.id)
+                assert current is not None
+                current.match_method = "manual"
+                current.reviewed_by_user_id = user.user_id
+                current.reviewed_at = datetime.now(UTC)
+                concurrent.commit()
+            injected = True
+        return original_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(user.repos.session, "execute", review_before_food_lock)
+
+    assert service.apply(started.decision_id, _decision(nutrient_food.id), {}) == "insufficient_evidence"
+    user.repos.session.commit()
+    user.repos.session.expire_all()
+    preserved = user.repos.session.get(HealthLabsFoodMatch, match.id)
+    assert injected
+    assert preserved is not None
+    assert (preserved.match_method, preserved.reviewed_by_user_id) == ("manual", user.user_id)
+
+
 def test_start_is_unique_and_empty_candidates_finalize_without_provider(unique_user_fn_scoped: TestUser) -> None:
     user = unique_user_fn_scoped
     _provider(user)
@@ -508,6 +631,13 @@ def test_portion_selection_maps_existing_row_and_drives_calculation(unique_user_
         unit="piece",
         grams=123,
     )
+    later_portion = HealthLabsFoodPortion(
+        nutrient_food_id=nutrient_food.id,
+        description="large piece",
+        amount=1,
+        unit="piece",
+        grams=456,
+    )
     recipe = user.repos.recipes.create(
         Recipe(user_id=user.user_id, group_id=user.group_id, household_id=user.household_id, name=f"Recipe {uuid4()}")
     )
@@ -521,15 +651,31 @@ def test_portion_selection_maps_existing_row_and_drives_calculation(unique_user_
         unit_id=unit.id,
         quantity=2,
     )
-    user.repos.session.add_all([match, portion, ingredient])
+    later_ingredient = RecipeIngredientModel(
+        session=user.repos.session,
+        group_id=user.group_id,
+        recipe_id=recipe.id,
+        position=1,
+        original_text="3 scoops apple",
+        food_id=food.id,
+        unit_id=unit.id,
+        quantity=3,
+    )
+    user.repos.session.add_all([match, portion, later_portion, ingredient, later_ingredient])
     user.repos.session.commit()
     fingerprint = NutritionFingerprintService(user.repos.session, country="GB", provider_enabled=True).portion(
         ingredient, match, user.group_id
     )
     work = _work(user, "portion_resolution", str(ingredient.id), fingerprint)
+    later_fingerprint = NutritionFingerprintService(user.repos.session, country="GB", provider_enabled=True).portion(
+        later_ingredient, match, user.group_id
+    )
+    later_work = _work(user, "portion_resolution", str(later_ingredient.id), later_fingerprint)
     service = NutritionCuratorService(user.repos.session)
     started = service.start(work.id)
     assert started is not None
+    later_started = service.start(later_work.id)
+    assert later_started is not None
     before_count = user.repos.session.scalar(sa.select(sa.func.count()).select_from(HealthLabsFoodPortion))
     user.repos.session.commit()
     response = NutritionCuratorProviderDecision.model_validate(
@@ -546,6 +692,9 @@ def test_portion_selection_maps_existing_row_and_drives_calculation(unique_user_
 
     assert service.apply(started.decision_id, response, {}) == "approved"
     user.repos.session.commit()
+    later_response = response.model_copy(update={"portion_id": later_portion.id})
+    assert service.apply(later_started.decision_id, later_response, {}) == "insufficient_evidence"
+    user.repos.session.commit()
     mapping = user.repos.session.scalar(
         sa.select(HealthLabsFoodPortionMapping).where(
             HealthLabsFoodPortionMapping.group_id == user.group_id,
@@ -561,3 +710,31 @@ def test_portion_selection_maps_existing_row_and_drives_calculation(unique_user_
     )
     assert user.repos.session.scalar(sa.select(sa.func.count()).select_from(HealthLabsFoodPortion)) == before_count
     assert NutritionService(user.repos.session).food_facts(food.id, unit.id, 2).resolved_grams == 246
+
+    replacement_food = _source_food(user, _source(user), f"replacement-{food.name}")
+    replacement_portion = HealthLabsFoodPortion(
+        nutrient_food_id=replacement_food.id,
+        description="replacement piece",
+        amount=1,
+        unit="piece",
+        grams=321,
+    )
+    user.repos.session.add(replacement_portion)
+    match.nutrient_food_id = replacement_food.id
+    user.repos.session.flush()
+    work.input_sha256 = NutritionFingerprintService(user.repos.session, country="GB", provider_enabled=True).portion(
+        ingredient, match, user.group_id
+    )
+    work.state = "review_required"
+    user.repos.session.commit()
+    assert NutritionService(user.repos.session).food_facts(food.id, unit.id, 2).resolved_grams is None
+
+    replacement_started = service.start(work.id)
+    assert replacement_started is not None
+    user.repos.session.commit()
+    replacement_response = response.model_copy(update={"portion_id": replacement_portion.id})
+    assert service.apply(replacement_started.decision_id, replacement_response, {}) == "approved"
+    user.repos.session.commit()
+    user.repos.session.refresh(mapping)
+    assert mapping.food_portion_id == replacement_portion.id
+    assert NutritionService(user.repos.session).food_facts(food.id, unit.id, 2).resolved_grams == 642

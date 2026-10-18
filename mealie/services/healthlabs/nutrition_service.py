@@ -42,6 +42,7 @@ from mealie.schema.healthlabs.nutrition_curator import public_curator_note
 from mealie.schema.recipe import Recipe
 from mealie.schema.user import PrivateUser
 from mealie.services.healthlabs.access_policy import BreakGlassContext, RecipeAccessDenied, RecipeAccessPolicy
+from mealie.services.healthlabs.nutrition_fingerprint_service import NutritionFingerprintService
 
 CORE_NUTRIENTS = ("kcal", "protein_g", "fibre_g", "carbs_g", "fat_g", "water_ml")
 PUBLIC_QUANTUM = Decimal("0.001")
@@ -128,14 +129,46 @@ class NutritionService:
         access_reason: str | None,
         break_glass_reason: str | None,
         match_method: Literal["manual", "agent"] = "manual",
+        expected_input_sha256: str | None = None,
     ) -> HealthLabsFoodNutritionOut:
         food = self._get_food_for_user(food_id, for_update=True)
+        country = data.country.upper()
+        if match_method == "agent" and expected_input_sha256 is None:
+            raise NutritionConflict("Food changed after curator evaluation")
+        if match_method == "agent":
+            locked = self.session.execute(
+                sa.update(IngredientFoodModel)
+                .where(
+                    IngredientFoodModel.id == food.id,
+                    IngredientFoodModel.group_id == food.group_id,
+                    IngredientFoodModel.update_at == food.update_at,
+                )
+                .values(update_at=IngredientFoodModel.update_at)
+                .execution_options(synchronize_session=False)
+            ).rowcount
+            if locked != 1:
+                raise NutritionConflict("Food changed after curator evaluation")
+            food = self._get_food_for_user(food_id, for_update=True)
+        match = self.session.scalar(
+            sa.select(HealthLabsFoodMatch)
+            .where(HealthLabsFoodMatch.ingredient_food_id == food_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if match_method == "agent" and (
+            NutritionFingerprintService(
+                self.session,
+                country=country,
+                provider_enabled=True,
+            ).food(food, match)
+            != expected_input_sha256
+        ):
+            raise NutritionConflict("Food changed after curator evaluation")
         self._authorize_write(food_id, "nutrition.match.set", access_reason, break_glass_reason)
         nutrient_food = self.session.get(HealthLabsNutrientFood, data.nutrient_food_id)
         if nutrient_food is None:
             raise NutritionSourceNotFound
         source = self.session.get(HealthLabsNutrientSourceRelease, nutrient_food.source_release_id)
-        country = data.country.upper()
         if source is None or source.country.upper() not in {country, "OTHER"}:
             raise NutritionSourceNotFound
 
@@ -149,9 +182,6 @@ class NutritionService:
         if match_method == "manual" and suppression is not None:
             self.session.delete(suppression)
 
-        match = self.session.scalar(
-            sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
-        )
         if match is None:
             match = HealthLabsFoodMatch(ingredient_food_id=food_id)
             self.session.add(match)
@@ -394,7 +424,7 @@ class NutritionService:
             IngredientFoodModel.group_id == user.group_id,
         )
         if for_update:
-            statement = statement.with_for_update()
+            statement = statement.with_for_update().execution_options(populate_existing=True)
         food = self.session.scalar(statement)
         if food is None:
             raise NutritionFoodNotFound

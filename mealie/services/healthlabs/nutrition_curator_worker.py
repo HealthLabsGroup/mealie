@@ -190,6 +190,7 @@ class NutritionCuratorWorker:
                 max_completion_tokens=self.settings.HEALTHLABS_NUTRITION_PROVIDER_MAX_OUTPUT_TOKENS,
                 request_guard=reserve,
                 usage_callback=record_usage,
+                disable_reasoning=True,
             )
 
     def _fail(self, decision_id: UUID, exc: Exception, now: datetime) -> NutritionCuratorReport:

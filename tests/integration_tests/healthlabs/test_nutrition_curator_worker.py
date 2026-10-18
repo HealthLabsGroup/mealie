@@ -120,12 +120,14 @@ def _install_success(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, str
         max_completion_tokens,
         request_guard,
         usage_callback,
+        disable_reasoning,
         **_kwargs,
     ):
         del self, provider
         calls.append((prompt, message))
         assert response_schema is NutritionCuratorProviderDecision
         assert max_completion_tokens == 64
+        assert disable_reasoning is True
         if not request_guard(10, max_completion_tokens):
             raise OpenAIRequestRejected("budget exhausted")
         usage_callback({"input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 5})

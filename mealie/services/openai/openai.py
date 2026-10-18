@@ -10,6 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from textwrap import dedent
 from typing import TYPE_CHECKING, TypeVar
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -358,6 +359,7 @@ class OpenAIService(BaseService):
         max_completion_tokens: int | None = None,
         request_guard: Callable[[int, int], bool] | None = None,
         usage_callback: Callable[[dict[str, int]], None] | None = None,
+        disable_reasoning: bool = False,
     ) -> T | None:
         import openai
         from openai.types.chat import ChatCompletion
@@ -396,6 +398,8 @@ class OpenAIService(BaseService):
         }
         if max_completion_tokens is not None:
             request["max_completion_tokens"] = max_completion_tokens
+        if disable_reasoning and provider.base_url and urlsplit(provider.base_url).hostname == "openrouter.ai":
+            request["extra_body"] = {"reasoning": {"enabled": False}}
         async with client.chat.completions.with_streaming_response.parse(**request) as response:
             completion = ChatCompletion.model_validate(json.loads(await response.text()))
 
@@ -431,6 +435,7 @@ class OpenAIService(BaseService):
         max_completion_tokens: int | None = None,
         request_guard: Callable[[int, int], bool] | None = None,
         usage_callback: Callable[[dict[str, int]], None] | None = None,
+        disable_reasoning: bool = False,
     ) -> T | None:
         """Send data to OpenAI and return the response message content"""
         import openai
@@ -449,6 +454,7 @@ class OpenAIService(BaseService):
                 max_completion_tokens=max_completion_tokens,
                 request_guard=request_guard,
                 usage_callback=usage_callback,
+                disable_reasoning=disable_reasoning,
             )
         except OpenAIRequestRejected:
             raise

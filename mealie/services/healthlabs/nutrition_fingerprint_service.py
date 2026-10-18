@@ -114,6 +114,7 @@ class NutritionFingerprintService:
             (
                 str(match.nutrient_food_id),
                 match.country,
+                match.auto_applied,
                 match.reviewed_at,
                 match.reviewed_by_user_id,
             )
@@ -158,6 +159,7 @@ class NutritionFingerprintService:
             ingredient.quantity,
             ingredient.unit_id,
             match.nutrient_food_id,
+            match.auto_applied,
             match.reviewed_at,
             source.sha256 if source is not None else None,
             portions,

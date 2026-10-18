@@ -200,6 +200,7 @@ class HealthLabsFoodMatch(SqlAlchemyBase, BaseMixins):
     country: Mapped[str] = mapped_column(String(5), nullable=False)
     match_method: Mapped[str] = mapped_column(String(32), nullable=False)
     confidence: Mapped[float] = mapped_column(sa.Float, nullable=False)
+    auto_applied: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False, server_default=sa.false())
     food_group: Mapped[str | None] = mapped_column(String(32), nullable=True)
     plant_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     allergens: Mapped[dict[str, str] | None] = mapped_column(sa.JSON, nullable=True)
@@ -211,6 +212,26 @@ class HealthLabsFoodMatch(SqlAlchemyBase, BaseMixins):
         index=True,
     )
     reviewed_at: Mapped[datetime | None] = mapped_column(NaiveDateTime, nullable=True)
+
+
+class HealthLabsFoodMatchSuppression(SqlAlchemyBase, BaseMixins):
+    __tablename__ = "healthlabs_food_match_suppressions"
+
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    ingredient_food_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("ingredient_foods.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    suppressed_by_user_id: Mapped[GUID | None] = mapped_column(
+        GUID,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    suppressed_at: Mapped[datetime] = mapped_column(NaiveDateTime, nullable=False, default=get_utc_now)
 
 
 class HealthLabsFoodPortion(SqlAlchemyBase, BaseMixins):

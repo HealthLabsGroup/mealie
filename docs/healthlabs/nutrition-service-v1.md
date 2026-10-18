@@ -85,6 +85,7 @@ The HealthLabs extension adds these Mealie-owned records:
 | `healthlabs_nutrient_source_releases` | Provider, version, country, licence URL, attribution text, source URL, file checksum, and import time. |
 | `healthlabs_nutrient_foods` | One source food and preparation state with nullable nutrient values per 100 g edible portion. |
 | `healthlabs_food_matches` | One Mealie `ingredient_foods.id` mapped to one source food, with country, method, confidence, reviewer, food group, plant, nullable allergen/diet maps, and timestamps. |
+| `healthlabs_food_match_suppressions` | An editor's durable decision to leave one Mealie food unmatched so reconciliation cannot silently recreate a cleared match. |
 | `healthlabs_food_portions` | Conversion from a portion or standardized unit to edible grams: source-managed rows are global, while editor-measured rows belong to one workspace. |
 | `healthlabs_branded_products` | Barcode product facts kept logically separate from the generic catalogue because Open Food Facts uses ODbL. |
 | `healthlabs_nutrition_work` | Group-scoped, fingerprinted ingredient, food-match, and portion work with retry and lease state. |
@@ -117,8 +118,8 @@ Generic foods use this deterministic order:
 1. A reviewed exact record from the relevant national source: CoFID for Great
    Britain, CIQUAL for France, and BLS for Germany.
 2. A reviewed exact USDA FoodData Central Foundation or FNDDS record.
-3. An exact normalized-name or alias candidate selected by the service and
-   awaiting editor confirmation.
+3. A unique exact normalized-name or curated-alias match selected and applied
+   by the service, with its automatic provenance retained for later review.
 4. `null` when no defensible match exists.
 
 Polish national data is not imported until its licence is obtained and
@@ -136,9 +137,10 @@ under an existing version is rejected.
 
 ## Matching and review
 
-Automatic matching may use only normalized names and curated aliases. It may
-create an unreviewed candidate, but it may not claim review or fill a value not
-present in the source.
+Automatic matching may use only a unique normalized name or curated alias from
+an imported, checksummed source release. It records `auto_applied` separately
+from human review and may not claim review or fill a value not present in the
+source. Missing or ambiguous candidates remain in the Curator queue.
 
 `nutrition:write` is a separate HealthLabs capability. Only a principal with
 that capability may accept, replace, or clear a food match or edit manually

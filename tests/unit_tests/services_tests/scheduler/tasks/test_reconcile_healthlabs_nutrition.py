@@ -26,8 +26,22 @@ def test_task_drains_worker_until_idle_with_deployment_settings(monkeypatch):
     calls = []
     reports = iter(
         (
-            SimpleNamespace(discovered=20, processed=20, completed=10, review_required=10, failed=0),
-            SimpleNamespace(discovered=0, processed=0, completed=0, review_required=0, failed=0),
+            SimpleNamespace(
+                discovered=20,
+                processed=20,
+                completed=10,
+                review_required=10,
+                failed=0,
+                provider_exhausted=False,
+            ),
+            SimpleNamespace(
+                discovered=0,
+                processed=0,
+                completed=0,
+                review_required=0,
+                failed=0,
+                provider_exhausted=False,
+            ),
         )
     )
 
@@ -48,6 +62,8 @@ def test_task_drains_worker_until_idle_with_deployment_settings(monkeypatch):
 
     task_module.reconcile_healthlabs_nutrition()
 
+    for _, kwargs in calls:
+        assert kwargs.pop("should_stop")() is False
     assert calls == [
         (
             session,
@@ -89,7 +105,14 @@ def test_task_stops_draining_at_the_wall_time_limit(monkeypatch):
             calls += 1
 
         async def run(self):
-            return SimpleNamespace(discovered=20, processed=20, completed=20, review_required=0, failed=0)
+            return SimpleNamespace(
+                discovered=20,
+                processed=20,
+                completed=20,
+                review_required=0,
+                failed=0,
+                provider_exhausted=False,
+            )
 
     def monotonic():
         nonlocal clock_reads
@@ -105,6 +128,56 @@ def test_task_stops_draining_at_the_wall_time_limit(monkeypatch):
 
     assert calls == 1
     assert clock_reads == 2
+
+
+def test_task_stops_draining_when_provider_budget_is_exhausted(monkeypatch):
+    calls = 0
+
+    @contextmanager
+    def session_context():
+        yield object()
+
+    class Worker:
+        def __init__(self, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+
+        async def run(self):
+            return SimpleNamespace(
+                discovered=20,
+                processed=1,
+                completed=0,
+                review_required=0,
+                failed=0,
+                provider_exhausted=True,
+            )
+
+    monkeypatch.setattr(task_module, "session_context", session_context)
+    monkeypatch.setattr(task_module, "get_app_settings", lambda: _settings(1))
+    monkeypatch.setattr(task_module, "NutritionReconciliationWorker", Worker)
+
+    task_module.reconcile_healthlabs_nutrition()
+
+    assert calls == 1
+
+
+def test_task_skips_work_after_shutdown_is_requested(monkeypatch):
+    calls = 0
+
+    class Worker:
+        def __init__(self, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+
+    monkeypatch.setattr(task_module, "NutritionReconciliationWorker", Worker)
+
+    task_module.request_nutrition_reconciliation_shutdown()
+    try:
+        task_module.reconcile_healthlabs_nutrition()
+    finally:
+        task_module.resume_nutrition_reconciliation()
+
+    assert calls == 0
 
 
 def test_task_contains_worker_errors(monkeypatch):

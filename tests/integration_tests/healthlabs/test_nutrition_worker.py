@@ -481,11 +481,12 @@ def test_worker_does_not_resolve_ingredient_from_another_group(
     )
 
 
-def test_worker_creates_only_unreviewed_unique_source_matches(unique_user_fn_scoped: TestUser) -> None:
+def test_worker_auto_applies_unique_deterministic_source_matches(unique_user_fn_scoped: TestUser) -> None:
     user = unique_user_fn_scoped
     token = uuid4().hex
     _, exact_source = _source_food(user, f"apple-{token}")
     _, alias_source = _source_food(user, f"courgette-{token}")
+    _, multilingual_source = _source_food(user, f"crème brûlée-{token}")
     exact = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=exact_source.name))
     alias = user.repos.ingredient_foods.create(
         SaveIngredientFood(
@@ -494,31 +495,177 @@ def test_worker_creates_only_unreviewed_unique_source_matches(unique_user_fn_sco
             aliases=[{"name": alias_source.name}],
         )
     )
+    multilingual = user.repos.ingredient_foods.create(
+        SaveIngredientFood(group_id=user.group_id, name=multilingual_source.name)
+    )
     unknown = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"unknown-{token}"))
     user.repos.session.commit()
 
     _run(user)
     matches = user.repos.session.scalars(
         sa.select(HealthLabsFoodMatch).where(
-            HealthLabsFoodMatch.ingredient_food_id.in_([exact.id, alias.id, unknown.id])
+            HealthLabsFoodMatch.ingredient_food_id.in_([exact.id, alias.id, multilingual.id, unknown.id])
         )
     ).all()
     works = user.repos.session.scalars(
         sa.select(HealthLabsNutritionWork).where(
             HealthLabsNutritionWork.kind == "food_match",
-            HealthLabsNutritionWork.target_id.in_([str(exact.id), str(alias.id), str(unknown.id)]),
+            HealthLabsNutritionWork.target_id.in_(
+                [str(exact.id), str(alias.id), str(multilingual.id), str(unknown.id)]
+            ),
         )
     ).all()
 
     assert {(row.ingredient_food_id, row.match_method) for row in matches} == {
         (exact.id, "exact"),
         (alias.id, "alias"),
+        (multilingual.id, "exact"),
     }
     assert all(row.reviewed_at is None and row.reviewed_by_user_id is None for row in matches)
-    assert len(works) == 3
-    assert all(row.state == "review_required" for row in works)
+    assert len(works) == 4
+    assert {row.target_id: row.state for row in works} == {
+        str(exact.id): "completed",
+        str(alias.id): "completed",
+        str(multilingual.id): "completed",
+        str(unknown.id): "review_required",
+    }
+    assert NutritionService(user.repos.session).match_food(exact.id, "GB").status == "matched"
+    assert NutritionService(user.repos.session).match_food(alias.id, "GB").status == "matched"
     assert _run(user).processed == 0
     assert user.repos.session.scalar(sa.select(sa.func.count()).select_from(HealthLabsFoodMatch)) >= 2
+
+
+def test_worker_rechecks_historical_unreviewed_match_candidates(unique_user_fn_scoped: TestUser) -> None:
+    user = unique_user_fn_scoped
+    _, source = _source_food(user, f"historical-{uuid4()}")
+    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=source.name))
+    match = HealthLabsFoodMatch(
+        ingredient_food_id=food.id,
+        nutrient_food_id=source.id,
+        country="GB",
+        match_method="exact",
+        confidence=1,
+    )
+    user.repos.session.add(match)
+    user.repos.session.commit()
+
+    _run(user)
+    user.repos.session.refresh(match)
+    work = user.repos.session.scalar(
+        sa.select(HealthLabsNutritionWork).where(
+            HealthLabsNutritionWork.kind == "food_match",
+            HealthLabsNutritionWork.target_id == str(food.id),
+        )
+    )
+
+    assert match.auto_applied is True
+    assert work is not None
+    assert work.state == "completed"
+
+
+def test_worker_preserves_review_completed_while_candidate_was_computed(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch,
+) -> None:
+    user = unique_user_fn_scoped
+    _, automatic_source = _source_food(user, f"concurrent-{uuid4()}")
+    _, reviewed_source = _source_food(user, f"reviewed-{uuid4()}")
+    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=automatic_source.name))
+    match = HealthLabsFoodMatch(
+        ingredient_food_id=food.id,
+        nutrient_food_id=automatic_source.id,
+        country="GB",
+        match_method="exact",
+        confidence=1,
+    )
+    user.repos.session.add(match)
+    user.repos.session.commit()
+    original = NutritionService.suggest_food_match
+
+    def review_during_match(service, food_id, country):
+        candidate = original(service, food_id, country)
+        match.nutrient_food_id = reviewed_source.id
+        match.match_method = "manual"
+        match.auto_applied = False
+        match.reviewed_by_user_id = user.user_id
+        match.reviewed_at = get_utc_now()
+        service.session.flush()
+        return candidate
+
+    monkeypatch.setattr(
+        "mealie.services.healthlabs.nutrition_worker.NutritionService.suggest_food_match",
+        review_during_match,
+    )
+
+    _run(user)
+    user.repos.session.refresh(match)
+
+    assert match.nutrient_food_id == reviewed_source.id
+    assert match.match_method == "manual"
+    assert match.auto_applied is False
+    assert match.reviewed_by_user_id == user.user_id
+
+
+def test_worker_leaves_ambiguous_and_missing_source_matches_for_review(unique_user_fn_scoped: TestUser) -> None:
+    user = unique_user_fn_scoped
+    ambiguous_name = f"ambiguous-{uuid4()}"
+    _source_food(user, ambiguous_name)
+    _source_food(user, ambiguous_name)
+    ambiguous = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=ambiguous_name))
+    missing = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"missing-{uuid4()}"))
+    user.repos.session.commit()
+
+    _run(user)
+    works = user.repos.session.scalars(
+        sa.select(HealthLabsNutritionWork).where(
+            HealthLabsNutritionWork.kind == "food_match",
+            HealthLabsNutritionWork.target_id.in_([str(ambiguous.id), str(missing.id)]),
+        )
+    ).all()
+
+    assert {work.target_id: work.result for work in works} == {
+        str(ambiguous.id): {"reason": "no_unique_source_match", "food_id": str(ambiguous.id)},
+        str(missing.id): {"reason": "no_unique_source_match", "food_id": str(missing.id)},
+    }
+    assert not user.repos.session.scalars(
+        sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id.in_([ambiguous.id, missing.id]))
+    ).all()
+
+
+def test_worker_stops_before_claiming_the_next_target(unique_user_fn_scoped: TestUser) -> None:
+    user = unique_user_fn_scoped
+    foods = [
+        user.repos.ingredient_foods.create(
+            SaveIngredientFood(group_id=user.group_id, name=f"shutdown-{index}-{uuid4()}")
+        )
+        for index in range(2)
+    ]
+    user.repos.session.commit()
+    checks = 0
+
+    def should_stop() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks > 1
+
+    report = asyncio.run(
+        NutritionReconciliationWorker(
+            user.repos.session,
+            group_id=user.group_id,
+            batch_size=20,
+            should_stop=should_stop,
+            now=NOW,
+        ).run()
+    )
+    works = user.repos.session.scalars(
+        sa.select(HealthLabsNutritionWork).where(
+            HealthLabsNutritionWork.kind == "food_match",
+            HealthLabsNutritionWork.target_id.in_([str(food.id) for food in foods]),
+        )
+    ).all()
+
+    assert report.processed == 1
+    assert sorted(work.state for work in works) == ["pending", "review_required"]
 
 
 def test_worker_tracks_only_unresolved_authoritative_portions(unique_user_fn_scoped: TestUser) -> None:
@@ -572,6 +719,51 @@ def test_worker_tracks_only_unresolved_authoritative_portions(unique_user_fn_sco
 
     assert work.state == "completed"
     assert work.result == {"resolved_grams": 300.0}
+
+
+def test_source_managed_portion_wins_over_group_override(unique_user_fn_scoped: TestUser) -> None:
+    user = unique_user_fn_scoped
+    token = uuid4().hex
+    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"tofu-{token}"))
+    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"block-{token}"))
+    _, source_food = _source_food(user, food.name)
+    user.repos.session.add_all(
+        [
+            HealthLabsFoodMatch(
+                ingredient_food_id=food.id,
+                nutrient_food_id=source_food.id,
+                country="GB",
+                match_method="manual",
+                confidence=1,
+                reviewed_by_user_id=user.user_id,
+                reviewed_at=get_utc_now(),
+            ),
+            HealthLabsFoodPortion(
+                nutrient_food_id=source_food.id,
+                description=unit.name,
+                amount=1,
+                unit=unit.name,
+                grams=150,
+                source_managed=True,
+            ),
+            HealthLabsFoodPortion(
+                nutrient_food_id=source_food.id,
+                group_id=user.group_id,
+                description=unit.name,
+                amount=1,
+                unit=unit.name,
+                grams=120,
+                source_managed=False,
+            ),
+        ]
+    )
+    user.repos.session.commit()
+
+    facts = NutritionService(user.repos.session).food_facts(food.id, unit.id, 2)
+
+    assert facts.resolved_grams == 300
+    assert facts.food_match is not None
+    assert [(portion.unit, portion.grams) for portion in facts.food_match.portions] == [(unit.name, 150)]
 
 
 def test_discovery_reserves_capacity_for_each_work_kind(unique_user_fn_scoped: TestUser) -> None:
@@ -629,14 +821,14 @@ def test_worker_commits_each_target_and_continues_after_one_failure(
         SaveIngredientFood(group_id=user.group_id, name=f"succeeding-{uuid4()}")
     )
     user.repos.session.commit()
-    original = NutritionService.match_food
+    original = NutritionService.suggest_food_match
 
     def fail_one(service, food_id, country):
         if food_id == failing.id:
             raise RuntimeError("controlled failure")
         return original(service, food_id, country)
 
-    monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.NutritionService.match_food", fail_one)
+    monkeypatch.setattr("mealie.services.healthlabs.nutrition_worker.NutritionService.suggest_food_match", fail_one)
 
     works = {}
     for _ in range(100):

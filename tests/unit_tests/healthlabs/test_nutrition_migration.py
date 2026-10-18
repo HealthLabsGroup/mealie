@@ -34,6 +34,11 @@ def _provider_budget_migration():
     return import_file("track_healthlabs_provider_cost", path)
 
 
+def _auto_match_migration():
+    path = next(ALEMBIC_MIGRATIONS.glob("*b035d7f29e8c*.py"))
+    return import_file("auto_apply_nutrition_matches", path)
+
+
 def _prepare_legacy_portion(connection, *, matched_groups: int) -> tuple[str, tuple[str, ...]]:
     connection.execute(sa.text("PRAGMA foreign_keys=ON"))
     connection.execute(sa.text("CREATE TABLE users (id CHAR(32) PRIMARY KEY)"))
@@ -219,6 +224,34 @@ def test_provider_budget_migration_tracks_reserved_cost_and_token_usage() -> Non
                 budget_migration.downgrade()
             assert "reserved_microusd" not in {
                 column["name"] for column in sa.inspect(connection).get_columns("healthlabs_nutrition_provider_usage")
+            }
+    finally:
+        engine.dispose()
+
+
+def test_auto_match_migration_preserves_existing_matches_as_unreviewed() -> None:
+    migration = _auto_match_migration()
+    engine = sa.create_engine("sqlite://")
+
+    try:
+        with engine.connect() as connection:
+            _prepare_legacy_portion(connection, matched_groups=1)
+
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.upgrade()
+
+            columns = {
+                column["name"]: column for column in sa.inspect(connection).get_columns("healthlabs_food_matches")
+            }
+            assert columns["auto_applied"]["nullable"] is False
+            assert connection.scalar(sa.text("SELECT auto_applied FROM healthlabs_food_matches")) == 0
+            assert "healthlabs_food_match_suppressions" in sa.inspect(connection).get_table_names()
+
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.downgrade()
+            assert "healthlabs_food_match_suppressions" not in sa.inspect(connection).get_table_names()
+            assert "auto_applied" not in {
+                column["name"] for column in sa.inspect(connection).get_columns("healthlabs_food_matches")
             }
     finally:
         engine.dispose()

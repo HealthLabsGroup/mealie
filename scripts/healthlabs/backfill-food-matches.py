@@ -66,7 +66,11 @@ def backfill_food_matches(session: Session, *, country: str, batch_size: int = 5
         for food in foods:
             counts["total"] += 1
             if match := existing.get(food.id):
-                key = "matched" if match.reviewed_at is not None else "review_required"
+                key = (
+                    "matched"
+                    if match.auto_applied or (match.reviewed_at is not None and match.reviewed_by_user_id is not None)
+                    else "review_required"
+                )
                 counts[key] += 1
                 continue
             candidate = _candidate(food, aliases[food.id], source_index, country)

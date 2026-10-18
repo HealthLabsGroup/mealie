@@ -9,9 +9,11 @@ from sqlalchemy.orm import Session
 from mealie.db.models._model_utils.datetime import get_utc_now
 from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
+    HealthLabsFoodMatchSuppression,
     HealthLabsFoodPortion,
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
+    HealthLabsNutritionWork,
 )
 from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel
 from mealie.db.models.recipe.ingredient import IngredientFoodAliasModel
@@ -114,7 +116,7 @@ class NutritionService:
         access_reason: str | None,
         break_glass_reason: str | None,
     ) -> HealthLabsFoodNutritionOut:
-        food = self._get_food_for_user(food_id)
+        food = self._get_food_for_user(food_id, for_update=True)
         self._authorize_write(food_id, "nutrition.match.set", access_reason, break_glass_reason)
         nutrient_food = self.session.get(HealthLabsNutrientFood, data.nutrient_food_id)
         if nutrient_food is None:
@@ -123,6 +125,14 @@ class NutritionService:
         country = data.country.upper()
         if source is None or source.country.upper() not in {country, "OTHER"}:
             raise NutritionSourceNotFound
+
+        suppression = self.session.scalar(
+            sa.select(HealthLabsFoodMatchSuppression).where(
+                HealthLabsFoodMatchSuppression.ingredient_food_id == food_id
+            )
+        )
+        if suppression is not None:
+            self.session.delete(suppression)
 
         match = self.session.scalar(
             sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
@@ -134,6 +144,7 @@ class NutritionService:
         match.country = country
         match.match_method = "manual"
         match.confidence = data.confidence
+        match.auto_applied = False
         match.food_group = data.food_group
         match.plant_id = data.plant_id
         match.allergens = data.allergens
@@ -152,15 +163,31 @@ class NutritionService:
         access_reason: str | None,
         break_glass_reason: str | None,
     ) -> HealthLabsFoodNutritionOut:
-        food = self._get_food_for_user(food_id)
+        food = self._get_food_for_user(food_id, for_update=True)
         self._authorize_write(food_id, "nutrition.match.clear", access_reason, break_glass_reason)
         match = self.session.scalar(
             sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
         )
         resolved_country = match.country if match is not None else country.upper()
-        if match is not None:
-            self.session.delete(match)
-            self.session.flush()
+        suppression = self.session.scalar(
+            sa.select(HealthLabsFoodMatchSuppression).where(
+                HealthLabsFoodMatchSuppression.ingredient_food_id == food_id
+            )
+        )
+        if suppression is None:
+            suppression = HealthLabsFoodMatchSuppression(ingredient_food_id=food_id)
+            self.session.add(suppression)
+        suppression.suppressed_by_user_id = self._require_user().id
+        suppression.suppressed_at = get_utc_now()
+        self.session.flush()
+        self.session.execute(sa.delete(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id))
+        self.session.execute(
+            sa.delete(HealthLabsNutritionWork).where(
+                HealthLabsNutritionWork.kind == "food_match",
+                sa.func.replace(HealthLabsNutritionWork.target_id, "-", "") == food_id.hex,
+            )
+        )
+        self.session.flush()
         self._clear_cache()
         return self._food_out(food, resolved_country)
 
@@ -264,12 +291,21 @@ class NutritionService:
         return [self._source_food_out(food, source, source_only_portions=True) for food, source in matches[:limit]]
 
     def match_food(self, food_id: UUID, country: str) -> HealthLabsFoodMatchOut | None:
+        if self.session.scalar(
+            sa.select(HealthLabsFoodMatchSuppression.id).where(
+                HealthLabsFoodMatchSuppression.ingredient_food_id == food_id
+            )
+        ):
+            return None
         existing = self.session.scalar(
             sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
         )
         if existing is not None:
             return self._match_out(existing)
 
+        return self.suggest_food_match(food_id, country)
+
+    def suggest_food_match(self, food_id: UUID, country: str) -> HealthLabsFoodMatchOut | None:
         food = self.session.get(IngredientFoodModel, food_id)
         if food is None or not food.name:
             return None
@@ -328,14 +364,15 @@ class NutritionService:
             nutrition=nutrition,
         )
 
-    def _get_food_for_user(self, food_id: UUID) -> IngredientFoodModel:
+    def _get_food_for_user(self, food_id: UUID, *, for_update: bool = False) -> IngredientFoodModel:
         user = self._require_user()
-        food = self.session.scalar(
-            sa.select(IngredientFoodModel).where(
-                IngredientFoodModel.id == food_id,
-                IngredientFoodModel.group_id == user.group_id,
-            )
+        statement = sa.select(IngredientFoodModel).where(
+            IngredientFoodModel.id == food_id,
+            IngredientFoodModel.group_id == user.group_id,
         )
+        if for_update:
+            statement = statement.with_for_update()
+        food = self.session.scalar(statement)
         if food is None:
             raise NutritionFoodNotFound
         return food
@@ -389,6 +426,16 @@ class NutritionService:
         if cached := self._food_facts_cache.get(cache_key):
             return cached
 
+        if self.session.scalar(
+            sa.select(HealthLabsFoodMatchSuppression.id).where(
+                HealthLabsFoodMatchSuppression.ingredient_food_id == food_id
+            )
+        ):
+            return self._cache_facts(
+                cache_key,
+                HealthLabsIngredientNutrition(status=HealthLabsNutritionStatus.UNKNOWN, missing_reason="match"),
+            )
+
         match = self.session.scalar(
             sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
         )
@@ -399,7 +446,7 @@ class NutritionService:
             )
 
         match_out = self._match_out(match)
-        if not match_out.reviewed:
+        if match_out.status != HealthLabsNutritionStatus.MATCHED:
             return self._cache_facts(
                 cache_key,
                 HealthLabsIngredientNutrition(
@@ -564,6 +611,7 @@ class NutritionService:
             raise ValueError("Nutrition match references missing data")
 
         reviewed = match is not None and match.reviewed_by_user_id is not None and match.reviewed_at is not None
+        auto_applied = match is not None and match.auto_applied
         group_id = self.session.scalar(sa.select(IngredientFoodModel.group_id).where(IngredientFoodModel.id == food_id))
         source_food = self._source_food_out(nutrient_food, source, group_id=group_id)
         return HealthLabsFoodMatchOut(
@@ -573,10 +621,15 @@ class NutritionService:
             source_food_id=source_food.source_food_id,
             name=source_food.name,
             preparation_state=source_food.preparation_state,
-            status=HealthLabsNutritionStatus.MATCHED if reviewed else HealthLabsNutritionStatus.REVIEW_REQUIRED,
+            status=(
+                HealthLabsNutritionStatus.MATCHED
+                if reviewed or auto_applied
+                else HealthLabsNutritionStatus.REVIEW_REQUIRED
+            ),
             country=country,
             match_method=match_method,
             confidence=confidence if confidence is not None else 0,
+            auto_applied=auto_applied,
             reviewed=reviewed,
             food_group=match.food_group if match is not None else None,
             plant_id=match.plant_id if match is not None else None,
@@ -616,7 +669,7 @@ class NutritionService:
                 HealthLabsFoodPortion.description,
                 HealthLabsFoodPortion.amount,
                 HealthLabsFoodPortion.unit,
-                HealthLabsFoodPortion.source_managed,
+                HealthLabsFoodPortion.source_managed.desc(),
                 HealthLabsFoodPortion.id,
             )
         ).all()
@@ -698,7 +751,7 @@ class NutritionService:
                 )
             )
         portions = self.session.scalars(
-            portions_statement.order_by(HealthLabsFoodPortion.source_managed, HealthLabsFoodPortion.id)
+            portions_statement.order_by(HealthLabsFoodPortion.source_managed.desc(), HealthLabsFoodPortion.id)
         ).all()
         for portion in portions:
             portion_unit = self._normalize_unit(portion.unit)

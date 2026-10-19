@@ -11,6 +11,7 @@ HealthLabs imports only local, checksum-pinned source files. The importer never 
 | `cofid` | CoFID 2021 | `GB` | [GOV.UK release](https://www.gov.uk/government/publications/composition-of-foods-integrated-dataset-cofid) | [Open Government Licence v3.0](https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/); attribute Public Health England and McCance and Widdowson’s CoFID 2021. |
 | `ciqual` | ANSES-CIQUAL 2025 | `FR` | [ANSES release](https://ciqual.anses.fr/cms/en/2025-anses-ciqual-table) | [Licence Ouverte](https://www.etalab.gouv.fr/licence-ouverte-open-licence/); attribute “Anses. 2025. Table de composition nutritionnelle des aliments Ciqual 2025”, DOI `10.57745/RDMHWY`. |
 | `bls` | Bundeslebensmittelschlüssel 4.0 (2025) | `DE` | [BLS download](https://blsdb.prod.se.ble.de/bls) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); attribute Max Rubner-Institut (2025), DOI `10.25826/Data20251217-134202-0`. |
+| `fao_infoods_density` | FAO/INFOODS Density Database 2.0 (2012) | `OTHER` | [FAO release](https://www.fao.org/food-composition/tables-and-databases/detail/%28global--2012%29-fao-infoods-density-database---version-2/en) | [FAO Statistical Database Terms](https://www.fao.org/contact-us/terms/db-terms-of-use/en); requested commercial storage, transformation, and API-derived use confirmed by phone on 2026-10-19. Attribute “FAO. 2012. FAO/INFOODS Density Database. Version 2.0. Rome, FAO.” |
 
 Poland is blocked: the NIZP PZH full database is supplied under a purchased licence agreement, so it is not imported until HealthLabs records redistribution-compatible terms. Ukraine has no verified national open food-composition release in this policy; Ukrainian aliases may reference an approved source while retaining that source’s country and provenance.
 
@@ -24,12 +25,15 @@ remains explicit in the provider, release name, source URL, and attribution.
 - CoFID: UTF-8 CSV exported from the published workbook, preserving the published column headers.
 - CIQUAL: UTF-8 CSV exported from the official workbook's `composition nutritionnelle` sheet.
 - BLS: UTF-8 CSV exported from the published workbook, preserving BLS component codes.
+- FAO/INFOODS density: the original version 2.0 XLSX workbook. The importer
+  stores the 500 positive scalar `g/ml` rows; ranges and specific-gravity-only
+  rows are excluded from conversion evidence.
 
 Values such as `<0.5`, `trace`, blank, or `-` import as unknown (`null`), never zero. Original nutrient columns are retained under `_raw`; the canonical calculation keys are `kcal`, `protein_g`, `fibre_g`, `carbs_g`, `fat_g`, and `water_ml`.
 
 ## Manifest and import
 
-Compute the checksum from the exact unzipped JSON or CSV passed to the importer:
+Compute the checksum from the exact JSON, CSV, or XLSX passed to the importer:
 
 ```sh
 shasum -a 256 /absolute/path/source.csv
@@ -57,6 +61,14 @@ uv run python scripts/healthlabs/import-nutrition-source.py manifest.json /absol
 
 The command verifies the bytes before parsing. Reusing a provider/version/country with different bytes fails. Re-importing identical bytes updates the same source-food rows and keeps reviewed Mealie food matches attached to their existing source-food IDs.
 Source-managed portions are refreshed while nutrition-editor portions remain unchanged.
+
+For `fao_infoods_density`, use version `2.0`, country `OTHER`, and SHA-256
+`329caaecbaa2031a73dd50c32e0cee8453d85655342829d80a3cd92053854227`.
+The importer preserves the worksheet row, original food description, scalar
+density, and bibliography ID. It creates a source-managed `1 ml` portion only
+when the density name is unique and exactly matches an existing nutrient-food
+name. Ambiguous density rows remain stored without an automatic link, and
+density-derived portions survive ordinary nutrient-source reimports.
 
 Run exact/alias matching and produce an aggregate-only coverage report:
 
@@ -142,3 +154,12 @@ SHA-256 `2e7eb9fda92adf1d4d784dba5eaa3a7fd4418cd86ccff383c7c9294d79e9b808`.
 The importer reads 5,432 foods and 16,468 positive numeric described portions.
 Non-numeric guidance such as `Quantity not specified` is intentionally not used
 as a gram conversion.
+
+## FAO/INFOODS density parser verification — 2026-10-19
+
+The official version 2.0 XLSX has SHA-256
+`329caaecbaa2031a73dd50c32e0cee8453d85655342829d80a3cd92053854227`.
+The importer accepts 500 positive scalar `g/ml` rows. Of those, 476 have unique
+normalized names and 24 belong to 11 ambiguous name groups. The ambiguous rows,
+34 density ranges, and 104 specific-gravity-only rows never create automatic
+gram conversions.

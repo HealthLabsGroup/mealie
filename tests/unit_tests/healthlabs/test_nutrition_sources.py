@@ -63,6 +63,48 @@ def test_usda_fooddata_central_json_maps_core_and_preserves_other_nutrients(tmp_
     assert row.portions[0].grams == 198
 
 
+def test_usda_fndds_parses_described_portions_without_measure_units(tmp_path: Path) -> None:
+    source = tmp_path / "fndds.json"
+    source.write_text(
+        json.dumps(
+            {
+                "SurveyFoods": [
+                    {
+                        "fdcId": 2709217,
+                        "description": "Carrots, raw",
+                        "foodNutrients": [],
+                        "foodPortions": [
+                            {
+                                "gramWeight": 128,
+                                "portionDescription": "1 cup, chopped",
+                                "measureUnit": {"name": "undetermined"},
+                            },
+                            {
+                                "gramWeight": 64,
+                                "portionDescription": "1/2 cup, chopped",
+                                "measureUnit": {"name": "undetermined"},
+                            },
+                            {
+                                "gramWeight": 61,
+                                "portionDescription": "Quantity not specified",
+                                "measureUnit": {"name": "undetermined"},
+                            },
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    row = next(iter(parse_source_file("usda", source)))
+
+    assert [portion.model_dump() for portion in row.portions] == [
+        {"description": "1 cup, chopped", "amount": 1.0, "unit": "cup", "grams": 128.0},
+        {"description": "1/2 cup, chopped", "amount": 0.5, "unit": "cup", "grams": 64.0},
+    ]
+
+
 @pytest.mark.parametrize(
     ("provider", "delimiter", "headers", "values", "extra_name"),
     [

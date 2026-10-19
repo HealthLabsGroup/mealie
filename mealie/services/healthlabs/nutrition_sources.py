@@ -30,6 +30,10 @@ USDA_NUTRIENT_IDS = {
     1051: "water_ml",
 }
 
+USDA_DESCRIBED_PORTION = re.compile(
+    r"^(?:(?P<numerator>\d+)/(?P<denominator>[1-9]\d*)|(?P<whole>\d+(?:\.\d+)?))\s+(?P<label>.+)$"
+)
+
 
 class CsvSourceConfig(TypedDict):
     id: tuple[str, ...]
@@ -128,6 +132,17 @@ def _empty_core() -> dict[str, NutrientValue]:
     return {code: NutrientValue(amount=None, unit=unit) for code, unit in CORE_UNITS.items()}
 
 
+def _usda_described_portion(description: str) -> tuple[float, str] | None:
+    match = USDA_DESCRIBED_PORTION.match(description)
+    if match is None:
+        return None
+    amount = (
+        int(match["numerator"]) / int(match["denominator"]) if match["numerator"] is not None else float(match["whole"])
+    )
+    unit = re.split(r"\s*(?:,|\(|\bor\b)", match["label"], maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    return (amount, unit[:64].rstrip()) if amount > 0 and unit else None
+
+
 def _parse_usda(path: Path) -> Iterator[SourceFoodRow]:
     document = json.loads(path.read_text(encoding="utf-8-sig"))
     if isinstance(document, list):
@@ -164,7 +179,11 @@ def _parse_usda(path: Path) -> Iterator[SourceFoodRow]:
             grams = _number(portion.get("gramWeight"))
             measure = portion.get("measureUnit") or {}
             unit = str(measure.get("name") or portion.get("modifier") or "portion").strip()
-            description = str(portion.get("modifier") or unit).strip()
+            description = str(portion.get("portionDescription") or portion.get("modifier") or unit).strip()
+            if (amount is None or unit.casefold() == "undetermined") and (
+                described := _usda_described_portion(description)
+            ):
+                amount, unit = described
             if amount and grams and unit and description:
                 portions.append(SourcePortion(description=description, amount=amount, unit=unit, grams=grams))
 

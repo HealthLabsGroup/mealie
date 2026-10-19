@@ -167,6 +167,31 @@ class HealthLabsNutrientFood(SqlAlchemyBase, BaseMixins):
     nutrient_values: Mapped[dict[str, Any]] = mapped_column(sa.JSON, nullable=False, default=dict)
 
 
+class HealthLabsFoodDensity(SqlAlchemyBase, BaseMixins):
+    __tablename__ = "healthlabs_food_densities"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "source_release_id",
+            "source_record_id",
+            name="healthlabs_food_density_source_record_key",
+        ),
+        sa.CheckConstraint("grams_per_ml > 0", name="healthlabs_food_density_positive"),
+    )
+
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    source_release_id: Mapped[GUID] = mapped_column(
+        GUID,
+        ForeignKey("healthlabs_nutrient_source_releases.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_record_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(500), nullable=False)
+    name_normalized: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    grams_per_ml: Mapped[float] = mapped_column(sa.Float, nullable=False)
+    reference_id: Mapped[str] = mapped_column(String(100), nullable=False)
+
+
 class HealthLabsFoodMatch(SqlAlchemyBase, BaseMixins):
     __tablename__ = "healthlabs_food_matches"
     __table_args__ = (
@@ -265,6 +290,15 @@ class HealthLabsFoodPortion(SqlAlchemyBase, BaseMixins):
             "(source_managed AND group_id IS NULL) OR (NOT source_managed AND group_id IS NOT NULL)",
             name="healthlabs_food_portion_owner_valid",
         ),
+        sa.CheckConstraint(
+            "density_id IS NULL OR source_managed",
+            name="healthlabs_food_portion_density_source_valid",
+        ),
+        sa.UniqueConstraint(
+            "nutrient_food_id",
+            "density_id",
+            name="healthlabs_food_portion_density_key",
+        ),
     )
 
     id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
@@ -277,6 +311,12 @@ class HealthLabsFoodPortion(SqlAlchemyBase, BaseMixins):
     group_id: Mapped[GUID | None] = mapped_column(
         GUID,
         ForeignKey("groups.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    density_id: Mapped[GUID | None] = mapped_column(
+        GUID,
+        ForeignKey("healthlabs_food_densities.id", ondelete="RESTRICT"),
         nullable=True,
         index=True,
     )

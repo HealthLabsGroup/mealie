@@ -21,7 +21,15 @@ from .nutrition import (
     HealthLabsRecipeNutrition,
     HealthLabsReviewerOut,
 )
-from .nutrition_source import NutrientValue, NutritionImportResult, SourceFoodRow, SourceManifest, SourcePortion
+from .nutrition_source import (
+    DensityImportResult,
+    NutrientValue,
+    NutritionImportResult,
+    SourceDensityRow,
+    SourceFoodRow,
+    SourceManifest,
+    SourcePortion,
+)
 from .plan import (
     HealthLabsPlanEntryStatusPatch,
     HealthLabsPlanEntryType,
@@ -52,8 +60,10 @@ from .recipe import (
 )
 
 __all__ = [
+    "DensityImportResult",
     "NutrientValue",
     "NutritionImportResult",
+    "SourceDensityRow",
     "SourceFoodRow",
     "SourceManifest",
     "SourcePortion",

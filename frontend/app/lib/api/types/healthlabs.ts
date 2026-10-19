@@ -23,6 +23,13 @@ export type HealthLabsNutritionWorkState = "pending" | "running" | "review_requi
 export type HealthLabsNutritionCuratorState = "pending" | "running" | "approved" | "insufficient_evidence" | "failed";
 export type HealthLabsPlanEntryType = "breakfast" | "lunch" | "dinner" | "snack";
 
+export interface DensityImportResult {
+  sourceReleaseId: string;
+  createdRelease: boolean;
+  densitiesImported: number;
+  portionsLinked: number;
+  ambiguousRows: number;
+}
 export interface HealthLabsAccessAuditOut {
   id: string;
   actorUserId?: string | null;
@@ -418,6 +425,12 @@ export interface NutritionImportResult {
   createdRelease: boolean;
   foodsImported: number;
   portionsImported: number;
+}
+export interface SourceDensityRow {
+  sourceRecordId: string;
+  name: string;
+  gramsPerMl: number;
+  referenceId: string;
 }
 export interface SourceFoodRow {
   sourceFoodId: string;

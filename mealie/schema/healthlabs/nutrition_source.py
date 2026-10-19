@@ -47,8 +47,30 @@ class SourceFoodRow(MealieModel):
     portions: list[SourcePortion] = Field(default_factory=list)
 
 
+class SourceDensityRow(MealieModel):
+    source_record_id: str = Field(min_length=1, max_length=255)
+    name: str = Field(min_length=1, max_length=500)
+    grams_per_ml: float = Field(gt=0)
+    reference_id: str = Field(min_length=1, max_length=100)
+
+    @field_validator("grams_per_ml")
+    @classmethod
+    def density_must_be_finite(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("density must be finite")
+        return value
+
+
 class NutritionImportResult(MealieModel):
     source_release_id: UUID4
     created_release: bool
     foods_imported: int
     portions_imported: int
+
+
+class DensityImportResult(MealieModel):
+    source_release_id: UUID4
+    created_release: bool
+    densities_imported: int
+    portions_linked: int
+    ambiguous_rows: int

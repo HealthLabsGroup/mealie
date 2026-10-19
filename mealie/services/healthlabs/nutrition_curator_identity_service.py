@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import secrets
+from contextlib import nullcontext
+from threading import Lock
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -19,6 +21,7 @@ from mealie.schema.healthlabs.identity import HealthLabsCapability
 from mealie.schema.user import PrivateUser
 
 CURATOR_SUBJECT_PREFIX = "healthlabs:agent:nutrition-curator:"
+_SQLITE_CURATOR_IDENTITY_LOCK = Lock()
 
 
 def assert_interactive_user(user: PrivateUser | User) -> None:
@@ -52,14 +55,18 @@ class NutritionCuratorIdentityService:
         self.session = session
 
     def get_or_create(self, group_id: UUID) -> PrivateUser:
-        subject = f"{CURATOR_SUBJECT_PREFIX}{group_id}"
-        self._acquire_lock(subject)
-        user = self.session.scalar(sa.select(User).where(User.external_subject_id == subject))
-        if user is None:
-            user = self._create(group_id, subject)
-        result = PrivateUser.model_validate(user)
-        self.session.commit()
-        return result
+        process_lock = (
+            _SQLITE_CURATOR_IDENTITY_LOCK if self.session.get_bind().dialect.name == "sqlite" else nullcontext()
+        )
+        with process_lock:
+            subject = f"{CURATOR_SUBJECT_PREFIX}{group_id}"
+            self._acquire_lock(subject)
+            user = self.session.scalar(sa.select(User).where(User.external_subject_id == subject))
+            if user is None:
+                user = self._create(group_id, subject)
+            result = PrivateUser.model_validate(user)
+            self.session.commit()
+            return result
 
     def _create(self, group_id: UUID, subject: str) -> User:
         group = self.session.get(Group, group_id)

@@ -17,7 +17,7 @@ Allowed reason codes are name_and_context_match, preparation_match, unit_and_con
 2. Check candidate membership, tenant scope, preparation state, and unit context. For food candidates, treat `countryCompatible: true` as authoritative evidence of country compatibility.
 3. Choose once only when one supplied candidate clears both thresholds; otherwise abstain.
 4. For `ingredient_structure`, select only `food_id` and `unit_id`. `food_match` requires only `nutrient_food_id`. Do not require a unit or portion for `food_match`. For `portion_resolution`, select only `portion_id`.
-5. Return only one valid JSON object with exactly these fields: `decision`, `kind`, `food_id`, `unit_id`, `nutrient_food_id`, `portion_id`, `confidence`, `runner_up_confidence`, `reason_code`, and `rationale`.
+5. Return only one valid JSON object with exactly these fields: `decision`, `kind`, `food_id`, `unit_id`, `nutrient_food_id`, `portion_id`, `confidence`, `runner_up_confidence`, `reason_code`, and `rationale`. Set `decision` to exactly `select` for a selection or `insufficient_evidence` when abstaining; never use `selection` or another synonym.
 6. Always include every field. Set unused selection ID fields to null. Keep `kind` equal to the input kind and supply numeric `confidence` and `runner_up_confidence` values between 0 and 1.
 7. For `insufficient_evidence`, set every selection ID to null and use `insufficient_candidates` as `reason_code`. Do not propose hidden actions or additional records.
 </decision_method>

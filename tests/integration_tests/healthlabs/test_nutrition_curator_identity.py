@@ -70,6 +70,8 @@ def test_get_or_create_provisions_one_least_privilege_agent_in_oldest_household(
 
 def test_concurrent_get_or_create_returns_one_agent(unique_user_fn_scoped: TestUser) -> None:
     group_id = unique_user_fn_scoped._group_id
+    # Release the module-scoped fixture's SQLite read transaction before concurrent writes.
+    unique_user_fn_scoped.repos.session.rollback()
 
     def provision() -> UUID:
         with session_context() as session:

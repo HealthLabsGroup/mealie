@@ -53,6 +53,7 @@ class NutritionCuratorCandidateSet(BaseModel):
     target_id: str
     work_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     curator_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reuse_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     prompt_payload: dict[str, Any]
     snapshot: dict[str, Any]
     model_config = ConfigDict(extra="forbid", frozen=True)

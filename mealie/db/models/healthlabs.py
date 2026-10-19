@@ -408,6 +408,14 @@ class HealthLabsNutritionCuratorDecision(SqlAlchemyBase, BaseMixins):
             "next_attempt_at",
             "lease_expires_at",
         ),
+        sa.Index(
+            "healthlabs_nutrition_curator_reuse_idx",
+            "group_id",
+            "kind",
+            "state",
+            "reuse_sha256",
+            "reused_from_decision_id",
+        ),
     )
 
     id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
@@ -427,6 +435,12 @@ class HealthLabsNutritionCuratorDecision(SqlAlchemyBase, BaseMixins):
     target_id: Mapped[str] = mapped_column(String(64), nullable=False)
     work_input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     curator_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    reuse_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reused_from_decision_id: Mapped[GUID | None] = mapped_column(
+        GUID,
+        ForeignKey("healthlabs_nutrition_curator_decisions.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     agent_user_id: Mapped[GUID] = mapped_column(
         GUID,
         ForeignKey("users.id", ondelete="RESTRICT"),

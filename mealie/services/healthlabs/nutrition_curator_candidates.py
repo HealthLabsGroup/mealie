@@ -67,12 +67,13 @@ class NutritionCuratorCandidateService:
                 for name, values in payload["candidates"].items()
             }
         }
-        curator_sha256 = self._fingerprint(work, provider, payload, snapshot)
+        curator_sha256, reuse_sha256 = self._fingerprints(work, provider, payload, snapshot)
         return NutritionCuratorCandidateSet(
             kind=work.kind,
             target_id=work.target_id,
             work_input_sha256=work.input_sha256,
             curator_sha256=curator_sha256,
+            reuse_sha256=reuse_sha256,
             prompt_payload=payload,
             snapshot=snapshot,
         )
@@ -401,13 +402,13 @@ class NutritionCuratorCandidateService:
             scored.sort(key=lambda item: item["id"] != exact_id)
         return scored[:MAX_CANDIDATES]
 
-    def _fingerprint(
+    def _fingerprints(
         self,
         work: HealthLabsNutritionWork,
         provider: AIProvider,
         prompt_payload: dict[str, Any],
         snapshot: dict[str, Any],
-    ) -> str:
+    ) -> tuple[str, str]:
         countries = [self.country] if self.country == "OTHER" else [self.country, "OTHER"]
         releases = self.session.execute(
             sa.select(
@@ -451,7 +452,13 @@ class NutritionCuratorCandidateService:
             "promptPayload": prompt_payload,
             "snapshot": snapshot,
         }
-        canonical = self._canonical(context)
+        reusable_payload = {key: value for key, value in prompt_payload.items() if key != "targetId"}
+        reuse_context = {**context, "promptPayload": reusable_payload}
+        return self._sha256(context), self._sha256(reuse_context)
+
+    @classmethod
+    def _sha256(cls, value: Any) -> str:
+        canonical = cls._canonical(value)
         return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     @classmethod

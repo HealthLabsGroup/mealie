@@ -49,6 +49,11 @@ def _density_migration():
     return import_file("add_healthlabs_food_densities", path)
 
 
+def _curator_reuse_migration():
+    path = next(ALEMBIC_MIGRATIONS.glob("*e48f2c7a91d3*.py"))
+    return import_file("reuse_nutrition_curator_decisions", path)
+
+
 def _prepare_legacy_portion(connection, *, matched_groups: int) -> tuple[str, tuple[str, ...]]:
     connection.execute(sa.text("PRAGMA foreign_keys=ON"))
     connection.execute(sa.text("CREATE TABLE users (id CHAR(32) PRIMARY KEY)"))
@@ -341,6 +346,77 @@ def test_density_migration_adds_provenance_table_and_portion_link() -> None:
             with Operations.context(MigrationContext.configure(connection)):
                 density_migration.downgrade()
             assert "healthlabs_food_densities" not in sa.inspect(connection).get_table_names()
+    finally:
+        engine.dispose()
+
+
+def test_curator_reuse_migration_adds_indexed_audit_link_without_backfilling_legacy_rows() -> None:
+    migration = _curator_reuse_migration()
+    engine = sa.create_engine("sqlite://")
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(sa.text("PRAGMA foreign_keys=ON"))
+            connection.execute(
+                sa.text(
+                    "CREATE TABLE healthlabs_nutrition_curator_decisions ("
+                    "id CHAR(32) PRIMARY KEY, group_id CHAR(32) NOT NULL, kind VARCHAR(32) NOT NULL, "
+                    "state VARCHAR(24) NOT NULL)"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO healthlabs_nutrition_curator_decisions (id, group_id, kind, state) VALUES "
+                    "('11111111111111111111111111111111', '22222222222222222222222222222222', "
+                    "'food_match', 'approved')"
+                )
+            )
+
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.upgrade()
+
+            inspector = sa.inspect(connection)
+            columns = {column["name"] for column in inspector.get_columns("healthlabs_nutrition_curator_decisions")}
+            assert {"reuse_sha256", "reused_from_decision_id"} <= columns
+            assert (
+                connection.scalar(
+                    sa.text(
+                        "SELECT reuse_sha256 FROM healthlabs_nutrition_curator_decisions "
+                        "WHERE id = '11111111111111111111111111111111'"
+                    )
+                )
+                is None
+            )
+            indexes = {
+                index["name"]: index["column_names"]
+                for index in inspector.get_indexes("healthlabs_nutrition_curator_decisions")
+            }
+            assert indexes["healthlabs_nutrition_curator_reuse_idx"] == [
+                "group_id",
+                "kind",
+                "state",
+                "reuse_sha256",
+                "reused_from_decision_id",
+            ]
+            foreign_keys = {
+                tuple(foreign_key["constrained_columns"]): (
+                    foreign_key["referred_table"],
+                    foreign_key["options"].get("ondelete"),
+                )
+                for foreign_key in inspector.get_foreign_keys("healthlabs_nutrition_curator_decisions")
+            }
+            assert foreign_keys[("reused_from_decision_id",)] == (
+                "healthlabs_nutrition_curator_decisions",
+                "RESTRICT",
+            )
+
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.downgrade()
+            columns = {
+                column["name"]
+                for column in sa.inspect(connection).get_columns("healthlabs_nutrition_curator_decisions")
+            }
+            assert "reuse_sha256" not in columns and "reused_from_decision_id" not in columns
     finally:
         engine.dispose()
 

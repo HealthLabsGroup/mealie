@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -55,6 +56,12 @@ class StartedCuratorDecision:
     response_schema: type[NutritionCuratorProviderDecision]
 
 
+@dataclass(frozen=True, slots=True)
+class FinalizedCuratorDecision:
+    decision_id: UUID
+    state: str
+
+
 class NutritionCuratorService:
     def __init__(self, session: Session, *, country: str = "GB", now: datetime | None = None) -> None:
         self.session = session
@@ -63,7 +70,7 @@ class NutritionCuratorService:
             raise ValueError("country is required")
         self.now = now or datetime.now(UTC)
 
-    def start(self, work_id: UUID) -> StartedCuratorDecision | None:
+    def start(self, work_id: UUID) -> StartedCuratorDecision | FinalizedCuratorDecision | None:
         initial = self.session.get(HealthLabsNutritionWork, work_id)
         if initial is None or initial.state != "review_required":
             return None
@@ -85,6 +92,7 @@ class NutritionCuratorService:
 
         existing = self.session.scalar(
             sa.select(HealthLabsNutritionCuratorDecision).where(
+                HealthLabsNutritionCuratorDecision.group_id == work.group_id,
                 HealthLabsNutritionCuratorDecision.kind == work.kind,
                 HealthLabsNutritionCuratorDecision.target_id == work.target_id,
                 HealthLabsNutritionCuratorDecision.curator_sha256 == candidate_set.curator_sha256,
@@ -96,6 +104,7 @@ class NutritionCuratorService:
             return None
 
         empty = all(not values for values in candidate_set.prompt_payload["candidates"].values())
+        reusable, reuse_conflict = self._reusable_decision(work, candidate_set)
         decision = HealthLabsNutritionCuratorDecision(
             work_id=work.id,
             group_id=work.group_id,
@@ -103,20 +112,23 @@ class NutritionCuratorService:
             target_id=work.target_id,
             work_input_sha256=work.input_sha256,
             curator_sha256=candidate_set.curator_sha256,
+            reuse_sha256=candidate_set.reuse_sha256,
+            reused_from_decision_id=reusable.id if reusable is not None else None,
             agent_user_id=agent.id,
-            state="insufficient_evidence" if empty else "running",
-            attempt_count=0 if empty else 1,
+            state="insufficient_evidence" if empty or reuse_conflict else "running",
+            attempt_count=0 if empty or reusable is not None or reuse_conflict else 1,
             next_attempt_at=self.now,
-            lease_expires_at=None if empty else self.now + _LEASE,
+            lease_expires_at=None if empty or reuse_conflict else self.now + _LEASE,
             candidate_snapshot=candidate_set.snapshot,
-            confidence=0 if empty else None,
-            runner_up_confidence=0 if empty else None,
-            reason_code="insufficient_candidates" if empty else None,
+            confidence=0 if empty or reuse_conflict else None,
+            runner_up_confidence=0 if empty or reuse_conflict else None,
+            reason_code="insufficient_candidates" if empty else "reuse_conflict" if reuse_conflict else None,
             provider_id=provider.id,
             provider_name=provider.name,
             provider_model=provider.model,
             prompt_version=PROMPT_VERSION,
-            requested_at=None if empty else self.now,
+            requested_at=None if empty or reusable is not None or reuse_conflict else self.now,
+            usage={} if reusable is not None or reuse_conflict else None,
         )
         try:
             with self.session.begin_nested():
@@ -124,9 +136,74 @@ class NutritionCuratorService:
                 self.session.flush()
         except IntegrityError:
             return None
-        if empty:
-            return None
+        if empty or reuse_conflict:
+            return FinalizedCuratorDecision(decision.id, "insufficient_evidence")
+        if reusable is not None:
+            response = self._response_from(reusable, candidate_set)
+            if response is None:
+                return FinalizedCuratorDecision(
+                    decision.id,
+                    self._finalize(decision, "insufficient_evidence", "reuse_conflict", usage={}),
+                )
+            return FinalizedCuratorDecision(decision.id, self.apply(decision.id, response, {}))
         return self._started(decision, agent, provider, candidate_set)
+
+    def _reusable_decision(
+        self,
+        work: HealthLabsNutritionWork,
+        candidate_set: NutritionCuratorCandidateSet,
+    ) -> tuple[HealthLabsNutritionCuratorDecision | None, bool]:
+        approved = self.session.scalars(
+            sa.select(HealthLabsNutritionCuratorDecision)
+            .where(
+                HealthLabsNutritionCuratorDecision.group_id == work.group_id,
+                HealthLabsNutritionCuratorDecision.kind == work.kind,
+                HealthLabsNutritionCuratorDecision.state == "approved",
+                HealthLabsNutritionCuratorDecision.reuse_sha256 == candidate_set.reuse_sha256,
+                HealthLabsNutritionCuratorDecision.reused_from_decision_id.is_(None),
+            )
+            .order_by(
+                HealthLabsNutritionCuratorDecision.created_at,
+                HealthLabsNutritionCuratorDecision.id,
+            )
+        ).all()
+        matching = [
+            decision
+            for decision in approved
+            if decision.work_input_sha256 == work.input_sha256 and decision.candidate_snapshot == candidate_set.snapshot
+        ]
+        if not matching:
+            return None, False
+        signatures = {
+            (
+                json.dumps(decision.selected_ids, sort_keys=True, separators=(",", ":")),
+                decision.confidence,
+                decision.runner_up_confidence,
+                decision.reason_code,
+            )
+            for decision in matching
+        }
+        return (matching[0], False) if len(signatures) == 1 else (None, True)
+
+    @staticmethod
+    def _response_from(
+        decision: HealthLabsNutritionCuratorDecision,
+        candidate_set: NutritionCuratorCandidateSet,
+    ) -> NutritionCuratorProviderDecision | None:
+        try:
+            return NutritionCuratorProviderDecision.model_validate(
+                {
+                    "decision": "select",
+                    "kind": decision.kind,
+                    **(decision.selected_ids or {}),
+                    "confidence": decision.confidence,
+                    "runner_up_confidence": decision.runner_up_confidence,
+                    "reason_code": decision.reason_code,
+                    "rationale": decision.rationale,
+                }
+            ).validated_for(candidate_set)
+        except TypeError, ValueError:
+            return None
 
     def _claim_existing(self, decision: HealthLabsNutritionCuratorDecision) -> bool:
         claimed = self.session.execute(

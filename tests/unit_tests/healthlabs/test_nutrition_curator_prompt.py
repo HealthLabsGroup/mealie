@@ -32,6 +32,7 @@ def _candidate_set(kind: str, ids: dict[str, str], label: str = "Supplied candid
         target_id="target-1",
         work_input_sha256="1" * 64,
         curator_sha256="2" * 64,
+        reuse_sha256="3" * 64,
         prompt_payload=payload,
         snapshot={"candidates": candidates},
     )

@@ -510,7 +510,8 @@ def test_start_is_unique_and_empty_candidates_finalize_without_provider(unique_u
     work = _work(user, "ingredient_structure", str(ingredient.id), fingerprint)
     service = NutritionCuratorService(user.repos.session)
 
-    assert service.start(work.id) is None
+    finalized = service.start(work.id)
+    assert finalized is not None and finalized.state == "insufficient_evidence"
     decision = user.repos.session.scalar(
         sa.select(HealthLabsNutritionCuratorDecision).where(HealthLabsNutritionCuratorDecision.work_id == work.id)
     )

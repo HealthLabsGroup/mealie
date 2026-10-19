@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -380,6 +381,18 @@ def test_curator_fingerprint_covers_context_but_not_candidate_order(
     repeated = service.build(work, provider)
     assert baseline is not None and repeated is not None
     assert repeated.curator_sha256 == baseline.curator_sha256
+    assert repeated.reuse_sha256 == baseline.reuse_sha256
+
+    other_target_payload = deepcopy(baseline.prompt_payload)
+    other_target_payload["targetId"] = str(uuid4())
+    other_curator_sha256, other_reuse_sha256 = service._fingerprints(
+        work,
+        provider,
+        other_target_payload,
+        baseline.snapshot,
+    )
+    assert other_curator_sha256 != baseline.curator_sha256
+    assert other_reuse_sha256 == baseline.reuse_sha256
 
     provider.api_key = "rotated-offline-test-key"
     user.repos.session.commit()
@@ -390,11 +403,13 @@ def test_curator_fingerprint_covers_context_but_not_candidate_order(
     user.repos.session.commit()
     changed_provider = service.build(work, provider)
     assert changed_provider is not None and changed_provider.curator_sha256 != baseline.curator_sha256
+    assert changed_provider.reuse_sha256 != baseline.reuse_sha256
     provider.model = "test/model-v1"
     release.sha256 = "f" * 64
     user.repos.session.commit()
     changed_source = service.build(work, provider)
     assert changed_source is not None and changed_source.curator_sha256 != baseline.curator_sha256
+    assert changed_source.reuse_sha256 != baseline.reuse_sha256
 
     release.sha256 = original_source_sha
     user.repos.session.commit()

@@ -25,6 +25,7 @@ def _candidate_set(kind: str = "food_match") -> NutritionCuratorCandidateSet:
         target_id="target-1",
         work_input_sha256="1" * 64,
         curator_sha256="2" * 64,
+        reuse_sha256="3" * 64,
         prompt_payload={
             "kind": kind,
             "targetId": "target-1",
@@ -164,6 +165,7 @@ def test_validation_accepts_only_kind_specific_supplied_ids() -> None:
         target_id="1",
         work_input_sha256="1" * 64,
         curator_sha256="2" * 64,
+        reuse_sha256="3" * 64,
         prompt_payload={
             "kind": "ingredient_structure",
             "targetId": "1",

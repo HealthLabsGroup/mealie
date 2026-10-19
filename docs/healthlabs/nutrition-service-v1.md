@@ -268,6 +268,16 @@ configuration, reviewed match, source release, or portion data changes the
 relevant fingerprint and makes the target eligible again. Unchanged review
 work is not retried and does not spend another provider request.
 
+Before calling the provider, Apple may reuse an approved decision from the
+same workspace only when the work input, candidate snapshot, catalogue and
+source releases, provider/model, and persona/prompt/policy context are
+identical. Reuse creates a separate immutable decision for the target, links
+it to the source decision, records no provider usage, and passes through the
+same current-fingerprint, candidate, confidence, margin, and compare-and-set
+validation as a new response. Conflicting approved decisions abstain with
+`reuse_conflict`; legacy decisions without a reuse fingerprint never seed
+reuse.
+
 Deterministic reconciliation always remains in the Mealie process:
 
 1. Resolve free-text ingredients against unique exact group food/unit records.

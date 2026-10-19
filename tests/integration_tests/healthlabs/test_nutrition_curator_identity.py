@@ -303,13 +303,31 @@ def test_group_deletion_removes_its_managed_agent(
     assert response.status_code == 201
     group_id = UUID(response.json()["id"])
     agent = NutritionCuratorIdentityService(unfiltered_database.session).get_or_create(group_id)
+    source = HealthLabsNutritionCuratorDecision(
+        group_id=group_id,
+        kind="food_match",
+        target_id=str(uuid4()),
+        work_input_sha256="3" * 64,
+        curator_sha256="4" * 64,
+        reuse_sha256="5" * 64,
+        agent_user_id=agent.id,
+        state="approved",
+        candidate_snapshot={},
+        provider_name="test",
+        provider_model="test",
+        prompt_version="test",
+    )
+    unfiltered_database.session.add(source)
+    unfiltered_database.session.flush()
     unfiltered_database.session.add(
         HealthLabsNutritionCuratorDecision(
             group_id=group_id,
             kind="food_match",
             target_id=str(uuid4()),
             work_input_sha256="3" * 64,
-            curator_sha256="4" * 64,
+            curator_sha256="6" * 64,
+            reuse_sha256="5" * 64,
+            reused_from_decision_id=source.id,
             agent_user_id=agent.id,
             state="approved",
             candidate_snapshot={},

@@ -17,7 +17,11 @@ from mealie.db.models.healthlabs import HealthLabsNutritionCuratorDecision, Heal
 from mealie.repos.repository_factory import AllRepositories
 from mealie.schema.healthlabs.nutrition_curator import NutritionCuratorProviderDecision
 from mealie.services.healthlabs.nutrition_curator_prompt import NutritionCuratorPrompt
-from mealie.services.healthlabs.nutrition_curator_service import NutritionCuratorService, StartedCuratorDecision
+from mealie.services.healthlabs.nutrition_curator_service import (
+    FinalizedCuratorDecision,
+    NutritionCuratorService,
+    StartedCuratorDecision,
+)
 from mealie.services.healthlabs.nutrition_provider_budget import NutritionProviderBudget, ProviderReservation
 from mealie.services.openai import OpenAIService
 from mealie.services.openai.openai import OpenAIRequestRejected
@@ -93,26 +97,23 @@ class NutritionCuratorWorker:
         for work_id in work_ids:
             if self.should_stop():
                 break
-            before = self.session.scalar(
-                sa.select(sa.func.count())
-                .select_from(HealthLabsNutritionCuratorDecision)
-                .where(HealthLabsNutritionCuratorDecision.work_id == work_id)
-            )
             started = NutritionCuratorService(self.session, country=self.country, now=now).start(work_id)
+            if isinstance(started, FinalizedCuratorDecision):
+                self.session.commit()
+                return NutritionCuratorReport(
+                    claimed=1,
+                    approved=int(started.state == "approved"),
+                    insufficient_evidence=int(started.state == "insufficient_evidence"),
+                    failed=0,
+                    provider_exhausted=False,
+                )
             if started is not None:
                 break
-            after = self.session.scalar(
-                sa.select(sa.func.count())
-                .select_from(HealthLabsNutritionCuratorDecision)
-                .where(HealthLabsNutritionCuratorDecision.work_id == work_id)
-            )
-            if after > before:
-                self.session.commit()
-                return NutritionCuratorReport(1, 0, 1, 0, False)
             self.session.rollback()
         if started is None:
             self.session.commit()
             return empty
+        assert isinstance(started, StartedCuratorDecision)
         decision = self.session.get(HealthLabsNutritionCuratorDecision, started.decision_id)
         if decision is None:
             self.session.rollback()

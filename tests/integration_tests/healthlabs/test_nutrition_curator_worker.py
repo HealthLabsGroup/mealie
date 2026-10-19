@@ -11,9 +11,10 @@ from mealie.db.models.healthlabs import (
     HealthLabsNutritionProviderUsage,
     HealthLabsNutritionWork,
 )
+from mealie.db.models.recipe import RecipeIngredientModel
 from mealie.db.models.users import User, UserType
 from mealie.schema.healthlabs.nutrition_curator import NutritionCuratorProviderDecision
-from mealie.schema.recipe import SaveIngredientFood
+from mealie.schema.recipe import Recipe, SaveIngredientFood, SaveIngredientUnit
 from mealie.services.healthlabs.nutrition_curator_prompt import NutritionCuratorPrompt
 from mealie.services.healthlabs.nutrition_curator_service import NutritionCuratorService
 from mealie.services.healthlabs.nutrition_curator_worker import NutritionCuratorWorker
@@ -109,6 +110,52 @@ def _food_work(user: TestUser, *, provider: bool = True):
     return food, nutrient_food, work
 
 
+def _ingredient_work(user: TestUser, *, provider: bool = True, food=None, unit=None):
+    if provider:
+        _provider(user)
+    food = food or user.repos.ingredient_foods.create(
+        SaveIngredientFood(group_id=user.group_id, name=f"shared apple {uuid4().hex[:8]}")
+    )
+    unit = unit or user.repos.ingredient_units.create(
+        SaveIngredientUnit(group_id=user.group_id, name=f"shared gram {uuid4().hex[:8]}")
+    )
+    source = f"1 {unit.name} {food.name}"
+    recipe = user.repos.recipes.create(
+        Recipe(
+            user_id=user.user_id,
+            group_id=user.group_id,
+            household_id=user.household_id,
+            name=f"Reuse recipe {uuid4()}",
+        )
+    )
+    ingredient = RecipeIngredientModel(
+        session=user.repos.session,
+        group_id=user.group_id,
+        recipe_id=recipe.id,
+        position=0,
+        original_text=source,
+    )
+    user.repos.session.add(ingredient)
+    user.repos.session.commit()
+    fingerprint = NutritionFingerprintService(
+        user.repos.session,
+        country="GB",
+        provider_enabled=True,
+    ).ingredient(ingredient, user.group_id)
+    work = HealthLabsNutritionWork(
+        group_id=user.group_id,
+        kind="ingredient_structure",
+        target_id=str(ingredient.id),
+        input_sha256=fingerprint,
+        state="review_required",
+        next_attempt_at=NOW,
+        result={"suggestion": {"quantity": 1, "food": food.name, "unit": unit.name}},
+    )
+    user.repos.session.add(work)
+    user.repos.session.commit()
+    return ingredient, food, unit, work
+
+
 def _install_success(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, str]]) -> None:
     async def complete(
         self,
@@ -134,16 +181,24 @@ def _install_success(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, str
         payload = message.removeprefix("<untrusted_context>\n").removesuffix("\n</untrusted_context>")
         import json
 
-        candidate_id = json.loads(payload)["candidates"]["foods"][0]["id"]
+        context = json.loads(payload)
+        selection = (
+            {"nutrient_food_id": context["candidates"]["foods"][0]["id"]}
+            if context["kind"] == "food_match"
+            else {
+                "food_id": context["candidates"]["foods"][0]["id"],
+                "unit_id": context["candidates"]["units"][0]["id"],
+            }
+        )
         return response_schema.model_validate(
             {
                 "decision": "select",
-                "kind": "food_match",
-                "nutrient_food_id": candidate_id,
+                "kind": context["kind"],
+                **selection,
                 "confidence": 0.99,
                 "runner_up_confidence": 0.1,
                 "reason_code": "name_and_context_match",
-                "rationale": "I selected the supplied compatible raw apple candidate.",
+                "rationale": "I selected the supplied compatible candidates.",
             }
         )
 
@@ -211,6 +266,101 @@ def test_worker_calls_only_bounded_prompt_and_finalizes_one_decision(
     untouched = second_work if decisions[0].work_id == first_work.id else first_work
     assert user.repos.session.get(HealthLabsNutritionWork, untouched.id).state == "review_required"
     untouched.state = "completed"
+    user.repos.session.commit()
+
+
+def test_worker_reuses_identical_approved_decision_without_provider_call(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch: pytest.MonkeyPatch,
+    curator_settings,
+) -> None:
+    user = unique_user_fn_scoped
+    first_ingredient, food, unit, first_work = _ingredient_work(user)
+    second_ingredient, _, _, second_work = _ingredient_work(user, provider=False, food=food, unit=unit)
+    calls: list[tuple[str, str]] = []
+    _install_success(monkeypatch, calls)
+
+    first = NutritionCuratorWorker(user.repos.session, now=NOW).run_once()
+    second = NutritionCuratorWorker(user.repos.session, now=NOW).run_once()
+
+    assert (first.approved, second.approved) == (1, 1)
+    assert len(calls) == 1
+    decisions = user.repos.session.scalars(
+        sa.select(HealthLabsNutritionCuratorDecision)
+        .where(HealthLabsNutritionCuratorDecision.group_id == user.group_id)
+        .order_by(HealthLabsNutritionCuratorDecision.created_at, HealthLabsNutritionCuratorDecision.id)
+    ).all()
+    assert len(decisions) == 2
+    assert {decision.target_id for decision in decisions} == {str(first_ingredient.id), str(second_ingredient.id)}
+    reused = next(decision for decision in decisions if decision.reused_from_decision_id is not None)
+    source = next(decision for decision in decisions if decision.id == reused.reused_from_decision_id)
+    assert reused.id != source.id
+    assert reused.work_id == second_work.id or reused.work_id == first_work.id
+    assert reused.candidate_snapshot == source.candidate_snapshot
+    assert reused.work_input_sha256 == source.work_input_sha256
+    assert reused.selected_ids == source.selected_ids == {"food_id": str(food.id), "unit_id": str(unit.id)}
+    assert reused.usage == {}
+
+
+def test_worker_abstains_when_identical_approved_decisions_conflict(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch: pytest.MonkeyPatch,
+    curator_settings,
+) -> None:
+    user = unique_user_fn_scoped
+    _, food, unit, _ = _ingredient_work(user)
+    _, _, _, second_work = _ingredient_work(user, provider=False, food=food, unit=unit)
+    calls: list[tuple[str, str]] = []
+    _install_success(monkeypatch, calls)
+    assert NutritionCuratorWorker(user.repos.session, now=NOW).run_once().approved == 1
+    source = user.repos.session.scalar(
+        sa.select(HealthLabsNutritionCuratorDecision).where(
+            HealthLabsNutritionCuratorDecision.group_id == user.group_id,
+            HealthLabsNutritionCuratorDecision.state == "approved",
+        )
+    )
+    assert source is not None and source.reuse_sha256 is not None
+    user.repos.session.add(
+        HealthLabsNutritionCuratorDecision(
+            group_id=source.group_id,
+            kind=source.kind,
+            target_id=f"historical-{uuid4()}",
+            work_input_sha256=source.work_input_sha256,
+            curator_sha256=uuid4().hex.ljust(64, "0"),
+            reuse_sha256=source.reuse_sha256,
+            agent_user_id=source.agent_user_id,
+            state="approved",
+            attempt_count=1,
+            next_attempt_at=NOW,
+            candidate_snapshot=source.candidate_snapshot,
+            selected_ids={"food_id": str(uuid4()), "unit_id": str(unit.id)},
+            confidence=0.99,
+            runner_up_confidence=0.1,
+            reason_code="name_and_context_match",
+            rationale="I selected different supplied candidates.",
+            provider_id=source.provider_id,
+            provider_name=source.provider_name,
+            provider_model=source.provider_model,
+            prompt_version=source.prompt_version,
+            requested_at=NOW,
+            usage={"input_tokens": 1, "output_tokens": 1},
+        )
+    )
+    user.repos.session.commit()
+
+    report = NutritionCuratorWorker(user.repos.session, now=NOW).run_once()
+
+    assert (report.claimed, report.approved, report.insufficient_evidence) == (1, 0, 1)
+    assert len(calls) == 1
+    decision = user.repos.session.scalar(
+        sa.select(HealthLabsNutritionCuratorDecision).where(
+            HealthLabsNutritionCuratorDecision.work_id == second_work.id
+        )
+    )
+    assert decision is not None
+    assert decision.state == "insufficient_evidence" and decision.reason_code == "reuse_conflict"
+    assert decision.reused_from_decision_id is None
+    second_work.state = "completed"
     user.repos.session.commit()
 
 

@@ -1,6 +1,10 @@
 # HealthLabs nutrition sources
 
-HealthLabs imports only local, checksum-pinned source files. The importer never downloads a URL, so a mutable upstream file cannot change an existing release silently.
+HealthLabs imports only local, checksum-pinned source files. Source datasets stay
+outside the repository and image build context; each operator obtains the
+official file independently and passes its absolute local path to the importer.
+The importer never downloads a URL, so a mutable upstream file cannot change an
+existing release silently.
 
 ## Approved source releases
 

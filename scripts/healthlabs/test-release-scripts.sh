@@ -54,11 +54,24 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$fixture_root/.github/workflows" "$fixture_root/docker"
+cp "$repository_root/LICENSE" "$repository_root/README.md" "$repository_root/HEALTHLABS.md" "$fixture_root/"
+cp "$repository_root/.github/pull_request_template.md" "$fixture_root/.github/pull_request_template.md"
 cp "$repository_root/.github/workflows/publish.yml" "$fixture_root/.github/workflows/publish.yml"
 cp "$repository_root/.github/workflows/pull-requests.yml" "$fixture_root/.github/workflows/pull-requests.yml"
 cp "$repository_root/.github/workflows/release.yml" "$fixture_root/.github/workflows/release.yml"
 cp "$repository_root/.github/workflows/partial-trivy-container-scanning.yml" "$fixture_root/.github/workflows/partial-trivy-container-scanning.yml"
 cp "$repository_root/docker/Dockerfile" "$fixture_root/docker/Dockerfile"
+git -C "$fixture_root" init --quiet
+git -C "$fixture_root" add .
+"$script_dir/verify-governance.sh" "$fixture_root"
+
+printf 'synthetic fixture\n' > "$fixture_root/density_DB_v2.xlsx"
+git -C "$fixture_root" add -f density_DB_v2.xlsx
+if "$script_dir/verify-governance.sh" "$fixture_root" >/dev/null 2>&1; then
+  printf 'accepted a tracked nutrition source workbook\n' >&2
+  exit 1
+fi
+
 "$script_dir/verify-release-policy.sh" "$fixture_root"
 
 sed -E \

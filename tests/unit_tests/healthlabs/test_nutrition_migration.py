@@ -334,6 +334,9 @@ def test_density_migration_adds_provenance_table_and_portion_link() -> None:
             assert {
                 constraint["name"] for constraint in inspector.get_check_constraints("healthlabs_food_portions")
             } >= {"healthlabs_food_portion_density_source_valid"}
+            assert {constraint["name"] for constraint in inspector.get_foreign_keys("healthlabs_food_portions")} >= {
+                "fk_hl_food_portion_density"
+            }
 
             with Operations.context(MigrationContext.configure(connection)):
                 density_migration.downgrade()

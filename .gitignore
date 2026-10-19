@@ -35,6 +35,11 @@ node_modules
 .env.*.local
 *.local.*
 
+# Nutrition source workbooks are obtained independently and imported locally.
+*.xlsx
+*.xls
+*.ods
+
 
 # Log files
 npm-debug.log*

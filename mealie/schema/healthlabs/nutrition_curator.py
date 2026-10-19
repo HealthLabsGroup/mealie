@@ -87,6 +87,18 @@ class NutritionCuratorProviderDecision(OpenAIBase):
     rationale: str
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_redundant_food_match_alias(cls, value: Any) -> Any:
+        if (
+            isinstance(value, dict)
+            and value.get("kind") == "food_match"
+            and value.get("food_id") is not None
+            and value.get("food_id") == value.get("nutrient_food_id")
+        ):
+            return {**value, "food_id": None}
+        return value
+
     @field_validator("decision", mode="before")
     @classmethod
     def normalize_decision(cls, value: Any) -> Any:

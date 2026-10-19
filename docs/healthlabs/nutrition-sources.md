@@ -7,11 +7,16 @@ HealthLabs imports only local, checksum-pinned source files. The importer never 
 | Provider | Pinned release | Country | Source | Licence and required attribution |
 |---|---|---|---|---|
 | `usda` | FoodData Central Foundation Foods 04/2026 | `OTHER` | [USDA downloads](https://fdc.nal.usda.gov/download-datasets/) | [CC0 1.0](https://fdc.nal.usda.gov/api-guide/); attribute “U.S. Department of Agriculture, Agricultural Research Service. FoodData Central.” |
+| `usda` | FoodData Central Survey (FNDDS) 2021–2023, published 2024-10-31 | `OTHER` | [USDA archive](https://fdc.nal.usda.gov/fdc-datasets/FoodData_Central_survey_food_json_2024-10-31.zip) | [CC0 1.0](https://fdc.nal.usda.gov/api-guide/); attribute “U.S. Department of Agriculture, Agricultural Research Service. FoodData Central.” |
 | `cofid` | CoFID 2021 | `GB` | [GOV.UK release](https://www.gov.uk/government/publications/composition-of-foods-integrated-dataset-cofid) | [Open Government Licence v3.0](https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/); attribute Public Health England and McCance and Widdowson’s CoFID 2021. |
 | `ciqual` | ANSES-CIQUAL 2025 | `FR` | [ANSES release](https://ciqual.anses.fr/cms/en/2025-anses-ciqual-table) | [Licence Ouverte](https://www.etalab.gouv.fr/licence-ouverte-open-licence/); attribute “Anses. 2025. Table de composition nutritionnelle des aliments Ciqual 2025”, DOI `10.57745/RDMHWY`. |
 | `bls` | Bundeslebensmittelschlüssel 4.0 (2025) | `DE` | [BLS download](https://blsdb.prod.se.ble.de/bls) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); attribute Max Rubner-Institut (2025), DOI `10.25826/Data20251217-134202-0`. |
 
 Poland is blocked: the NIZP PZH full database is supplied under a purchased licence agreement, so it is not imported until HealthLabs records redistribution-compatible terms. Ukraine has no verified national open food-composition release in this policy; Ukrainian aliases may reference an approved source while retaining that source’s country and provenance.
+
+USDA releases use the country-neutral `OTHER` selection tier so they can act as a
+fallback when the requested national catalogue has no match. Their US provenance
+remains explicit in the provider, release name, source URL, and attribution.
 
 ## Accepted files
 
@@ -129,3 +134,11 @@ The four pinned inputs imported 13,874 authoritative food rows:
 On a fresh copy of the running DEV database, the target workspace contained 5 recipes, 33 distinct foods, and 36 structured ingredient rows. Its classification was 0 reviewed matches, 3 review-required exact/alias candidates, and 30 unknown foods; a second global backfill created 0 matches, and the report found 0 mock source releases.
 
 The full migrated catalogue restore contained 2,736 recipes, 315 distinct foods, and 27,828 ingredient rows. Food classification was 0 reviewed matches, 12 review-required exact/alias candidates, and 303 unknown foods. Ingredient coverage was 4,788 structured rows (0 matched, 369 review-required, 4,419 unknown) plus 23,040 explicitly unparsed rows. A second backfill created 0 matches, and the report found 0 mock source releases.
+
+## FNDDS parser verification — 2026-10-19
+
+The unzipped `surveyDownload.json` from the approved 2024-10-31 archive has
+SHA-256 `2e7eb9fda92adf1d4d784dba5eaa3a7fd4418cd86ccff383c7c9294d79e9b808`.
+The importer reads 5,432 foods and 16,468 positive numeric described portions.
+Non-numeric guidance such as `Quantity not specified` is intentionally not used
+as a gram conversion.

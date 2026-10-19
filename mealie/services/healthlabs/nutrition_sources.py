@@ -3,12 +3,15 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, TypedDict
+from xml.etree import ElementTree
+from zipfile import BadZipFile, ZipFile
 
-from mealie.schema.healthlabs.nutrition_source import NutrientValue, SourceFoodRow, SourcePortion
+from mealie.schema.healthlabs.nutrition_source import NutrientValue, SourceDensityRow, SourceFoodRow, SourcePortion
 
 CORE_UNITS = {
     "kcal": "kcal",
@@ -33,6 +36,8 @@ USDA_NUTRIENT_IDS = {
 USDA_DESCRIBED_PORTION = re.compile(
     r"^(?:(?P<numerator>\d+)/(?P<denominator>[1-9]\d*)|(?P<whole>\d+(?:\.\d+)?))\s+(?P<label>.+)$"
 )
+DENSITY_RANGE = re.compile(r"^\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?$")
+XLSX_NAMESPACE = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
 
 class CsvSourceConfig(TypedDict):
@@ -99,6 +104,71 @@ def parse_source_file(provider: str, path: Path) -> Iterable[SourceFoodRow]:
     if provider in CSV_FIELDS:
         return _parse_csv(provider, path)
     raise ValueError(f"unsupported nutrition source provider: {provider}")
+
+
+def parse_density_source_file(provider: str, path: Path) -> Iterable[SourceDensityRow]:
+    if provider.lower() != "fao_infoods_density":
+        raise ValueError(f"unsupported density source provider: {provider}")
+    return _parse_fao_infoods_density(path)
+
+
+def _parse_fao_infoods_density(path: Path) -> Iterator[SourceDensityRow]:
+    try:
+        with ZipFile(path) as archive:
+            shared_root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+            shared_strings = [
+                "".join(text.text or "" for text in item.iterfind(".//m:t", XLSX_NAMESPACE))
+                for item in shared_root.findall("m:si", XLSX_NAMESPACE)
+            ]
+            # shortcut: FAO v2 pins the density table to sheet2.xml, resolve workbook relations for another release.
+            sheet = ElementTree.fromstring(archive.read("xl/worksheets/sheet2.xml"))
+    except (BadZipFile, KeyError, ElementTree.ParseError) as exc:
+        raise ValueError("invalid FAO/INFOODS density workbook") from exc
+
+    rows = sheet.findall(".//m:sheetData/m:row", XLSX_NAMESPACE)
+    if not rows:
+        raise ValueError("FAO/INFOODS density workbook is empty")
+
+    def values(row: ElementTree.Element) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for cell in row.findall("m:c", XLSX_NAMESPACE):
+            column = "".join(character for character in cell.attrib.get("r", "") if character.isalpha())
+            raw = cell.find("m:v", XLSX_NAMESPACE)
+            value = "" if raw is None else raw.text or ""
+            if cell.attrib.get("t") == "s" and value:
+                try:
+                    value = shared_strings[int(value)]
+                except (IndexError, ValueError) as exc:
+                    raise ValueError("invalid shared string in FAO/INFOODS density workbook") from exc
+            result[column] = value.strip()
+        return result
+
+    headers = values(rows[0])
+    if (
+        headers.get("A") != "Food name and description"
+        or not headers.get("B", "").startswith("Density in g/ml")
+        or headers.get("D") != "BiblioID"
+    ):
+        raise ValueError("unexpected FAO/INFOODS density workbook headers")
+
+    for row in rows[1:]:
+        row_values = values(row)
+        raw_density = row_values.get("B", "")
+        if not raw_density or DENSITY_RANGE.fullmatch(raw_density):
+            continue
+        try:
+            density = float(raw_density)
+        except ValueError as exc:
+            raise ValueError(f"invalid scalar density at worksheet row {row.attrib.get('r', '?')}") from exc
+        if not math.isfinite(density) or density <= 0:
+            raise ValueError(f"invalid scalar density at worksheet row {row.attrib.get('r', '?')}")
+        row_number = row.attrib.get("r", "")
+        yield SourceDensityRow(
+            source_record_id=f"Density DB!{row_number}",
+            name=row_values.get("A", ""),
+            grams_per_ml=density,
+            reference_id=row_values.get("D", ""),
+        )
 
 
 def _number(raw: Any) -> float | None:

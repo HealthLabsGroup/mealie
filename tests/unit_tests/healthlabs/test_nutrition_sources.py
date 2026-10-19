@@ -1,12 +1,51 @@
 import csv
 import json
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
-from mealie.services.healthlabs.nutrition_sources import parse_source_file, verify_source_checksum
+from mealie.services.healthlabs.nutrition_sources import (
+    parse_density_source_file,
+    parse_source_file,
+    verify_source_checksum,
+)
 
 CORE_NUTRIENTS = {"kcal", "protein_g", "fibre_g", "carbs_g", "fat_g", "water_ml"}
+
+
+def _density_workbook(path: Path, *, empty: bool = False) -> None:
+    shared_strings = [
+        "Food name and description",
+        "Density in g/ml (including mass and bulk density)",
+        "BiblioID",
+        "Beverages",
+        "Apple juice",
+        "USDA",
+        "Ice, crushed",
+        "0.56-0.72",
+        "ASI",
+        "Water",
+        "CG",
+    ]
+    shared_xml = "".join(f"<si><t>{value}</t></si>" for value in shared_strings)
+    sheet_xml = """<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
+      <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="D1" t="s"><v>2</v></c></row>
+      <row r="2"><c r="A2" t="s"><v>3</v></c></row>
+      <row r="3"><c r="A3" t="s"><v>4</v></c><c r="B3"><v>1.043</v></c><c r="D3" t="s"><v>5</v></c></row>
+      <row r="4"><c r="A4" t="s"><v>6</v></c><c r="B4" t="s"><v>7</v></c><c r="D4" t="s"><v>8</v></c></row>
+      <row r="5"><c r="A5" t="s"><v>9</v></c><c r="C5"><v>1</v></c><c r="D5" t="s"><v>10</v></c></row>
+    </sheetData></worksheet>"""
+    if empty:
+        sheet_xml = (
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>'
+        )
+    with ZipFile(path, "w") as workbook:
+        workbook.writestr(
+            "xl/sharedStrings.xml",
+            f'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">{shared_xml}</sst>',
+        )
+        workbook.writestr("xl/worksheets/sheet2.xml", sheet_xml)
 
 
 def _amounts(path: Path, provider: str) -> tuple[dict[str, float | None], dict[str, object]]:
@@ -15,6 +54,30 @@ def _amounts(path: Path, provider: str) -> tuple[dict[str, float | None], dict[s
         {key: value.amount for key, value in row.nutrients_per_100g.items()},
         row.raw_nutrients,
     )
+
+
+def test_fao_infoods_density_parser_keeps_only_positive_scalar_density_rows(tmp_path: Path) -> None:
+    source = tmp_path / "density.xlsx"
+    _density_workbook(source)
+
+    rows = list(parse_density_source_file("fao_infoods_density", source))
+
+    assert [row.model_dump() for row in rows] == [
+        {
+            "source_record_id": "Density DB!3",
+            "name": "Apple juice",
+            "grams_per_ml": 1.043,
+            "reference_id": "USDA",
+        }
+    ]
+
+
+def test_fao_infoods_density_parser_rejects_unexpected_headers(tmp_path: Path) -> None:
+    source = tmp_path / "density.xlsx"
+    _density_workbook(source, empty=True)
+
+    with pytest.raises(ValueError, match="empty"):
+        list(parse_density_source_file("fao_infoods_density", source))
 
 
 def test_usda_fooddata_central_json_maps_core_and_preserves_other_nutrients(tmp_path: Path) -> None:

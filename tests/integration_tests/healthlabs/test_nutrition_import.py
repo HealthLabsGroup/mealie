@@ -6,12 +6,13 @@ import pytest
 from sqlalchemy import func, select
 
 from mealie.db.models.healthlabs import (
+    HealthLabsFoodDensity,
     HealthLabsFoodMatch,
     HealthLabsFoodPortion,
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
 )
-from mealie.schema.healthlabs.nutrition_source import NutrientValue, SourceFoodRow, SourceManifest
+from mealie.schema.healthlabs.nutrition_source import NutrientValue, SourceDensityRow, SourceFoodRow, SourceManifest
 from mealie.schema.recipe import SaveIngredientFood
 from mealie.services.healthlabs.nutrition_import_service import NutritionImportService, SourceChecksumMismatch
 from tests.utils import TestUser
@@ -42,6 +43,65 @@ def _row(source_food_id: str = "food-1", *, name: str = "Cooked lentils") -> Sou
         raw_nutrients={"Calcium": {"amount": 19.0, "unit": "mg"}},
         portions=[{"description": "cup", "amount": 1, "unit": "cup", "grams": 198}],
     )
+
+
+def _density_manifest() -> SourceManifest:
+    return _manifest(provider="fao_infoods_density", sha256="d" * 64).model_copy(
+        update={"version": "2.0", "country": "OTHER"}
+    )
+
+
+def test_density_import_stores_all_rows_and_links_only_unique_exact_names(
+    unique_user_fn_scoped: TestUser,
+) -> None:
+    session = unique_user_fn_scoped.repos.session
+    service = NutritionImportService(session)
+    food_manifest = _manifest()
+    food_result = service.import_release(food_manifest, [_row(name="Apple juice")])
+    nutrient_food = session.scalars(
+        select(HealthLabsNutrientFood).where(HealthLabsNutrientFood.source_release_id == food_result.source_release_id)
+    ).one()
+    density_rows = [
+        SourceDensityRow(
+            source_record_id="Density DB!3",
+            name="Apple juice",
+            grams_per_ml=1.043,
+            reference_id="USDA",
+        ),
+        SourceDensityRow(
+            source_record_id="Density DB!203",
+            name="Milk, liquid, skimmed",
+            grams_per_ml=1.033,
+            reference_id="TB",
+        ),
+        SourceDensityRow(
+            source_record_id="Density DB!204",
+            name="Milk, liquid, skimmed",
+            grams_per_ml=1.036,
+            reference_id="DK",
+        ),
+    ]
+
+    first = service.import_density_release(_density_manifest(), density_rows)
+    portion = session.scalars(select(HealthLabsFoodPortion).where(HealthLabsFoodPortion.density_id.is_not(None))).one()
+    portion_id = portion.id
+    second = service.import_density_release(_density_manifest(), density_rows)
+
+    assert first.created_release is True
+    assert first.densities_imported == 3
+    assert first.portions_linked == 1
+    assert first.ambiguous_rows == 2
+    assert second.created_release is False
+    assert session.scalar(select(func.count()).select_from(HealthLabsFoodDensity)) == 3
+    assert portion.nutrient_food_id == nutrient_food.id
+    assert portion.amount == 1
+    assert portion.unit == "ml"
+    assert portion.grams == pytest.approx(1.043)
+    assert portion.id == portion_id
+
+    service.import_release(food_manifest, [_row(name="Apple juice")])
+    assert session.get(HealthLabsFoodPortion, portion_id) is not None
+    session.commit()
 
 
 def test_reimport_is_idempotent_and_updates_existing_food(unique_user_fn_scoped: TestUser) -> None:

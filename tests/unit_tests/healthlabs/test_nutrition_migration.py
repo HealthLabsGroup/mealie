@@ -44,6 +44,11 @@ def _curator_migration():
     return import_file("add_healthlabs_nutrition_curator", path)
 
 
+def _density_migration():
+    path = next(ALEMBIC_MIGRATIONS.glob("*d257f9c4a6b8*.py"))
+    return import_file("add_healthlabs_food_densities", path)
+
+
 def _prepare_legacy_portion(connection, *, matched_groups: int) -> tuple[str, tuple[str, ...]]:
     connection.execute(sa.text("PRAGMA foreign_keys=ON"))
     connection.execute(sa.text("CREATE TABLE users (id CHAR(32) PRIMARY KEY)"))
@@ -304,6 +309,35 @@ def test_portion_scope_migration_assigns_an_unambiguous_owner_and_protects_downg
             assert "group_id" not in {
                 column["name"] for column in sa.inspect(connection).get_columns("healthlabs_food_portions")
             }
+    finally:
+        engine.dispose()
+
+
+def test_density_migration_adds_provenance_table_and_portion_link() -> None:
+    scope_migration = _portion_scope_migration()
+    density_migration = _density_migration()
+    engine = sa.create_engine("sqlite://")
+
+    try:
+        with engine.connect() as connection:
+            _prepare_legacy_portion(connection, matched_groups=1)
+            with Operations.context(MigrationContext.configure(connection)):
+                scope_migration.upgrade()
+                density_migration.upgrade()
+
+            inspector = sa.inspect(connection)
+            assert "healthlabs_food_densities" in inspector.get_table_names()
+            assert "density_id" in {column["name"] for column in inspector.get_columns("healthlabs_food_portions")}
+            assert {
+                constraint["name"] for constraint in inspector.get_unique_constraints("healthlabs_food_portions")
+            } >= {"healthlabs_food_portion_density_key"}
+            assert {
+                constraint["name"] for constraint in inspector.get_check_constraints("healthlabs_food_portions")
+            } >= {"healthlabs_food_portion_density_source_valid"}
+
+            with Operations.context(MigrationContext.configure(connection)):
+                density_migration.downgrade()
+            assert "healthlabs_food_densities" not in sa.inspect(connection).get_table_names()
     finally:
         engine.dispose()
 

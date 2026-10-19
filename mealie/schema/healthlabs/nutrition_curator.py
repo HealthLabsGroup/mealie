@@ -87,6 +87,11 @@ class NutritionCuratorProviderDecision(OpenAIBase):
     rationale: str
     model_config = ConfigDict(extra="forbid")
 
+    @field_validator("decision", mode="before")
+    @classmethod
+    def normalize_decision(cls, value: Any) -> Any:
+        return "select" if value == "selection" else value
+
     @field_validator("rationale", mode="before")
     @classmethod
     def sanitize_rationale(cls, value: Any) -> str:

@@ -79,6 +79,12 @@ def test_provider_decision_forbids_unknown_fields_and_unknown_reason_codes() -> 
         NutritionCuratorProviderDecision.model_validate(_decision(reason_code="trust_me"))
 
 
+def test_provider_decision_normalizes_selection_alias() -> None:
+    decision = NutritionCuratorProviderDecision.model_validate(_decision(decision="selection"))
+
+    assert decision.decision == "select"
+
+
 def test_provider_decision_sanitizes_markup_controls_and_whitespace() -> None:
     decision = NutritionCuratorProviderDecision.model_validate(
         _decision(rationale="  <strong>I selected</strong>   Apple, raw.\x00\n")

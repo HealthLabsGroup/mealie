@@ -52,7 +52,7 @@ def upgrade() -> None:
     with op.batch_alter_table("healthlabs_food_portions") as batch_op:
         batch_op.add_column(sa.Column("density_id", GUID(), nullable=True))
         batch_op.create_foreign_key(
-            "fk_healthlabs_food_portions_density_id_healthlabs_food_densities",
+            "fk_hl_food_portion_density",
             "healthlabs_food_densities",
             ["density_id"],
             ["id"],
@@ -79,7 +79,7 @@ def downgrade() -> None:
         batch_op.drop_constraint("healthlabs_food_portion_density_key", type_="unique")
         batch_op.drop_constraint("healthlabs_food_portion_density_source_valid", type_="check")
         batch_op.drop_constraint(
-            "fk_healthlabs_food_portions_density_id_healthlabs_food_densities",
+            "fk_hl_food_portion_density",
             type_="foreignkey",
         )
         batch_op.drop_column("density_id")

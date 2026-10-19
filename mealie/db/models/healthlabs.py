@@ -316,7 +316,11 @@ class HealthLabsFoodPortion(SqlAlchemyBase, BaseMixins):
     )
     density_id: Mapped[GUID | None] = mapped_column(
         GUID,
-        ForeignKey("healthlabs_food_densities.id", ondelete="RESTRICT"),
+        ForeignKey(
+            "healthlabs_food_densities.id",
+            name="fk_hl_food_portion_density",
+            ondelete="RESTRICT",
+        ),
         nullable=True,
         index=True,
     )

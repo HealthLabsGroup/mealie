@@ -204,6 +204,7 @@ class NutritionCuratorCandidateService:
                     "label": nutrient_food.name,
                     "preparationState": nutrient_food.preparation_state,
                     "country": release.country.upper(),
+                    "countryCompatible": True,
                     "sourceLabel": f"{release.provider} {release.version}",
                     "score": round(score, 3),
                     "specificityScore": round(specificity_score, 3),

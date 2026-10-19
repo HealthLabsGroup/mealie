@@ -85,6 +85,16 @@ def test_provider_decision_normalizes_selection_alias() -> None:
     assert decision.decision == "select"
 
 
+def test_food_match_normalizes_only_redundant_food_id_alias() -> None:
+    decision = NutritionCuratorProviderDecision.model_validate(_decision(food_id=FOOD_ID))
+
+    assert decision.food_id is None
+    assert str(decision.nutrient_food_id) == FOOD_ID
+
+    with pytest.raises(ValidationError):
+        NutritionCuratorProviderDecision.model_validate(_decision(food_id=OTHER_FOOD_ID))
+
+
 def test_provider_decision_sanitizes_markup_controls_and_whitespace() -> None:
     decision = NutritionCuratorProviderDecision.model_validate(
         _decision(rationale="  <strong>I selected</strong>   Apple, raw.\x00\n")

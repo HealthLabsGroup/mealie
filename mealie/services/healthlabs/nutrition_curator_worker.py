@@ -196,7 +196,7 @@ class NutritionCuratorWorker:
             )
 
     def _fail(self, decision_id: UUID, exc: Exception, now: datetime) -> NutritionCuratorReport:
-        logger.warning("Nutrition curator provider failure error_type=%s", type(exc).__name__)
+        logger.warning("Nutrition curator provider failure error_type=%s", type(exc.__cause__ or exc).__name__)
         state = NutritionCuratorService(self.session, country=self.country, now=now).fail(decision_id, exc)
         self.session.commit()
         return NutritionCuratorReport(1, 0, 0, int(state == "failed"), False)

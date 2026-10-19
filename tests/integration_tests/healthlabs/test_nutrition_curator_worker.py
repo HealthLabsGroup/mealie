@@ -255,7 +255,7 @@ def test_provider_failures_retry_after_five_and_thirty_minutes_then_stop(
 
     async def fail(*_args, request_guard, max_completion_tokens, **_kwargs):
         assert request_guard(1, max_completion_tokens)
-        raise RuntimeError("secret provider body must not be stored")
+        raise Exception("secret provider wrapper") from ValueError("secret provider body must not be stored")
 
     monkeypatch.setattr(OpenAIService, "get_response", fail)
     times = (NOW, NOW + timedelta(minutes=5), NOW + timedelta(minutes=35))
@@ -277,7 +277,8 @@ def test_provider_failures_retry_after_five_and_thirty_minutes_then_stop(
     report = NutritionCuratorWorker(user.repos.session, now=NOW + timedelta(days=1)).run_once()
     assert report.claimed == 0
     assert user.repos.session.get(HealthLabsNutritionCuratorDecision, decision_id).state == "failed"
-    assert caplog.text.count("Nutrition curator provider failure error_type=RuntimeError") == 3
+    assert caplog.text.count("Nutrition curator provider failure error_type=ValueError") == 3
+    assert "secret provider wrapper" not in caplog.text
     assert "secret provider body" not in caplog.text
 
 

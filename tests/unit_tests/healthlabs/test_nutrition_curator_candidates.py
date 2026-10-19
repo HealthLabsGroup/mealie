@@ -252,6 +252,7 @@ def test_food_candidates_are_country_preparation_scoped_capped_and_public(
     candidates = candidate_set.prompt_payload["candidates"]["foods"]
     assert len(candidates) == 8
     assert {item["country"] for item in candidates} <= {"GB", "OTHER"}
+    assert all(item["countryCompatible"] is True for item in candidates)
     assert all(item["preparationState"] in {None, "raw"} for item in candidates)
     assert str(wrong_country.id) not in {item["id"] for item in candidates}
     assert str(wrong_preparation.id) not in {item["id"] for item in candidates}

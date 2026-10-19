@@ -64,6 +64,8 @@ def test_system_prompt_defines_food_match_evidence_contract() -> None:
     prompt = NutritionCuratorPrompt.system()
 
     assert "`OTHER` is a compatible generic fallback" in prompt
+    assert "All supplied food candidates are country-compatible" in prompt
+    assert "Never reject a candidate solely because its country is `OTHER`" in prompt
     assert "`food_match` requires only `nutrient_food_id`" in prompt
     assert "Do not require a unit or portion for `food_match`" in prompt
     assert "`score` and `specificityScore` are 0–100 retrieval signals" in prompt

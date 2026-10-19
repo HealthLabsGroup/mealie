@@ -23,3 +23,10 @@ require_text HEALTHLABS.md "ghcr.io/healthlabsgroup/mealie"
 require_text HEALTHLABS.md "Ephra integration boundary"
 require_text .github/pull_request_template.md "Change classification"
 require_text .github/pull_request_template.md "AGPL/source disclosure impact"
+
+# shortcut: approved nutrition sources currently use workbooks, extend the patterns if a new source format could expose licensed data.
+tracked_workbooks=$(git -C "$repository_root" ls-files -- '*.xlsx' '*.xls' '*.ods')
+if [[ -n $tracked_workbooks ]]; then
+  printf 'tracked nutrition source workbooks are forbidden:\n%s\n' "$tracked_workbooks" >&2
+  exit 1
+fi

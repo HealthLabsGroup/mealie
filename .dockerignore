@@ -23,6 +23,11 @@ venv
 .LSOverride
 ._*
 
+# Nutrition source workbooks must not enter the image build context.
+*.xlsx
+*.xls
+*.ods
+
 */node_modules
 */dist
 /dist/

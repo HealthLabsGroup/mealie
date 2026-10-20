@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 import sqlalchemy as sa
 
+from mealie.core import exceptions
 from mealie.core.config import get_app_settings
 from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
 from mealie.db.models.healthlabs import (
@@ -170,7 +171,8 @@ def _install_success(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, str
         disable_reasoning,
         **_kwargs,
     ):
-        del self, provider
+        del provider
+        assert not self.repos.session.in_transaction()
         calls.append((prompt, message))
         assert response_schema is NutritionCuratorProviderDecision
         assert max_completion_tokens == 64
@@ -430,6 +432,46 @@ def test_provider_failures_retry_after_five_and_thirty_minutes_then_stop(
     assert caplog.text.count("Nutrition curator provider failure error_type=ValueError") == 3
     assert "secret provider wrapper" not in caplog.text
     assert "secret provider body" not in caplog.text
+
+
+def test_due_provider_retry_is_ordered_before_ordinary_work(
+    unique_user_fn_scoped: TestUser,
+    curator_settings,
+) -> None:
+    user = unique_user_fn_scoped
+    _, _, ordinary_work = _food_work(user)
+    _, _, retry_work = _food_work(user, provider=False)
+    ordinary_work.next_attempt_at = NOW - timedelta(days=1)
+    started = NutritionCuratorService(user.repos.session, now=NOW).start(retry_work.id)
+    assert started is not None
+    decision = user.repos.session.get(HealthLabsNutritionCuratorDecision, started.decision_id)
+    assert decision is not None
+    decision.state = "pending"
+    decision.reason_code = "provider_failure"
+    decision.next_attempt_at = NOW
+    decision.lease_expires_at = None
+    user.repos.session.commit()
+
+    work_ids = NutritionCuratorWorker(user.repos.session, now=NOW).work_ids()
+
+    assert work_ids[:2] == [retry_work.id, ordinary_work.id]
+
+
+def test_rate_limit_freezes_supervisor_growth_signal(
+    unique_user_fn_scoped: TestUser,
+    curator_settings,
+) -> None:
+    user = unique_user_fn_scoped
+    _, _, work = _food_work(user)
+    started = NutritionCuratorService(user.repos.session, now=NOW).start(work.id)
+    assert started is not None
+    user.repos.session.commit()
+    worker = NutritionCuratorWorker(user.repos.session, now=NOW)
+
+    report = worker._fail(started.decision_id, exceptions.RateLimitError("provider throttled"), NOW)
+
+    assert report.provider_error is True
+    assert report.throttled is True
 
 
 def test_failed_previous_response_contract_gets_one_new_audited_attempt(

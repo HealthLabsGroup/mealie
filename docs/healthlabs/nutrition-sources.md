@@ -78,8 +78,17 @@ Run exact/alias matching and produce an aggregate-only coverage report:
 
 ```sh
 uv run python scripts/healthlabs/backfill-food-matches.py --country GB
-uv run python scripts/healthlabs/report-nutrition-coverage.py --external-subject-id <subject-uuid>
+uv run python scripts/healthlabs/report-nutrition-coverage.py --external-subject-id <subject-uuid> --country GB
 ```
+
+The report's `gaps` list contains aggregate country, normalized food,
+preparation state, unit, reason code, affected-recipe, and affected-target
+counts. It is ordered by missing portion evidence, food matches, then
+ingredient aliases, with the largest recipe impact first. It never includes
+recipe names, original ingredient text, workspace/user IDs, prompts, provider
+responses, or raw source rows. Keep generated reports and third-party source
+data outside Git; only importer code, manifests, checksums, licence metadata,
+and retrieval instructions belong in the repository.
 
 New recipe creates, updates, and patches structure free-text ingredients inside Mealie's
 running recipe service after the group food and unit catalogues exist. The same

@@ -44,7 +44,7 @@ contract still stop after the normal retry policy.
   logic; zero reuse is correct when there is no eligible source/target pair.
 - [x] Keep conflict handling fail-closed as `reuse_conflict`.
 
-Completed by focused reuse tests and a live eligibility audit. Production had
+Completed by focused reuse tests and a live eligibility audit. Live DEV had
 39 approved decisions, zero eligible approved duplicate signatures, and zero
 reuse audit rows, so no provider call was incorrectly replaced by reuse.
 

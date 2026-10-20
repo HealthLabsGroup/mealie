@@ -182,3 +182,40 @@ def test_drain_holds_concurrency_after_first_throttle(monkeypatch) -> None:
 
     assert report.throttled is True
     assert (concurrency, peak, frozen) == (2, 2, True)
+
+
+def test_drain_returns_to_last_stable_concurrency_after_transport_saturation(monkeypatch) -> None:
+    stop = StopEvent()
+    calls = 0
+
+    @contextmanager
+    def session_context():
+        yield object()
+
+    class Worker:
+        def __init__(self, session, *, should_stop):
+            del session
+            assert should_stop == stop.is_set
+
+        async def run_work(self, _work_id):
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.001)
+            if calls > 8:
+                return NutritionCuratorReport(1, 0, 0, 0, False, provider_error=True, transport_error=True)
+            return NutritionCuratorReport(1, 1, 0, 0, False)
+
+    monkeypatch.setattr(runner, "STOP", stop)
+    monkeypatch.setattr(runner, "session_context", session_context)
+    monkeypatch.setattr(runner, "NutritionCuratorWorker", Worker)
+
+    report, concurrency, frozen = asyncio.run(
+        runner._drain(
+            [uuid4() for _ in range(40)],
+            initial_concurrency=2,
+            max_concurrency=8,
+        )
+    )
+
+    assert report.transport_error is True
+    assert (concurrency, frozen) == (2, True)

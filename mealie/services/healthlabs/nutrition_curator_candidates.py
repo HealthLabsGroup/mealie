@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
+from dataclasses import dataclass
+from threading import Lock
 from typing import Any
 from uuid import UUID
 
@@ -21,9 +23,10 @@ from mealie.db.models.healthlabs import (
     HealthLabsNutritionWork,
 )
 from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel, RecipeIngredientModel, RecipeModel
+from mealie.db.models.recipe.ingredient import IngredientFoodAliasModel, IngredientUnitAliasModel
 from mealie.lang.providers import get_locale_provider
 from mealie.schema.healthlabs.nutrition_curator import NutritionCuratorCandidateSet
-from mealie.services.healthlabs.ingredient_structure_service import IngredientStructureService, _ExactDataMatcher
+from mealie.services.healthlabs.ingredient_structure_service import IngredientStructureService
 from mealie.services.healthlabs.nutrition_curator_prompt import (
     PERSONA_VERSION,
     POLICY_VERSION,
@@ -34,14 +37,39 @@ from mealie.services.healthlabs.nutrition_fingerprint_service import NutritionFi
 from mealie.services.healthlabs.nutrition_service import NutritionService
 
 MAX_CANDIDATES = 8
+_CATALOGUE_CACHE_LOCK = Lock()
+
+
+@dataclass(frozen=True, slots=True)
+class _CatalogueItem:
+    id: UUID
+    label: str
+    names: tuple[str, ...]
+
+
+_CATALOGUE_CACHE: dict[
+    tuple[int, UUID],
+    tuple[str, tuple[_CatalogueItem, ...], tuple[_CatalogueItem, ...]],
+] = {}
 
 
 class NutritionCuratorCandidateService:
-    def __init__(self, session: Session, *, country: str = "GB") -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        country: str = "GB",
+        fingerprints: NutritionFingerprintService | None = None,
+    ) -> None:
         self.session = session
         self.country = country.strip().upper()
         if not self.country:
             raise ValueError("country is required")
+        self.fingerprints = fingerprints or NutritionFingerprintService(
+            session,
+            country=self.country,
+            provider_enabled=True,
+        )
 
     def build(
         self,
@@ -103,23 +131,16 @@ class NutritionCuratorCandidateService:
             foods: list[dict[str, Any]] = []
             units: list[dict[str, Any]] = []
         else:
+            catalogue_foods, catalogue_units = self._catalogue(work.group_id)
             foods = self._catalogue_candidates(
-                IngredientFoodModel,
-                work.group_id,
+                catalogue_foods,
                 food_query,
-                lambda item: (item.name, item.plural_name, *(alias.name for alias in item.aliases or [])),
+                IngredientFoodModel.normalize,
             )
             units = self._catalogue_candidates(
-                IngredientUnitModel,
-                work.group_id,
+                catalogue_units,
                 unit_query,
-                lambda item: (
-                    item.name,
-                    item.plural_name,
-                    item.abbreviation,
-                    item.plural_abbreviation,
-                    *(alias.name for alias in item.aliases or []),
-                ),
+                IngredientUnitModel.normalize,
             )
         return {
             "kind": work.kind,
@@ -357,32 +378,34 @@ class NutritionCuratorCandidateService:
 
     def _catalogue_candidates(
         self,
-        model: type[IngredientFoodModel] | type[IngredientUnitModel],
-        group_id: UUID,
+        rows: tuple[_CatalogueItem, ...],
         query: str,
-        names: Callable[[Any], Iterable[str | None]],
+        normalize: Callable[[str], str],
     ) -> list[dict[str, Any]]:
         if not query.strip():
             return []
-        rows = self.session.scalars(sa.select(model).where(model.group_id == group_id).order_by(model.id)).all()
-        normalize = model.normalize
-        unique = _ExactDataMatcher._unique_map(rows, names, normalize)
+        unique: dict[str, _CatalogueItem | None] = {}
+        for item in rows:
+            for name in item.names:
+                key = normalize(name)
+                current = unique.get(key)
+                if key not in unique:
+                    unique[key] = item
+                elif current is not None and current.id != item.id:
+                    unique[key] = None
         normalized_query = normalize(query)
         exact = unique.get(normalized_query)
         ambiguous_ids = {
             item.id
             for item in rows
-            if unique.get(normalized_query) is None
-            and any(name and normalize(name) == normalized_query for name in names(item))
+            if unique.get(normalized_query) is None and any(normalize(name) == normalized_query for name in item.names)
         }
         scored: list[dict[str, Any]] = []
         for item in rows:
             if item.id in ambiguous_ids:
                 continue
-            eligible_names = []
-            for name in names(item):
-                if not name:
-                    continue
+            eligible_names: list[str] = []
+            for name in item.names:
                 unique_item = unique.get(normalize(name))
                 if unique_item is not None and unique_item.id == item.id:
                     eligible_names.append(name)
@@ -392,7 +415,7 @@ class NutritionCuratorCandidateService:
             scored.append(
                 {
                     "id": str(item.id),
-                    "label": item.name or item.plural_name or "",
+                    "label": item.label,
                     "score": round(score, 3),
                 }
             )
@@ -401,6 +424,79 @@ class NutritionCuratorCandidateService:
             exact_id = str(exact.id)
             scored.sort(key=lambda item: item["id"] != exact_id)
         return scored[:MAX_CANDIDATES]
+
+    def _catalogue(self, group_id: UUID) -> tuple[tuple[_CatalogueItem, ...], tuple[_CatalogueItem, ...]]:
+        revision = self.fingerprints.catalogue_revision(group_id)
+        cache_key = (id(self.session.get_bind()), group_id)
+        with _CATALOGUE_CACHE_LOCK:
+            cached = _CATALOGUE_CACHE.get(cache_key)
+        if cached is not None and cached[0] == revision:
+            return cached[1], cached[2]
+
+        food_rows = self.session.execute(
+            sa.select(IngredientFoodModel.id, IngredientFoodModel.name, IngredientFoodModel.plural_name)
+            .where(IngredientFoodModel.group_id == group_id)
+            .order_by(IngredientFoodModel.id)
+        ).all()
+        food_alias_rows = self.session.execute(
+            sa.select(IngredientFoodAliasModel.food_id, IngredientFoodAliasModel.name)
+            .join(IngredientFoodModel, IngredientFoodModel.id == IngredientFoodAliasModel.food_id)
+            .where(IngredientFoodModel.group_id == group_id)
+            .order_by(IngredientFoodAliasModel.food_id, IngredientFoodAliasModel.id)
+        ).all()
+        unit_rows = self.session.execute(
+            sa.select(
+                IngredientUnitModel.id,
+                IngredientUnitModel.name,
+                IngredientUnitModel.plural_name,
+                IngredientUnitModel.abbreviation,
+                IngredientUnitModel.plural_abbreviation,
+            )
+            .where(IngredientUnitModel.group_id == group_id)
+            .order_by(IngredientUnitModel.id)
+        ).all()
+        unit_alias_rows = self.session.execute(
+            sa.select(IngredientUnitAliasModel.unit_id, IngredientUnitAliasModel.name)
+            .join(IngredientUnitModel, IngredientUnitModel.id == IngredientUnitAliasModel.unit_id)
+            .where(IngredientUnitModel.group_id == group_id)
+            .order_by(IngredientUnitAliasModel.unit_id, IngredientUnitAliasModel.id)
+        ).all()
+
+        food_aliases: dict[UUID, list[str]] = {}
+        for food_id, name in food_alias_rows:
+            food_aliases.setdefault(food_id, []).append(name)
+        unit_aliases: dict[UUID, list[str]] = {}
+        for unit_id, name in unit_alias_rows:
+            unit_aliases.setdefault(unit_id, []).append(name)
+        foods = tuple(
+            _CatalogueItem(
+                id=item_id,
+                label=name or plural_name or "",
+                names=tuple(value for value in (name, plural_name, *food_aliases.get(item_id, ())) if value),
+            )
+            for item_id, name, plural_name in food_rows
+        )
+        units = tuple(
+            _CatalogueItem(
+                id=item_id,
+                label=name or plural_name or "",
+                names=tuple(
+                    value
+                    for value in (
+                        name,
+                        plural_name,
+                        abbreviation,
+                        plural_abbreviation,
+                        *unit_aliases.get(item_id, ()),
+                    )
+                    if value
+                ),
+            )
+            for item_id, name, plural_name, abbreviation, plural_abbreviation in unit_rows
+        )
+        with _CATALOGUE_CACHE_LOCK:
+            _CATALOGUE_CACHE[cache_key] = (revision, foods, units)
+        return foods, units
 
     def _fingerprints(
         self,
@@ -421,11 +517,7 @@ class NutritionCuratorCandidateService:
             .where(sa.func.upper(HealthLabsNutrientSourceRelease.country).in_(countries))
             .order_by(HealthLabsNutrientSourceRelease.id)
         ).all()
-        catalogue = NutritionFingerprintService(
-            self.session,
-            country=self.country,
-            provider_enabled=True,
-        ).catalogue(work.group_id)
+        catalogue = self.fingerprints.catalogue(work.group_id)
         context = {
             "workInput": work.input_sha256,
             "catalogue": catalogue,

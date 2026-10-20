@@ -362,6 +362,25 @@ def test_portion_candidates_use_current_match_and_never_expose_grams(
     assert "grams" not in candidate_set.model_dump_json()
 
 
+def test_catalogue_snapshot_is_reused_until_the_catalogue_changes(unique_user_fn_scoped: TestUser) -> None:
+    user = unique_user_fn_scoped
+    user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name="cached apple"))
+    user.repos.session.commit()
+
+    first_foods, first_units = NutritionCuratorCandidateService(user.repos.session)._catalogue(user.group_id)
+    repeated_foods, repeated_units = NutritionCuratorCandidateService(user.repos.session)._catalogue(user.group_id)
+
+    assert repeated_foods is first_foods
+    assert repeated_units is first_units
+
+    added = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name="fresh pear"))
+    user.repos.session.commit()
+    changed_foods, _ = NutritionCuratorCandidateService(user.repos.session)._catalogue(user.group_id)
+
+    assert changed_foods is not first_foods
+    assert added.id in {item.id for item in changed_foods}
+
+
 def test_curator_fingerprint_covers_context_but_not_candidate_order(
     unique_user_fn_scoped: TestUser,
     monkeypatch,

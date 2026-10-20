@@ -42,6 +42,7 @@ class NutritionCuratorReport:
     provider_exhausted: bool
     provider_error: bool = False
     throttled: bool = False
+    transport_error: bool = False
 
 
 class NutritionCuratorWorker:
@@ -248,7 +249,8 @@ class NutritionCuratorWorker:
             )
 
     def _fail(self, decision_id: UUID, exc: Exception, now: datetime) -> NutritionCuratorReport:
-        logger.warning("Nutrition curator provider failure error_type=%s", type(exc.__cause__ or exc).__name__)
+        cause = exc.__cause__ or exc
+        logger.warning("Nutrition curator provider failure error_type=%s", type(cause).__name__)
         state = NutritionCuratorService(self.session, country=self.country, now=now).fail(decision_id, exc)
         self.session.commit()
         return NutritionCuratorReport(
@@ -259,6 +261,7 @@ class NutritionCuratorWorker:
             False,
             provider_error=True,
             throttled=isinstance(exc, exceptions.RateLimitError),
+            transport_error=type(cause).__name__ in {"APIConnectionError", "APITimeoutError", "OSError"},
         )
 
     def _current_time(self) -> datetime:

@@ -434,9 +434,17 @@ def test_provider_failures_retry_after_five_and_thirty_minutes_then_stop(
 
 def test_failed_previous_response_contract_gets_one_new_audited_attempt(
     unique_user_fn_scoped: TestUser,
+    monkeypatch: pytest.MonkeyPatch,
+    curator_settings,
 ) -> None:
     user = unique_user_fn_scoped
-    _, nutrient_food, work = _food_work(user)
+    food, _, work = _food_work(user)
+    _, _, earlier_work = _food_work(user, provider=False)
+    work.input_sha256 = NutritionFingerprintService(user.repos.session, country="GB", provider_enabled=True).food(
+        food, None
+    )
+    earlier_work.next_attempt_at = NOW - timedelta(days=1)
+    user.repos.session.commit()
     service = NutritionCuratorService(user.repos.session, now=NOW)
     started = service.start(work.id)
     assert started is not None
@@ -447,27 +455,14 @@ def test_failed_previous_response_contract_gets_one_new_audited_attempt(
     failed.prompt_version = PROMPT_VERSION
     failed.lease_expires_at = None
     user.repos.session.commit()
+    calls: list[tuple[str, str]] = []
+    _install_success(monkeypatch, calls)
 
-    recovered = service.start(work.id)
-    assert recovered is not None
-    state = service.apply(
-        recovered.decision_id,
-        NutritionCuratorProviderDecision.model_validate(
-            {
-                "decision": "select",
-                "kind": "food_match",
-                "nutrient_food_id": nutrient_food.id,
-                "confidence": 0.99,
-                "runner_up_confidence": 0.1,
-                "reason_code": "name_and_context_match",
-                "rationale": "I selected the supplied compatible candidate.",
-            }
-        ),
-        {},
-    )
-    user.repos.session.commit()
+    report = NutritionCuratorWorker(user.repos.session, now=NOW + timedelta(days=1)).run_once()
 
-    assert state == "approved"
+    assert (report.claimed, report.approved) == (1, 1)
+    assert len(calls) == 1
+    assert user.repos.session.get(HealthLabsNutritionWork, earlier_work.id).state == "review_required"
     decisions = user.repos.session.scalars(
         sa.select(HealthLabsNutritionCuratorDecision)
         .where(HealthLabsNutritionCuratorDecision.work_id == work.id)

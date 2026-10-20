@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 from uuid import uuid4
 
 import httpx
+import httpx2
 import openai
 import pytest
 
@@ -110,6 +111,14 @@ def _make_test_provider() -> AIProviderOut:
         request_headers={},
         request_params={},
     )
+
+
+@pytest.mark.asyncio
+async def test_get_client_reuses_supplied_http_client(settings_stub):
+    async with httpx2.AsyncClient() as http_client:
+        client = OpenAIService(_make_mock_repos(), http_client=http_client).get_client(_make_test_provider())
+
+        assert client._client is http_client
 
 
 class _FakeOpenAIText:

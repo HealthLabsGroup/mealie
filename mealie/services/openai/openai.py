@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, TypeVar
 from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
+    from httpx2 import AsyncClient
     from openai import AsyncOpenAI
 
 from pydantic import BaseModel, field_validator
@@ -128,8 +129,9 @@ class OpenAIService(BaseService):
     PROMPTS_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "prompts"
     TESTING_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "testing"
 
-    def __init__(self, repos: AllRepositories) -> None:
+    def __init__(self, repos: AllRepositories, *, http_client: AsyncClient | None = None) -> None:
         self.repos = repos
+        self.http_client = http_client
         self.provider_settings = repos.group_ai_provider_settings.get_one(repos.group_id)
 
         # Load providers
@@ -164,6 +166,7 @@ class OpenAIService(BaseService):
             timeout=provider.timeout,
             default_headers=provider.request_headers or None,
             default_query=provider.request_params or None,
+            http_client=self.http_client,
         )
 
     async def ping(

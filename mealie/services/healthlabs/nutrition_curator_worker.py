@@ -7,6 +7,7 @@ from datetime import UTC, datetime, time, timedelta
 from uuid import UUID
 
 import sqlalchemy as sa
+from httpx2 import AsyncClient
 from sqlalchemy.orm import Session
 
 from mealie.core import exceptions, root_logger
@@ -52,6 +53,7 @@ class NutritionCuratorWorker:
         lease_minutes: int = 15,
         now: datetime | None = None,
         should_stop: Callable[[], bool] = lambda: False,
+        http_client: AsyncClient | None = None,
     ) -> None:
         if not (country := country.strip().upper()):
             raise ValueError("country is required")
@@ -67,6 +69,7 @@ class NutritionCuratorWorker:
         )
         self._fixed_now = now
         self.should_stop = should_stop
+        self.http_client = http_client
         self.settings = get_app_settings()
         self.budget = NutritionProviderBudget.from_settings(session, self.settings, now=lambda: self._current_time())
 
@@ -182,7 +185,7 @@ class NutritionCuratorWorker:
 
         try:
             repos = AllRepositories(self.session, group_id=decision.group_id, household_id=None)
-            provider_service = OpenAIService(repos)
+            provider_service = OpenAIService(repos, http_client=self.http_client)
             # Release the synchronous DB connection before this task awaits provider I/O.
             self.session.commit()
             response = await self._request(

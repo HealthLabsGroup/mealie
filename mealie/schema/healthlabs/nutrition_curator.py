@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import UUID4, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import UUID4, BaseModel, ConfigDict, Field, WithJsonSchema, field_validator, model_validator
 
 from mealie.schema.openai._base import OpenAIBase
 
@@ -15,6 +15,7 @@ ProviderReasonCode = Literal[
     "unit_and_context_match",
     "insufficient_candidates",
 ]
+ProviderUUID = Annotated[UUID4, WithJsonSchema({"type": "string"})]
 
 _PRIVATE_CANDIDATE_KEYS = frozenset(
     {
@@ -78,10 +79,10 @@ class NutritionCuratorCandidateSet(BaseModel):
 class NutritionCuratorProviderDecision(OpenAIBase):
     decision: Literal["select", "insufficient_evidence"]
     kind: NutritionCuratorKind
-    food_id: UUID4 | None = None
-    unit_id: UUID4 | None = None
-    nutrient_food_id: UUID4 | None = None
-    portion_id: UUID4 | None = None
+    food_id: ProviderUUID | None = None
+    unit_id: ProviderUUID | None = None
+    nutrient_food_id: ProviderUUID | None = None
+    portion_id: ProviderUUID | None = None
     confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
     runner_up_confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
     reason_code: ProviderReasonCode

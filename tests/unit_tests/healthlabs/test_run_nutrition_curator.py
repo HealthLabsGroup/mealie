@@ -73,8 +73,8 @@ def test_signal_during_work_allows_current_decision_to_finish(monkeypatch, caplo
         yield object()
 
     class Worker:
-        def __init__(self, session, *, should_stop):
-            del session, should_stop
+        def __init__(self, session, *, should_stop, http_client=None):
+            del session, should_stop, http_client
 
         def work_ids(self):
             return [uuid4()]
@@ -103,6 +103,7 @@ def test_drain_uses_distinct_sessions_and_increases_concurrency(monkeypatch) -> 
     sessions: list[object] = []
     active = 0
     peak = 0
+    shared_client = object()
 
     @contextmanager
     def session_context():
@@ -111,9 +112,10 @@ def test_drain_uses_distinct_sessions_and_increases_concurrency(monkeypatch) -> 
         yield session
 
     class Worker:
-        def __init__(self, session, *, should_stop):
+        def __init__(self, session, *, should_stop, http_client):
             self.session = session
             assert should_stop == stop.is_set
+            assert http_client is shared_client
 
         async def run_work(self, _work_id):
             nonlocal active, peak
@@ -132,6 +134,7 @@ def test_drain_uses_distinct_sessions_and_increases_concurrency(monkeypatch) -> 
             [uuid4() for _ in range(20)],
             initial_concurrency=2,
             max_concurrency=4,
+            http_client=shared_client,
         )
     )
 

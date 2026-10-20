@@ -5,6 +5,8 @@ import signal
 from threading import Event
 from uuid import UUID
 
+import httpx2
+
 from mealie.core import root_logger
 from mealie.core.config import get_app_settings
 from mealie.db.db_setup import session_context
@@ -30,10 +32,15 @@ def _combined(first: NutritionCuratorReport, second: NutritionCuratorReport) -> 
     )
 
 
-async def _run_work(work_id: UUID) -> NutritionCuratorReport:
+async def _run_work(work_id: UUID, http_client: httpx2.AsyncClient | None = None) -> NutritionCuratorReport:
     try:
         with session_context() as session:
-            return await NutritionCuratorWorker(session, should_stop=STOP.is_set).run_work(work_id)
+            worker = (
+                NutritionCuratorWorker(session, should_stop=STOP.is_set)
+                if http_client is None
+                else NutritionCuratorWorker(session, should_stop=STOP.is_set, http_client=http_client)
+            )
+            return await worker.run_work(work_id)
     except Exception as exc:
         logger.error("Nutrition curator task failed error_type=%s", type(exc).__name__)
         return NutritionCuratorReport(0, 0, 0, 0, False, provider_error=True)
@@ -45,6 +52,7 @@ async def _drain(
     initial_concurrency: int,
     max_concurrency: int,
     frozen: bool = False,
+    http_client: httpx2.AsyncClient | None = None,
 ) -> tuple[NutritionCuratorReport, int, bool]:
     total = NutritionCuratorReport(0, 0, 0, 0, False)
     concurrency = min(initial_concurrency, max_concurrency)
@@ -60,7 +68,7 @@ async def _drain(
             except StopIteration:
                 exhausted = True
                 break
-            pending.add(asyncio.create_task(_run_work(work_id)))
+            pending.add(asyncio.create_task(_run_work(work_id, http_client)))
 
         if not pending:
             break
@@ -96,27 +104,34 @@ async def _main() -> int:
         settings.HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY,
     )
     frozen = False
-    while not STOP.is_set():
-        with session_context() as session:
-            work_ids = NutritionCuratorWorker(session, should_stop=STOP.is_set).work_ids()
-        report, concurrency, frozen = await _drain(
-            work_ids,
-            initial_concurrency=concurrency,
-            max_concurrency=settings.HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY,
-            frozen=frozen,
-        )
-        logger.info(
-            "Nutrition curator claimed=%s approved=%s insufficient_evidence=%s failed=%s concurrency=%s",
-            report.claimed,
-            report.approved,
-            report.insufficient_evidence,
-            report.failed,
-            concurrency,
-        )
-        if STOP.is_set():
-            break
-        if report.claimed == 0 or report.provider_exhausted:
-            await asyncio.to_thread(STOP.wait, settings.HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS)
+    limits = httpx2.Limits(
+        max_connections=settings.HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY,
+        max_keepalive_connections=min(512, settings.HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY),
+        keepalive_expiry=30,
+    )
+    async with httpx2.AsyncClient(limits=limits, follow_redirects=True) as http_client:
+        while not STOP.is_set():
+            with session_context() as session:
+                work_ids = NutritionCuratorWorker(session, should_stop=STOP.is_set).work_ids()
+            report, concurrency, frozen = await _drain(
+                work_ids,
+                initial_concurrency=concurrency,
+                max_concurrency=settings.HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY,
+                frozen=frozen,
+                http_client=http_client,
+            )
+            logger.info(
+                "Nutrition curator claimed=%s approved=%s insufficient_evidence=%s failed=%s concurrency=%s",
+                report.claimed,
+                report.approved,
+                report.insufficient_evidence,
+                report.failed,
+                concurrency,
+            )
+            if STOP.is_set():
+                break
+            if report.claimed == 0 or report.provider_exhausted:
+                await asyncio.to_thread(STOP.wait, settings.HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS)
     return 0
 
 

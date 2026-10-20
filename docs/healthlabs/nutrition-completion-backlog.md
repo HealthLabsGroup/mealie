@@ -110,6 +110,14 @@ report was summarized in memory and not saved or committed; raw source rows,
 recipe text, target IDs, workspace/user IDs, prompts, and provider responses
 remain excluded.
 
+The national-source research has started in
+[`nutrition-source-research-matrix.md`](nutrition-source-research-matrix.md).
+The first screen ranks the already-supported FNDDS import first, then CNF 2026
+and Fineli parser spikes. AUSNUT remains conditional on file-level third-party
+rights; sources that prohibit modification or lack an explicit redistribution
+grant remain blocked. This subtask stays open until the chosen new source is
+checksum-pinned and its exact file-level terms and gap coverage are verified.
+
 Acceptance: every new fact is source-backed and reproducible, and coverage
 improves without invented nutrients, grams, or cross-workspace data.
 

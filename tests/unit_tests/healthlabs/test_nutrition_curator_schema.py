@@ -1,3 +1,4 @@
+import json
 from math import inf, nan
 
 import pytest
@@ -78,6 +79,13 @@ def test_provider_decision_forbids_unknown_fields_and_unknown_reason_codes() -> 
         NutritionCuratorProviderDecision.model_validate(_decision(unexpected=True))
     with pytest.raises(ValidationError):
         NutritionCuratorProviderDecision.model_validate(_decision(reason_code="trust_me"))
+
+
+def test_provider_decision_schema_omits_unsupported_uuid_formats_without_weakening_validation() -> None:
+    assert '"format"' not in json.dumps(NutritionCuratorProviderDecision.model_json_schema())
+
+    with pytest.raises(ValidationError):
+        NutritionCuratorProviderDecision.model_validate(_decision(nutrient_food_id="not-a-uuid"))
 
 
 def test_provider_decision_normalizes_selection_alias() -> None:

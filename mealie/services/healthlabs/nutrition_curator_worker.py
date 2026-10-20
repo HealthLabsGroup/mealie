@@ -9,7 +9,7 @@ from uuid import UUID
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
-from mealie.core import root_logger
+from mealie.core import exceptions, root_logger
 from mealie.core.config import get_app_settings
 from mealie.db.models._model_utils.datetime import get_utc_now
 from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
@@ -39,6 +39,8 @@ class NutritionCuratorReport:
     insufficient_evidence: int
     failed: int
     provider_exhausted: bool
+    provider_error: bool = False
+    throttled: bool = False
 
 
 class NutritionCuratorWorker:
@@ -68,10 +70,26 @@ class NutritionCuratorWorker:
         self.settings = get_app_settings()
         self.budget = NutritionProviderBudget.from_settings(session, self.settings, now=lambda: self._current_time())
 
-    def run_once(self) -> NutritionCuratorReport:
-        empty = NutritionCuratorReport(0, 0, 0, 0, False)
+    def work_ids(self) -> list[UUID]:
         if self.should_stop() or not self.settings.HEALTHLABS_NUTRITION_CURATOR_ENABLED or not self.budget.enabled:
-            return empty
+            return []
+        now = self._current_time()
+        due_existing_decision = sa.exists().where(
+            HealthLabsNutritionCuratorDecision.work_id == HealthLabsNutritionWork.id,
+            sa.or_(
+                sa.and_(
+                    HealthLabsNutritionCuratorDecision.state == "pending",
+                    HealthLabsNutritionCuratorDecision.next_attempt_at <= now,
+                ),
+                sa.and_(
+                    HealthLabsNutritionCuratorDecision.state == "running",
+                    sa.or_(
+                        HealthLabsNutritionCuratorDecision.lease_expires_at.is_(None),
+                        HealthLabsNutritionCuratorDecision.lease_expires_at <= now,
+                    ),
+                ),
+            ),
+        )
         old_failed_contract = sa.exists().where(
             HealthLabsNutritionCuratorDecision.work_id == HealthLabsNutritionWork.id,
             HealthLabsNutritionCuratorDecision.state == "failed",
@@ -83,48 +101,64 @@ class NutritionCuratorWorker:
             HealthLabsNutritionCuratorDecision.work_id == HealthLabsNutritionWork.id,
             HealthLabsNutritionCuratorDecision.prompt_version == DECISION_VERSION,
         )
-        work_ids = self.session.scalars(
-            sa.select(HealthLabsNutritionWork.id)
-            .join(AIProviderSettings, AIProviderSettings.group_id == HealthLabsNutritionWork.group_id)
-            .join(
-                AIProvider,
-                sa.and_(
-                    AIProvider.id == AIProviderSettings.default_provider_id,
-                    AIProvider.settings_id == AIProviderSettings.id,
-                ),
-            )
-            .where(
-                HealthLabsNutritionWork.state == "review_required",
-                HealthLabsNutritionWork.next_attempt_at <= self._current_time(),
-            )
-            .order_by(
-                sa.case((sa.and_(old_failed_contract, ~current_contract_attempt), 0), else_=1),
-                HealthLabsNutritionWork.next_attempt_at,
-                HealthLabsNutritionWork.kind,
-                HealthLabsNutritionWork.target_id,
-                HealthLabsNutritionWork.id,
-            )
-        ).all()
-        now = self._current_time()
-        started = None
-        for work_id in work_ids:
-            if self.should_stop():
-                break
-            started = NutritionCuratorService(self.session, country=self.country, now=now).start(work_id)
-            if isinstance(started, FinalizedCuratorDecision):
-                self.session.commit()
-                return NutritionCuratorReport(
-                    claimed=1,
-                    approved=int(started.state == "approved"),
-                    insufficient_evidence=int(started.state == "insufficient_evidence"),
-                    failed=0,
-                    provider_exhausted=False,
+        return list(
+            self.session.scalars(
+                sa.select(HealthLabsNutritionWork.id)
+                .join(AIProviderSettings, AIProviderSettings.group_id == HealthLabsNutritionWork.group_id)
+                .join(
+                    AIProvider,
+                    sa.and_(
+                        AIProvider.id == AIProviderSettings.default_provider_id,
+                        AIProvider.settings_id == AIProviderSettings.id,
+                    ),
                 )
-            if started is not None:
-                break
-            self.session.rollback()
-        if started is None:
+                .where(
+                    HealthLabsNutritionWork.state == "review_required",
+                    HealthLabsNutritionWork.next_attempt_at <= now,
+                )
+                .order_by(
+                    sa.case(
+                        (due_existing_decision, 0),
+                        (sa.and_(old_failed_contract, ~current_contract_attempt), 1),
+                        else_=2,
+                    ),
+                    HealthLabsNutritionWork.next_attempt_at,
+                    HealthLabsNutritionWork.kind,
+                    HealthLabsNutritionWork.target_id,
+                    HealthLabsNutritionWork.id,
+                )
+            )
+        )
+
+    def run_once(self) -> NutritionCuratorReport:
+        return asyncio.run(self.run_once_async())
+
+    async def run_once_async(self) -> NutritionCuratorReport:
+        empty = NutritionCuratorReport(0, 0, 0, 0, False)
+        for work_id in self.work_ids():
+            report = await self.run_work(work_id)
+            if report.claimed:
+                return report
+        self.session.commit()
+        return empty
+
+    async def run_work(self, work_id: UUID) -> NutritionCuratorReport:
+        empty = NutritionCuratorReport(0, 0, 0, 0, False)
+        if self.should_stop() or not self.settings.HEALTHLABS_NUTRITION_CURATOR_ENABLED or not self.budget.enabled:
+            return empty
+        now = self._current_time()
+        started = NutritionCuratorService(self.session, country=self.country, now=now).start(work_id)
+        if isinstance(started, FinalizedCuratorDecision):
             self.session.commit()
+            return NutritionCuratorReport(
+                claimed=1,
+                approved=int(started.state == "approved"),
+                insufficient_evidence=int(started.state == "insufficient_evidence"),
+                failed=0,
+                provider_exhausted=False,
+            )
+        if started is None:
+            self.session.rollback()
             return empty
         assert isinstance(started, StartedCuratorDecision)
         decision = self.session.get(HealthLabsNutritionCuratorDecision, started.decision_id)
@@ -148,13 +182,14 @@ class NutritionCuratorWorker:
 
         try:
             repos = AllRepositories(self.session, group_id=decision.group_id, household_id=None)
-            response = asyncio.run(
-                self._request(
-                    OpenAIService(repos),
-                    started,
-                    reserve=reserve,
-                    record_usage=record_usage,
-                )
+            provider_service = OpenAIService(repos)
+            # Release the synchronous DB connection before this task awaits provider I/O.
+            self.session.commit()
+            response = await self._request(
+                provider_service,
+                started,
+                reserve=reserve,
+                record_usage=record_usage,
             )
             if response is None or reservation is None or usage is None:
                 raise RuntimeError("provider response did not include reserved token usage")
@@ -213,7 +248,15 @@ class NutritionCuratorWorker:
         logger.warning("Nutrition curator provider failure error_type=%s", type(exc.__cause__ or exc).__name__)
         state = NutritionCuratorService(self.session, country=self.country, now=now).fail(decision_id, exc)
         self.session.commit()
-        return NutritionCuratorReport(1, 0, 0, int(state == "failed"), False)
+        return NutritionCuratorReport(
+            1,
+            0,
+            0,
+            int(state == "failed"),
+            False,
+            provider_error=True,
+            throttled=isinstance(exc, exceptions.RateLimitError),
+        )
 
     def _current_time(self) -> datetime:
         return self._fixed_now or get_utc_now()

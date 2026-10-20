@@ -64,12 +64,22 @@ def test_nutrition_provider_cost_controls_default_off_and_reject_negative_values
 def test_nutrition_curator_defaults_disabled_and_requires_positive_poll(monkeypatch):
     monkeypatch.delenv("HEALTHLABS_NUTRITION_CURATOR_ENABLED", raising=False)
     monkeypatch.delenv("HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS", raising=False)
+    monkeypatch.delenv("HEALTHLABS_NUTRITION_CURATOR_CONCURRENCY", raising=False)
+    monkeypatch.delenv("HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY", raising=False)
     get_app_settings.cache_clear()
     settings = get_app_settings()
     assert settings.HEALTHLABS_NUTRITION_CURATOR_ENABLED is False
     assert settings.HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS == 30
+    assert settings.HEALTHLABS_NUTRITION_CURATOR_CONCURRENCY == 1
+    assert settings.HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY == 1
 
     monkeypatch.setenv("HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS", "0")
+    get_app_settings.cache_clear()
+    with pytest.raises(ValidationError):
+        get_app_settings()
+
+    monkeypatch.setenv("HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS", "30")
+    monkeypatch.setenv("HEALTHLABS_NUTRITION_CURATOR_CONCURRENCY", "0")
     get_app_settings.cache_clear()
     with pytest.raises(ValidationError):
         get_app_settings()

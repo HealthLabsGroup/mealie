@@ -299,12 +299,22 @@ HTTP healthcheck for the worker; the inherited healthcheck targets the API,
 which this process intentionally does not start.
 
 `HEALTHLABS_NUTRITION_CURATOR_ENABLED=false` and
-`HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS=30` are the defaults. When disabled,
-the process exits successfully and deterministic reconciliation is unchanged.
-When enabled, deploy exactly one Curator process initially. It evaluates at
-most one due decision per iteration, then immediately checks for more work; it
-waits for the poll interval only while idle. Add replicas only after observing
-lease and budget behavior under production load.
+`HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS=30` are the defaults. Concurrency
+defaults to one through `HEALTHLABS_NUTRITION_CURATOR_CONCURRENCY=1` and
+`HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY=1`. When disabled, the process
+exits successfully and deterministic reconciliation is unchanged. When
+enabled, deploy one Curator process: its async supervisor gives every in-flight
+decision a separate database session and releases the synchronous connection
+before awaiting provider I/O.
+
+The supervisor starts at the configured concurrency and increases it fourfold
+after stable completions, bounded by the configured maximum. The first provider
+rate-limit response freezes further growth at the reached concurrency; it does
+not lower the global limit. The provider client's bounded `Retry-After` handling
+and the existing 5/30-minute decision retries remain active for the throttled
+request. Due retries are ordered before ordinary work. Configure higher values
+only after observing database connections, provider latency, rate limits, and
+memory under representative load.
 
 Paid work is possible only when all of these prerequisites are present:
 
@@ -331,9 +341,9 @@ is also terminal for an unchanged fingerprint. Expired running leases are
 reclaimable; accepted writes are compare-and-set and idempotent across restart
 or competing workers.
 
-SIGTERM or SIGINT stops new claims and interrupts idle waiting immediately. A
-signal received during a bounded provider call lets that call finalize or fail,
-then exits before another claim. Decision evidence remains durable across the
+SIGTERM or SIGINT stops new claims and interrupts idle waiting immediately.
+Signals let bounded in-flight provider calls finalize or fail, then the process
+exits without starting more work. Decision evidence remains durable across the
 restart.
 
 Apple uses identity/persona version

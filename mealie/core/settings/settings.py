@@ -185,6 +185,8 @@ class AppSettings(AppLoggingSettings):
     HEALTHLABS_NUTRITION_PROVIDER_MAX_OUTPUT_TOKENS: Annotated[int, Field(gt=0)] = 256
     HEALTHLABS_NUTRITION_CURATOR_ENABLED: bool = False
     HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS: Annotated[int, Field(ge=1)] = 30
+    HEALTHLABS_NUTRITION_CURATOR_CONCURRENCY: Annotated[int, Field(ge=1, le=4096)] = 1
+    HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY: Annotated[int, Field(ge=1, le=4096)] = 1
 
     GIT_COMMIT_HASH: str = "unknown"
 

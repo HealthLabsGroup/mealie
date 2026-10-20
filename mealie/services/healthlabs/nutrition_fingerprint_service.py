@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from threading import Lock
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -18,6 +19,9 @@ from mealie.db.models.healthlabs import (
 from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel, RecipeIngredientModel, RecipeModel
 from mealie.db.models.recipe.ingredient import IngredientFoodAliasModel, IngredientUnitAliasModel
 
+_CATALOGUE_CACHE: dict[tuple[int, UUID], tuple[str, str]] = {}
+_CATALOGUE_CACHE_LOCK = Lock()
+
 
 class NutritionFingerprintService:
     def __init__(
@@ -31,14 +35,54 @@ class NutritionFingerprintService:
         self.country = country
         self.provider_enabled = provider_enabled
         self._catalogue_hashes: dict[UUID, str] = {}
+        self._catalogue_revisions: dict[UUID, str] = {}
         self._source_hash: str | None = None
 
     def invalidate_catalogue(self, group_id: UUID) -> None:
         self._catalogue_hashes.pop(group_id, None)
+        self._catalogue_revisions.pop(group_id, None)
+        with _CATALOGUE_CACHE_LOCK:
+            _CATALOGUE_CACHE.pop((id(self.session.get_bind()), group_id), None)
+
+    def catalogue_revision(self, group_id: UUID) -> str:
+        if cached := self._catalogue_revisions.get(group_id):
+            return cached
+        foods = self.session.execute(
+            sa.select(IngredientFoodModel.id, IngredientFoodModel.update_at)
+            .where(IngredientFoodModel.group_id == group_id)
+            .order_by(IngredientFoodModel.id)
+        ).all()
+        units = self.session.execute(
+            sa.select(IngredientUnitModel.id, IngredientUnitModel.update_at)
+            .where(IngredientUnitModel.group_id == group_id)
+            .order_by(IngredientUnitModel.id)
+        ).all()
+        food_aliases = self.session.execute(
+            sa.select(IngredientFoodAliasModel.id, IngredientFoodAliasModel.update_at)
+            .join(IngredientFoodModel, IngredientFoodModel.id == IngredientFoodAliasModel.food_id)
+            .where(IngredientFoodModel.group_id == group_id)
+            .order_by(IngredientFoodAliasModel.id)
+        ).all()
+        unit_aliases = self.session.execute(
+            sa.select(IngredientUnitAliasModel.id, IngredientUnitAliasModel.update_at)
+            .join(IngredientUnitModel, IngredientUnitModel.id == IngredientUnitAliasModel.unit_id)
+            .where(IngredientUnitModel.group_id == group_id)
+            .order_by(IngredientUnitAliasModel.id)
+        ).all()
+        revision = self._hash(foods, units, food_aliases, unit_aliases)
+        self._catalogue_revisions[group_id] = revision
+        return revision
 
     def catalogue(self, group_id: UUID) -> str:
         if cached := self._catalogue_hashes.get(group_id):
             return cached
+        revision = self.catalogue_revision(group_id)
+        cache_key = (id(self.session.get_bind()), group_id)
+        with _CATALOGUE_CACHE_LOCK:
+            cached_global = _CATALOGUE_CACHE.get(cache_key)
+        if cached_global is not None and cached_global[0] == revision:
+            self._catalogue_hashes[group_id] = cached_global[1]
+            return cached_global[1]
         foods = self.session.execute(
             sa.select(
                 IngredientFoodModel.id,
@@ -75,6 +119,8 @@ class NutritionFingerprintService:
         ).all()
         value = self._hash(foods, units, food_aliases, unit_aliases)
         self._catalogue_hashes[group_id] = value
+        with _CATALOGUE_CACHE_LOCK:
+            _CATALOGUE_CACHE[cache_key] = (revision, value)
         return value
 
     def ingredient(self, ingredient: RecipeIngredientModel, group_id: UUID) -> str:

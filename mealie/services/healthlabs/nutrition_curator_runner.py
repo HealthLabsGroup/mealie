@@ -29,6 +29,7 @@ def _combined(first: NutritionCuratorReport, second: NutritionCuratorReport) -> 
         provider_exhausted=first.provider_exhausted or second.provider_exhausted,
         provider_error=first.provider_error or second.provider_error,
         throttled=first.throttled or second.throttled,
+        transport_error=first.transport_error or second.transport_error,
     )
 
 
@@ -56,7 +57,9 @@ async def _drain(
 ) -> tuple[NutritionCuratorReport, int, bool]:
     total = NutritionCuratorReport(0, 0, 0, 0, False)
     concurrency = min(initial_concurrency, max_concurrency)
+    last_stable_concurrency = concurrency
     stable_completions = 0
+    transport_errors = 0
     pending: set[asyncio.Task[NutritionCuratorReport]] = set()
     iterator = iter(work_ids)
     exhausted = False
@@ -74,21 +77,32 @@ async def _drain(
             break
 
         finished, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        throttled = False
         for task in finished:
             report = task.result()
             total = _combined(total, report)
-            if report.throttled and not frozen:
-                frozen = True
-                logger.warning("Nutrition curator holding concurrency=%s after provider throttling", concurrency)
-            elif report.claimed and not report.provider_error and not frozen:
+            throttled = throttled or report.throttled
+            transport_errors += int(report.transport_error)
+            if report.claimed and not report.provider_error and not frozen:
                 stable_completions += 1
+
+        if throttled and not frozen:
+            frozen = True
+            logger.warning("Nutrition curator holding concurrency=%s after provider throttling", concurrency)
+        transport_error_threshold = max(8, concurrency // 16)
+        if not frozen and transport_errors >= transport_error_threshold:
+            concurrency = last_stable_concurrency
+            frozen = True
+            logger.warning("Nutrition curator holding concurrency=%s after transport saturation", concurrency)
 
         threshold = max(8, concurrency // 4)
         if not frozen and concurrency < max_concurrency and stable_completions >= threshold:
-            next_concurrency = min(max_concurrency, concurrency * 4)
+            last_stable_concurrency = concurrency
+            next_concurrency = min(max_concurrency, concurrency * 2)
             logger.info("Nutrition curator increasing concurrency=%s->%s", concurrency, next_concurrency)
             concurrency = next_concurrency
             stable_completions = 0
+            transport_errors = 0
 
     return total, concurrency, frozen
 

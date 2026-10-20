@@ -192,7 +192,10 @@ class NutritionCuratorService:
         work: HealthLabsNutritionWork,
         provider: AIProvider,
     ) -> NutritionCuratorCandidateSet | None:
-        candidate_set = NutritionCuratorCandidateService(self.session, country=self.country).build(work, provider)
+        candidate_set = NutritionCuratorCandidateService(
+            self.session,
+            country=self.country,
+        ).build(work, provider)
         if candidate_set is None:
             return None
         previous = self.session.scalar(

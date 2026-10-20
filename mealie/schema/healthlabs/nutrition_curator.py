@@ -37,16 +37,15 @@ def sanitize_curator_rationale(value: Any) -> str:
     value = " ".join(value.split())
     if not value or len(value) > 280:
         raise ValueError("rationale must contain at most 280 characters")
-    if re.search(r"\bI(?:\b|'m|'ve|'d|'ll)", value) is None:
-        raise ValueError("rationale must use Apple's concise first-person voice")
     return value
 
 
 def public_curator_note(value: Any) -> str | None:
     try:
-        return sanitize_curator_rationale(value)
+        note = sanitize_curator_rationale(value)
     except ValueError:
         return None
+    return note if re.search(r"\bI(?:\b|'m|'ve|'d|'ll)", note) is not None else None
 
 
 class NutritionCuratorCandidateSet(BaseModel):

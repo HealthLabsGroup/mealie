@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -41,6 +42,7 @@ from mealie.services.healthlabs.nutrition_fingerprint_service import NutritionFi
 from mealie.services.healthlabs.nutrition_service import NutritionConflict, NutritionService
 
 PROMPT_NAME = "healthlabs.nutrition-curator"
+DECISION_VERSION = f"{PROMPT_VERSION}+response-v2"
 _LEASE = timedelta(minutes=15)
 _RETRY_DELAYS = (timedelta(minutes=5), timedelta(minutes=30))
 _USAGE_KEYS = frozenset({"input_tokens", "cached_input_tokens", "output_tokens"})
@@ -86,7 +88,7 @@ class NutritionCuratorService:
         provider = self._provider(work.group_id)
         if provider is None or not self._work_is_current(work):
             return None
-        candidate_set = NutritionCuratorCandidateService(self.session, country=self.country).build(work, provider)
+        candidate_set = self._candidate_set(work, provider)
         if candidate_set is None:
             return None
 
@@ -126,7 +128,7 @@ class NutritionCuratorService:
             provider_id=provider.id,
             provider_name=provider.name,
             provider_model=provider.model,
-            prompt_version=PROMPT_VERSION,
+            prompt_version=DECISION_VERSION,
             requested_at=None if empty or reusable is not None or reuse_conflict else self.now,
             usage={} if reusable is not None or reuse_conflict else None,
         )
@@ -184,6 +186,32 @@ class NutritionCuratorService:
             for decision in matching
         }
         return (matching[0], False) if len(signatures) == 1 else (None, True)
+
+    def _candidate_set(
+        self,
+        work: HealthLabsNutritionWork,
+        provider: AIProvider,
+    ) -> NutritionCuratorCandidateSet | None:
+        candidate_set = NutritionCuratorCandidateService(self.session, country=self.country).build(work, provider)
+        if candidate_set is None:
+            return None
+        previous = self.session.scalar(
+            sa.select(HealthLabsNutritionCuratorDecision).where(
+                HealthLabsNutritionCuratorDecision.group_id == work.group_id,
+                HealthLabsNutritionCuratorDecision.kind == work.kind,
+                HealthLabsNutritionCuratorDecision.target_id == work.target_id,
+                HealthLabsNutritionCuratorDecision.curator_sha256 == candidate_set.curator_sha256,
+            )
+        )
+        if (
+            previous is None
+            or previous.state != "failed"
+            or previous.reason_code != "provider_failure"
+            or previous.prompt_version == DECISION_VERSION
+        ):
+            return candidate_set
+        retry_sha256 = hashlib.sha256(f"{candidate_set.curator_sha256}:{DECISION_VERSION}".encode()).hexdigest()
+        return candidate_set.model_copy(update={"curator_sha256": retry_sha256})
 
     @staticmethod
     def _response_from(
@@ -265,7 +293,7 @@ class NutritionCuratorService:
         ):
             return self._finalize(decision, "insufficient_evidence", "stale_fingerprint", usage=usage)
 
-        candidate_set = NutritionCuratorCandidateService(self.session, country=self.country).build(work, provider)
+        candidate_set = self._candidate_set(work, provider)
         if candidate_set is None or candidate_set.curator_sha256 != decision.curator_sha256:
             return self._finalize(decision, "insufficient_evidence", "stale_fingerprint", usage=usage)
         try:

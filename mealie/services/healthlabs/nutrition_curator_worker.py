@@ -18,6 +18,7 @@ from mealie.repos.repository_factory import AllRepositories
 from mealie.schema.healthlabs.nutrition_curator import NutritionCuratorProviderDecision
 from mealie.services.healthlabs.nutrition_curator_prompt import NutritionCuratorPrompt
 from mealie.services.healthlabs.nutrition_curator_service import (
+    DECISION_VERSION,
     FinalizedCuratorDecision,
     NutritionCuratorService,
     StartedCuratorDecision,
@@ -71,6 +72,17 @@ class NutritionCuratorWorker:
         empty = NutritionCuratorReport(0, 0, 0, 0, False)
         if self.should_stop() or not self.settings.HEALTHLABS_NUTRITION_CURATOR_ENABLED or not self.budget.enabled:
             return empty
+        old_failed_contract = sa.exists().where(
+            HealthLabsNutritionCuratorDecision.work_id == HealthLabsNutritionWork.id,
+            HealthLabsNutritionCuratorDecision.state == "failed",
+            HealthLabsNutritionCuratorDecision.reason_code == "provider_failure",
+            HealthLabsNutritionCuratorDecision.reuse_sha256.is_not(None),
+            HealthLabsNutritionCuratorDecision.prompt_version != DECISION_VERSION,
+        )
+        current_contract_attempt = sa.exists().where(
+            HealthLabsNutritionCuratorDecision.work_id == HealthLabsNutritionWork.id,
+            HealthLabsNutritionCuratorDecision.prompt_version == DECISION_VERSION,
+        )
         work_ids = self.session.scalars(
             sa.select(HealthLabsNutritionWork.id)
             .join(AIProviderSettings, AIProviderSettings.group_id == HealthLabsNutritionWork.group_id)
@@ -86,6 +98,7 @@ class NutritionCuratorWorker:
                 HealthLabsNutritionWork.next_attempt_at <= self._current_time(),
             )
             .order_by(
+                sa.case((sa.and_(old_failed_contract, ~current_contract_attempt), 0), else_=1),
                 HealthLabsNutritionWork.next_attempt_at,
                 HealthLabsNutritionWork.kind,
                 HealthLabsNutritionWork.target_id,

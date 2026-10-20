@@ -15,8 +15,8 @@ from mealie.db.models.recipe import RecipeIngredientModel
 from mealie.db.models.users import User, UserType
 from mealie.schema.healthlabs.nutrition_curator import NutritionCuratorProviderDecision
 from mealie.schema.recipe import Recipe, SaveIngredientFood, SaveIngredientUnit
-from mealie.services.healthlabs.nutrition_curator_prompt import NutritionCuratorPrompt
-from mealie.services.healthlabs.nutrition_curator_service import NutritionCuratorService
+from mealie.services.healthlabs.nutrition_curator_prompt import PROMPT_VERSION, NutritionCuratorPrompt
+from mealie.services.healthlabs.nutrition_curator_service import DECISION_VERSION, NutritionCuratorService
 from mealie.services.healthlabs.nutrition_curator_worker import NutritionCuratorWorker
 from mealie.services.healthlabs.nutrition_fingerprint_service import NutritionFingerprintService
 from mealie.services.healthlabs.nutrition_provider_budget import NutritionProviderBudget
@@ -430,6 +430,54 @@ def test_provider_failures_retry_after_five_and_thirty_minutes_then_stop(
     assert caplog.text.count("Nutrition curator provider failure error_type=ValueError") == 3
     assert "secret provider wrapper" not in caplog.text
     assert "secret provider body" not in caplog.text
+
+
+def test_failed_previous_response_contract_gets_one_new_audited_attempt(
+    unique_user_fn_scoped: TestUser,
+) -> None:
+    user = unique_user_fn_scoped
+    _, nutrient_food, work = _food_work(user)
+    service = NutritionCuratorService(user.repos.session, now=NOW)
+    started = service.start(work.id)
+    assert started is not None
+    failed = user.repos.session.get(HealthLabsNutritionCuratorDecision, started.decision_id)
+    assert failed is not None
+    failed.state = "failed"
+    failed.reason_code = "provider_failure"
+    failed.prompt_version = PROMPT_VERSION
+    failed.lease_expires_at = None
+    user.repos.session.commit()
+
+    recovered = service.start(work.id)
+    assert recovered is not None
+    state = service.apply(
+        recovered.decision_id,
+        NutritionCuratorProviderDecision.model_validate(
+            {
+                "decision": "select",
+                "kind": "food_match",
+                "nutrient_food_id": nutrient_food.id,
+                "confidence": 0.99,
+                "runner_up_confidence": 0.1,
+                "reason_code": "name_and_context_match",
+                "rationale": "I selected the supplied compatible candidate.",
+            }
+        ),
+        {},
+    )
+    user.repos.session.commit()
+
+    assert state == "approved"
+    decisions = user.repos.session.scalars(
+        sa.select(HealthLabsNutritionCuratorDecision)
+        .where(HealthLabsNutritionCuratorDecision.work_id == work.id)
+        .order_by(HealthLabsNutritionCuratorDecision.created_at, HealthLabsNutritionCuratorDecision.id)
+    ).all()
+    assert len(decisions) == 2
+    assert decisions[0].state == "failed"
+    assert decisions[1].state == "approved"
+    assert decisions[1].curator_sha256 != decisions[0].curator_sha256
+    assert decisions[1].prompt_version == DECISION_VERSION
 
 
 def test_lease_bounds_call_and_retry_starts_after_provider_finishes(

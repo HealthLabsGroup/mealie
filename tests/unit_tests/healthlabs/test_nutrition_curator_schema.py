@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from mealie.schema.healthlabs.nutrition_curator import (
     NutritionCuratorCandidateSet,
     NutritionCuratorProviderDecision,
+    public_curator_note,
 )
 
 FOOD_ID = "11111111-1111-4111-8111-111111111111"
@@ -112,11 +113,14 @@ def test_provider_decision_sanitizes_markup_controls_and_whitespace() -> None:
     assert decision.rationale == "I selected Apple, raw."
 
 
-def test_provider_decision_rejects_oversized_or_non_first_person_rationale() -> None:
+def test_provider_decision_rejects_oversized_rationale_without_rejecting_safe_display_metadata() -> None:
     with pytest.raises(ValidationError):
         NutritionCuratorProviderDecision.model_validate(_decision(rationale="I " + "x" * 280))
-    with pytest.raises(ValidationError):
-        NutritionCuratorProviderDecision.model_validate(_decision(rationale="The candidate looks correct."))
+
+    decision = NutritionCuratorProviderDecision.model_validate(_decision(rationale="The candidate looks correct."))
+
+    assert decision.rationale == "The candidate looks correct."
+    assert public_curator_note(decision.rationale) is None
 
 
 @pytest.mark.parametrize(

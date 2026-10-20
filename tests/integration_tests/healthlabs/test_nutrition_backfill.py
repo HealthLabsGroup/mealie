@@ -14,6 +14,7 @@ from mealie.db.models.healthlabs import (
     HealthLabsFoodPortion,
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
+    HealthLabsNutritionWork,
 )
 from mealie.db.models.recipe import RecipeIngredientModel, RecipeIngredientSubstitutionModel
 from mealie.db.models.recipe.ingredient import IngredientFoodAliasModel, IngredientFoodModel
@@ -179,6 +180,17 @@ def test_coverage_report_contains_only_aggregate_workspace_data(
         "water_ml": {"amount": None, "unit": "ml"},
     }
     food_id = response.json()["ingredients"][0]["food"]["id"]
+    ingredient = session.scalar(sa.select(RecipeIngredientModel).where(RecipeIngredientModel.food_id == food_id))
+    assert ingredient is not None
+    unparsed_ingredient = session.scalar(
+        sa.select(RecipeIngredientModel).where(
+            RecipeIngredientModel.recipe_id == ingredient.recipe_id,
+            RecipeIngredientModel.food_id.is_(None),
+        )
+    )
+    assert unparsed_ingredient is not None
+    user = session.scalar(sa.select(User).where(User.external_subject_id == subject))
+    assert user is not None
     session.add(
         HealthLabsFoodMatch(
             ingredient_food_id=food_id,
@@ -188,6 +200,39 @@ def test_coverage_report_contains_only_aggregate_workspace_data(
             confidence=1,
             auto_applied=True,
         )
+    )
+    session.add(
+        HealthLabsNutritionWork(
+            group_id=user.group_id,
+            kind="portion_resolution",
+            target_id=str(ingredient.id),
+            input_sha256="a" * 64,
+            state="review_required",
+            result={"reason": "conversion_missing"},
+        )
+    )
+    session.add_all(
+        [
+            HealthLabsNutritionWork(
+                group_id=user.group_id,
+                kind="food_match",
+                target_id=str(food_id),
+                input_sha256="b" * 64,
+                state="review_required",
+                result={"reason": "no_unique_source_match"},
+            ),
+            HealthLabsNutritionWork(
+                group_id=user.group_id,
+                kind="ingredient_structure",
+                target_id=str(unparsed_ingredient.id),
+                input_sha256="c" * 64,
+                state="review_required",
+                result={
+                    "reason": "ingredient_suggestion",
+                    "suggestion": {"food": "Alias candidate", "unit": "tablespoon"},
+                },
+            ),
+        ]
     )
     session.commit()
     report = _script("report-nutrition-coverage.py")["nutrition_coverage_report"](
@@ -219,6 +264,18 @@ def test_coverage_report_contains_only_aggregate_workspace_data(
         for source in report["source_versions"]
     )
     assert report["mock_source_releases"] == 0
+    assert [gap["priority"] for gap in report["gaps"]] == [1, 2, 3]
+    assert report["gaps"][0] == {
+        "priority": 1,
+        "kind": "portion_resolution",
+        "country": "GB",
+        "normalized_food": "coverage food",
+        "preparation_state": None,
+        "unit": "scoop",
+        "reason_code": "conversion_missing",
+        "affected_recipes": 1,
+        "affected_targets": 1,
+    }
     serialized = json.dumps(report)
     assert private_recipe_name not in serialized
     assert private_original_text not in serialized

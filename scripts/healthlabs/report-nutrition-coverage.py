@@ -8,6 +8,7 @@ import sys
 from collections import Counter, defaultdict
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
@@ -18,6 +19,8 @@ from mealie.db.models.healthlabs import (
     HealthLabsFoodPortion,
     HealthLabsNutrientFood,
     HealthLabsNutrientSourceRelease,
+    HealthLabsNutritionCuratorDecision,
+    HealthLabsNutritionWork,
 )
 from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel, RecipeIngredientModel, RecipeModel
 from mealie.db.models.recipe.ingredient import IngredientUnitAliasModel
@@ -29,20 +32,32 @@ from mealie.services.healthlabs.nutrition_service import (
     NutritionService,
 )
 
+GAP_PRIORITY = {"portion_resolution": 1, "food_match": 2, "ingredient_structure": 3}
 
-def nutrition_coverage_report(session: Session, *, external_subject_id: str | None = None) -> dict[str, Any]:
+
+def nutrition_coverage_report(
+    session: Session,
+    *,
+    external_subject_id: str | None = None,
+    country: str = "GB",
+) -> dict[str, Any]:
+    country = country.strip().upper()
+    if not country:
+        raise ValueError("country is required")
     group_id = None
     if external_subject_id is not None:
         group_id = session.scalar(sa.select(User.group_id).where(User.external_subject_id == external_subject_id))
         if group_id is None:
             raise LookupError("HealthLabs subject not found")
 
-    food_query = sa.select(IngredientFoodModel.id)
+    food_query = sa.select(IngredientFoodModel)
     recipe_filter = []
     if group_id is not None:
         food_query = food_query.where(IngredientFoodModel.group_id == group_id)
         recipe_filter.append(RecipeModel.group_id == group_id)
-    food_ids = list(session.scalars(food_query))
+    foods = list(session.scalars(food_query))
+    foods_by_id = {food.id: food for food in foods}
+    food_ids = list(foods_by_id)
     matches = {
         match.ingredient_food_id: match
         for match in session.scalars(
@@ -53,6 +68,8 @@ def nutrition_coverage_report(session: Session, *, external_subject_id: str | No
 
     ingredient_rows = session.execute(
         sa.select(
+            RecipeIngredientModel.id,
+            RecipeIngredientModel.recipe_id,
             RecipeIngredientModel.food_id,
             RecipeIngredientModel.unit_id,
             RecipeIngredientModel.quantity,
@@ -158,7 +175,155 @@ def nutrition_coverage_report(session: Session, *, external_subject_id: str | No
             any(marker in source.provider.casefold() for marker in ("mock", "fixture", "synthetic"))
             for source in sources
         ),
+        "gaps": _gap_statistics(
+            session,
+            group_id=group_id,
+            country=country,
+            ingredient_rows=ingredient_rows,
+            foods=foods_by_id,
+            units=units,
+            matches=matches,
+            nutrient_foods=nutrient_foods,
+        ),
     }
+
+
+def _gap_statistics(
+    session: Session,
+    *,
+    group_id: object | None,
+    country: str,
+    ingredient_rows: list[Any],
+    foods: dict[object, IngredientFoodModel],
+    units: dict[object, IngredientUnitModel],
+    matches: dict[object, HealthLabsFoodMatch],
+    nutrient_foods: dict[object, HealthLabsNutrientFood],
+) -> list[dict[str, Any]]:
+    work_query = sa.select(HealthLabsNutritionWork).where(HealthLabsNutritionWork.state == "review_required")
+    if group_id is not None:
+        work_query = work_query.where(HealthLabsNutritionWork.group_id == group_id)
+    work = list(session.scalars(work_query))
+    if not work:
+        return []
+
+    rows_by_id = {str(row.id): row for row in ingredient_rows}
+    recipes_by_food: dict[object, set[object]] = defaultdict(set)
+    for row in ingredient_rows:
+        if row.food_id is not None and row.recipe_id is not None:
+            recipes_by_food[row.food_id].add(row.recipe_id)
+
+    reason_by_work_id: dict[object, str] = {}
+    decision_query = (
+        sa.select(HealthLabsNutritionCuratorDecision)
+        .join(HealthLabsNutritionWork, HealthLabsNutritionCuratorDecision.work_id == HealthLabsNutritionWork.id)
+        .where(
+            HealthLabsNutritionWork.state == "review_required",
+            HealthLabsNutritionCuratorDecision.state.in_(("insufficient_evidence", "failed")),
+        )
+        .order_by(HealthLabsNutritionCuratorDecision.update_at.desc())
+    )
+    if group_id is not None:
+        decision_query = decision_query.where(HealthLabsNutritionWork.group_id == group_id)
+    for decision in session.scalars(decision_query):
+        if decision.work_id is not None and decision.reason_code:
+            reason_by_work_id.setdefault(decision.work_id, decision.reason_code)
+
+    grouped: dict[tuple[Any, ...], dict[str, set[object]]] = defaultdict(lambda: {"recipes": set(), "targets": set()})
+    for item in work:
+        result = item.result if isinstance(item.result, dict) else {}
+        reason_code = reason_by_work_id.get(item.id) or result.get("reason") or item.last_error or "unknown"
+        normalized_food = None
+        preparation_state = None
+        unit_name = None
+        item_country = country
+        recipe_ids: set[object] = set()
+
+        if item.kind == "food_match":
+            food = _food_for_target(foods, item.target_id)
+            if food is not None:
+                normalized_food = food.name_normalized or _normalize_food(food.name)
+                preparation_state = NutritionService._preparation_state(food.name or "")
+                recipe_ids = recipes_by_food[food.id]
+        else:
+            ingredient = rows_by_id.get(item.target_id)
+            if ingredient is not None:
+                recipe_ids = {ingredient.recipe_id} if ingredient.recipe_id is not None else set()
+                food = foods.get(ingredient.food_id)
+                if food is not None:
+                    normalized_food = food.name_normalized or _normalize_food(food.name)
+                    match = matches.get(food.id)
+                    source_food = nutrient_foods.get(match.nutrient_food_id) if match is not None else None
+                    preparation_state = (
+                        source_food.preparation_state
+                        if source_food is not None and source_food.preparation_state
+                        else NutritionService._preparation_state(food.name or "")
+                    )
+                    item_country = match.country if match is not None else country
+                unit = units.get(ingredient.unit_id)
+                if unit is not None:
+                    unit_name = unit.name_normalized or IngredientUnitModel.normalize(unit.name or "") or None
+
+            suggestion = result.get("suggestion") if item.kind == "ingredient_structure" else None
+            if isinstance(suggestion, dict):
+                normalized_food = normalized_food or _normalize_food(suggestion.get("food"))
+                unit_name = unit_name or _normalize_unit(suggestion.get("unit"))
+                preparation_state = preparation_state or NutritionService._preparation_state(
+                    suggestion.get("food") or ""
+                )
+
+        key = (
+            item.kind,
+            item_country,
+            normalized_food,
+            preparation_state,
+            unit_name,
+            str(reason_code),
+        )
+        grouped[key]["recipes"].update(recipe_ids)
+        grouped[key]["targets"].add(item.target_id)
+
+    gaps = [
+        {
+            "priority": GAP_PRIORITY[kind],
+            "kind": kind,
+            "country": item_country,
+            "normalized_food": normalized_food,
+            "preparation_state": preparation_state,
+            "unit": unit_name,
+            "reason_code": reason_code,
+            "affected_recipes": len(counts["recipes"]),
+            "affected_targets": len(counts["targets"]),
+        }
+        for (kind, item_country, normalized_food, preparation_state, unit_name, reason_code), counts in grouped.items()
+    ]
+    return sorted(
+        gaps,
+        key=lambda row: (
+            row["priority"],
+            -row["affected_recipes"],
+            -row["affected_targets"],
+            row["country"],
+            row["normalized_food"] or "",
+            row["preparation_state"] or "",
+            row["unit"] or "",
+            row["reason_code"],
+        ),
+    )
+
+
+def _food_for_target(foods: dict[object, IngredientFoodModel], target_id: str) -> IngredientFoodModel | None:
+    try:
+        return foods.get(UUID(target_id))
+    except ValueError:
+        return None
+
+
+def _normalize_food(value: Any) -> str | None:
+    return IngredientFoodModel.normalize(value) if isinstance(value, str) and value.strip() else None
+
+
+def _normalize_unit(value: Any) -> str | None:
+    return IngredientUnitModel.normalize(value) if isinstance(value, str) and value.strip() else None
 
 
 def _status(match: HealthLabsFoodMatch | None) -> str:
@@ -209,12 +374,17 @@ def _has_conversion(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Report aggregate HealthLabs nutrition coverage")
     parser.add_argument("--external-subject-id")
+    parser.add_argument("--country", default="GB")
     args = parser.parse_args()
 
     from mealie.db.db_setup import session_context
 
     with session_context() as session:
-        report = nutrition_coverage_report(session, external_subject_id=args.external_subject_id)
+        report = nutrition_coverage_report(
+            session,
+            external_subject_id=args.external_subject_id,
+            country=args.country,
+        )
     sys.stdout.write(f"{json.dumps(report, sort_keys=True)}\n")
 
 

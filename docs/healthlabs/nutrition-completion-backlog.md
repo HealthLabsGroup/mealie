@@ -1,7 +1,7 @@
 # HealthLabs nutrition completion backlog
 
 Date: 2026-10-20
-Status: Active (Tasks 1–2 complete)
+Status: Active (Tasks 1–3 complete)
 
 The core nutrition service is implemented and running on DEV. These tasks finish
 the existing reconciliation backlog without weakening evidence, tenant, audit,
@@ -53,23 +53,35 @@ has no eligible duplicate” from “an eligible duplicate caused a provider cal
 
 ## Task 3 — Drain the queue with bounded asynchronous concurrency
 
-- [ ] Replace the single sequential provider loop with an async supervisor and
+- [x] Replace the single sequential provider loop with an async supervisor and
   configurable bounded concurrency; target the maximum provider-safe throughput.
-- [ ] Give every concurrent job its own database session; never share a
+- [x] Give every concurrent job its own database session; never share a
   SQLAlchemy session across tasks.
-- [ ] Claim work atomically, preserve 15-minute leases, and prevent duplicate
+- [x] Claim work atomically, preserve 15-minute leases, and prevent duplicate
   claims across processes with database locking/CAS semantics.
-- [ ] Keep request and cost reservations atomic across all concurrent jobs;
+- [x] Keep request and cost reservations atomic across all concurrent jobs;
   enforce provider rate-limit backoff and bounded retries without a retry storm.
-- [ ] Preserve per-target current-fingerprint checks, approved-decision reuse,
+- [x] Preserve per-target current-fingerprint checks, approved-decision reuse,
   tenant isolation, and immutable decision evidence.
-- [ ] Stop accepting new work on SIGTERM, allow bounded in-flight calls to
+- [x] Stop accepting new work on SIGTERM, allow bounded in-flight calls to
   finalize, then exit cleanly.
-- [ ] Add concurrency tests for duplicate claims, lease recovery, stale writes,
+- [x] Add concurrency tests for duplicate claims, lease recovery, stale writes,
   shared budget, shutdown, provider throttling, and mixed work kinds.
-- [ ] Load-test with real DEV latency, tune concurrency to available capacity,
+- [x] Load-test with real DEV latency, tune concurrency to available capacity,
   and measure whether the remaining queue can finish in minutes; report the
   provider-capacity limit if the measured throughput cannot meet that target.
+
+Completed in `v3.28.0-healthlabs.34`. The runner uses one database session per
+job and one shared HTTP pool, caches revision-keyed catalogue snapshots, ramps
+32 → 64 → 128 → 256 → 512, and holds the current level after the first 429
+without reducing it. Sustained transport failures fall back only to the last
+stable level. Live DEV reached the provider throttle boundary at concurrency
+512 with zero transport errors, restarts, or OOM events; memory settled near
+253 MiB. The final pre-cap window admitted 760 requests in 25 seconds (about
+1,824/minute), then stopped exactly at the configured 25,000 daily requests.
+The local CPU/connection bottleneck is removed; provider throttling and the
+daily request cap now determine completion time, so the remaining queue cannot
+be promised to finish in minutes under the current allowance.
 
 Acceptance: one deployment processes many independent provider calls
 concurrently, no target is applied twice, and measured throughput—not an

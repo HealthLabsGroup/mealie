@@ -89,9 +89,9 @@ assumption—determines the completion ETA.
 
 ## Task 4 — Expand authoritative source and portion coverage
 
-- [ ] Export aggregate, non-private gap statistics by country, normalized food,
+- [x] Export aggregate, non-private gap statistics by country, normalized food,
   preparation state, unit, and reason code.
-- [ ] Prioritize missing portion evidence, then food matches, then ingredient
+- [x] Prioritize missing portion evidence, then food matches, then ingredient
   aliases based on affected recipe count.
 - [ ] Research national/open datasets and verify licence, attribution, version,
   provenance, nutrient definitions, edible portions, and redistribution terms.
@@ -101,6 +101,14 @@ assumption—determines the completion ETA.
   replacing reviewed records or mixing Open Food Facts into generic sources.
 - [ ] Re-run deterministic matching before paid curation and quantify how many
   `insufficient_evidence` records become resolvable.
+
+The first slice shipped in `v3.28.0-healthlabs.35` by extending the existing
+coverage report; no second exporter or data format was added. A read-only DEV
+snapshot produced 6,017 aggregate gap groups covering 22,611 targets: 1,826
+portion resolutions, 188 food matches, and 20,597 ingredient structures. The
+report was summarized in memory and not saved or committed; raw source rows,
+recipe text, target IDs, workspace/user IDs, prompts, and provider responses
+remain excluded.
 
 Acceptance: every new fact is source-backed and reproducible, and coverage
 improves without invented nutrients, grams, or cross-workspace data.

@@ -155,6 +155,19 @@ def search_source_foods(
     return _service(session, user).search_source_foods(q, country, limit)
 
 
+@router.get("/source-foods/{food_id}", response_model=HealthLabsNutrientFoodOut)
+def get_source_food(
+    food_id: UUID,
+    session: Session = Depends(generate_session),
+    user: PrivateUser = Depends(get_current_user),
+) -> HealthLabsNutrientFoodOut:
+    try:
+        return _service(session, user).get_source_food(food_id)
+    except Exception as exc:
+        _raise_http(exc)
+        raise
+
+
 @router.put("/foods/{food_id}/match", response_model=HealthLabsFoodNutritionOut)
 def set_food_match(
     food_id: UUID,

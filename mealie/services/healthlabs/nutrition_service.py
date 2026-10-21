@@ -309,7 +309,8 @@ class NutritionService:
 
     def search_source_foods(self, query: str, country: str, limit: int) -> list[HealthLabsNutrientFoodOut]:
         self._require_user()
-        terms = IngredientFoodModel.normalize(query).split()
+        normalized_query = IngredientFoodModel.normalize(query)
+        terms = normalized_query.split()
         if not terms:
             return []
 
@@ -330,15 +331,56 @@ class NutritionService:
             for food, source in self.session.execute(statement)
             if all(term in IngredientFoodModel.normalize(food.name) for term in terms)
         ]
-        matches.sort(
-            key=lambda item: (
-                0 if item[1].country.upper() == country else 1,
-                len(item[0].name),
-                item[0].name.casefold(),
-                str(item[0].id),
+        measured_food_ids = set(
+            self.session.scalars(
+                sa.select(HealthLabsFoodPortion.nutrient_food_id).where(
+                    HealthLabsFoodPortion.source_managed.is_(True),
+                    HealthLabsFoodPortion.nutrient_food_id.in_([food.id for food, _ in matches]),
+                )
             )
         )
+
+        def relevance(
+            item: tuple[HealthLabsNutrientFood, HealthLabsNutrientSourceRelease],
+        ) -> tuple[int, int, int, int, int, str, str]:
+            food, source = item
+            words = IngredientFoodModel.normalize(food.name).split()
+            positions: list[int] = []
+            quality = 0
+            for term in terms:
+                exact = [
+                    index
+                    for index, word in enumerate(words)
+                    if word == term or (len(term) > 2 and word.rstrip("s") == term.rstrip("s"))
+                ]
+                if exact:
+                    positions.append(exact[0])
+                    continue
+                prefix = [index for index, word in enumerate(words) if word.startswith(term)]
+                quality = max(quality, 1 if prefix else 2)
+                positions.append(prefix[0] if prefix else len(words))
+            return (
+                0 if food.id in measured_food_ids else 1,
+                quality,
+                positions[0],
+                0 if source.country.upper() == country else 1,
+                len(words),
+                food.name.casefold(),
+                str(food.id),
+            )
+
+        matches.sort(key=relevance)
         return [self._source_food_out(food, source, source_only_portions=True) for food, source in matches[:limit]]
+
+    def get_source_food(self, food_id: UUID) -> HealthLabsNutrientFoodOut:
+        self._require_user()
+        food = self.session.get(HealthLabsNutrientFood, food_id)
+        if food is None:
+            raise NutritionSourceNotFound
+        source = self.session.get(HealthLabsNutrientSourceRelease, food.source_release_id)
+        if source is None:
+            raise NutritionSourceNotFound
+        return self._source_food_out(food, source, source_only_portions=True)
 
     def match_food(self, food_id: UUID, country: str) -> HealthLabsFoodMatchOut | None:
         if self.session.scalar(

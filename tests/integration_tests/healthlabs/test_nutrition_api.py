@@ -426,6 +426,72 @@ def test_source_food_search_is_tokenized_country_scoped_and_stable(
     assert too_large.status_code == 422
 
 
+def test_source_food_search_prioritizes_food_names_and_measured_portions(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_nutrition_source: Callable,
+    unfiltered_database: AllRepositories,
+) -> None:
+    _, headers = healthlabs_provision()
+    token = uuid4().hex[:10]
+    healthlabs_nutrition_source(name=f"Creme egg {token}", country="GB")
+    healthlabs_nutrition_source(name=f"Egg {token} boiled", country="GB")
+    _, fried_id = healthlabs_nutrition_source(name=f"Egg {token} fried", country="OTHER")
+    unfiltered_database.session.add(
+        HealthLabsFoodPortion(
+            nutrient_food_id=UUID(fried_id),
+            description="1 egg",
+            amount=1,
+            unit="egg",
+            grams=55,
+        )
+    )
+    unfiltered_database.session.commit()
+
+    response = api_client.get(
+        "/api/healthlabs/v1/nutrition/source-foods",
+        params={"q": f"egg {token}", "country": "GB"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert [item["name"] for item in response.json()] == [
+        f"Egg {token} fried",
+        f"Egg {token} boiled",
+        f"Creme egg {token}",
+    ]
+
+
+def test_source_food_detail_returns_authoritative_nutrition_and_portions(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_nutrition_source: Callable,
+    unfiltered_database: AllRepositories,
+) -> None:
+    _, headers = healthlabs_provision()
+    _, food_id = healthlabs_nutrition_source(name="Egg, whole, fried with oil", country="OTHER")
+    unfiltered_database.session.add(
+        HealthLabsFoodPortion(
+            nutrient_food_id=UUID(food_id),
+            description="1 egg",
+            amount=1,
+            unit="egg",
+            grams=55,
+        )
+    )
+    unfiltered_database.session.commit()
+
+    response = api_client.get(
+        f"/api/healthlabs/v1/nutrition/source-foods/{food_id}",
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "Egg, whole, fried with oil"
+    assert response.json()["nutrientsPer100g"]["kcal"] == 50
+    assert response.json()["portions"] == [{"description": "1 egg", "amount": 1.0, "unit": "egg", "grams": 55.0}]
+
+
 def test_source_food_search_normalizes_accents_and_hides_editor_portions(
     api_client: TestClient,
     healthlabs_provision: Callable,

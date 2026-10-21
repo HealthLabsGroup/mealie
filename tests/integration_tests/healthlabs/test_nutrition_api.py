@@ -25,6 +25,24 @@ from mealie.services.healthlabs.nutrition_curator_identity_service import Nutrit
 from mealie.services.healthlabs.nutrition_worker import NutritionReconciliationWorker
 
 
+def test_managed_user_can_parse_ingredients_through_healthlabs_api(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+) -> None:
+    _, headers = healthlabs_provision()
+
+    response = api_client.post(
+        "/api/healthlabs/v1/nutrition/ingredients/parse",
+        json={"parser": "nlp", "ingredients": ["3 chicken eggs"]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    ingredient = response.json()[0]["ingredient"]
+    assert ingredient["quantity"] == 3
+    assert ingredient["originalText"] == "3 chicken eggs"
+
+
 def test_food_search_detail_match_replace_portion_and_clear(
     api_client: TestClient,
     healthlabs_provision: Callable,

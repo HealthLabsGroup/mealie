@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from mealie.core.config import get_app_settings
 from mealie.core.dependencies.dependencies import get_current_user
 from mealie.db.db_setup import generate_session
+from mealie.lang.providers import Translator, get_locale_provider
 from mealie.schema.healthlabs.nutrition import (
     HealthLabsFoodMatchWrite,
     HealthLabsFoodNutritionOut,
@@ -23,6 +24,8 @@ from mealie.schema.healthlabs.nutrition import (
     HealthLabsNutritionWorkOut,
     HealthLabsNutritionWorkState,
 )
+from mealie.schema.recipe import ParsedIngredient
+from mealie.schema.recipe.recipe_ingredient import IngredientsRequest
 from mealie.schema.user import PrivateUser
 from mealie.services.healthlabs.access_policy import RecipeAccessDenied
 from mealie.services.healthlabs.idempotency_service import (
@@ -37,6 +40,7 @@ from mealie.services.healthlabs.nutrition_service import (
     NutritionSourceNotFound,
 )
 from mealie.services.healthlabs.nutrition_work_service import NutritionWorkService
+from mealie.services.parser_services import get_parser
 
 router = APIRouter(prefix="/nutrition", tags=["HealthLabs: Nutrition"])
 
@@ -89,6 +93,16 @@ def _idempotent_json(
         operation=operation,
     )
     return JSONResponse(status_code=result.status_code, content=result.body)
+
+
+@router.post("/ingredients/parse", response_model=list[ParsedIngredient])
+async def parse_ingredients(
+    data: IngredientsRequest,
+    session: Session = Depends(generate_session),
+    user: PrivateUser = Depends(get_current_user),
+    translator: Translator = Depends(get_locale_provider),
+) -> list[ParsedIngredient]:
+    return await get_parser(data.parser, user.group_id, session, translator).parse(data.ingredients)
 
 
 @router.get("/foods", response_model=HealthLabsFoodNutritionPage)

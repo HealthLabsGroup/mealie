@@ -43,6 +43,26 @@ def test_managed_user_can_parse_ingredients_through_healthlabs_api(
     assert ingredient["originalText"] == "3 chicken eggs"
 
 
+def test_managed_ingredient_parser_rejects_openai(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    _, headers = healthlabs_provision()
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("provider-backed parser must not be resolved")
+
+    monkeypatch.setattr("mealie.routes.healthlabs.nutrition.get_parser", fail_if_called)
+    response = api_client.post(
+        "/api/healthlabs/v1/nutrition/ingredients/parse",
+        json={"parser": "openai", "ingredients": ["3 chicken eggs"]},
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+
+
 def test_food_search_detail_match_replace_portion_and_clear(
     api_client: TestClient,
     healthlabs_provision: Callable,

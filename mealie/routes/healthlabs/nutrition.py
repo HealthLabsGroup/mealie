@@ -25,7 +25,7 @@ from mealie.schema.healthlabs.nutrition import (
     HealthLabsNutritionWorkState,
 )
 from mealie.schema.recipe import ParsedIngredient
-from mealie.schema.recipe.recipe_ingredient import IngredientsRequest
+from mealie.schema.recipe.recipe_ingredient import IngredientsRequest, RegisteredParser
 from mealie.schema.user import PrivateUser
 from mealie.services.healthlabs.access_policy import RecipeAccessDenied
 from mealie.services.healthlabs.idempotency_service import (
@@ -102,6 +102,11 @@ async def parse_ingredients(
     user: PrivateUser = Depends(get_current_user),
     translator: Translator = Depends(get_locale_provider),
 ) -> list[ParsedIngredient]:
+    if data.parser != RegisteredParser.nlp:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Managed ingredient parsing supports only the nlp parser",
+        )
     return await get_parser(data.parser, user.group_id, session, translator).parse(data.ingredients)
 
 

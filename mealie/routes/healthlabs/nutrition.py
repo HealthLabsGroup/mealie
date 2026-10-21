@@ -107,6 +107,15 @@ async def parse_ingredients(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Managed ingredient parsing supports only the nlp parser",
         )
+    if (
+        not 1 <= len(data.ingredients) <= 50
+        or any(not ingredient.strip() or len(ingredient) > 2_000 for ingredient in data.ingredients)
+        or sum(len(ingredient) for ingredient in data.ingredients) > 10_000
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Ingredients must contain 1-50 non-empty items, at most 2,000 characters each and 10,000 total",
+        )
     return await get_parser(data.parser, user.group_id, session, translator).parse(data.ingredients)
 
 

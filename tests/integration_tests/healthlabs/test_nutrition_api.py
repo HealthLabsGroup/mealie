@@ -63,6 +63,22 @@ def test_managed_ingredient_parser_rejects_openai(
     assert response.status_code == 422
 
 
+def test_managed_ingredient_parser_rejects_oversized_inputs(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+) -> None:
+    _, headers = healthlabs_provision()
+
+    invalid_ingredients = ([], ["egg"] * 51, ["e" * 2001], ["e" * 1000] * 11)
+    for ingredients in invalid_ingredients:
+        response = api_client.post(
+            "/api/healthlabs/v1/nutrition/ingredients/parse",
+            json={"parser": "nlp", "ingredients": ingredients},
+            headers=headers,
+        )
+        assert response.status_code == 422
+
+
 def test_food_search_detail_match_replace_portion_and_clear(
     api_client: TestClient,
     healthlabs_provision: Callable,

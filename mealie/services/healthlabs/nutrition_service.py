@@ -353,7 +353,7 @@ class NutritionService:
         ) -> tuple[int, int, int, int, int, int, int, str, str]:
             food, source = item
             words = IngredientFoodModel.normalize(food.name).split()
-            whole_egg_name = words[:2] in (["whole", "egg"], ["whole", "eggs"]) or any(
+            whole_egg_name = any(
                 egg in {"egg", "eggs"} and qualifier == "whole"
                 for egg, qualifier in zip(words, words[1:], strict=False)
             )

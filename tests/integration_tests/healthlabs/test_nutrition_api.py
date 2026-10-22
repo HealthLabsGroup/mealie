@@ -503,7 +503,7 @@ def test_source_food_search_prefers_whole_food_over_dishes_and_components(
     assert response.json()[0]["id"] == whole_id
 
 
-def test_source_food_search_does_not_treat_whole_grain_dish_as_whole_egg(
+def test_source_food_search_does_not_treat_dishes_as_whole_eggs(
     api_client: TestClient,
     healthlabs_provision: Callable,
     healthlabs_nutrition_source: Callable,
@@ -511,6 +511,7 @@ def test_source_food_search_does_not_treat_whole_grain_dish_as_whole_egg(
     _, headers = healthlabs_provision()
     token = uuid4().hex[:10]
     healthlabs_nutrition_source(name=f"Whole wheat egg sandwich {token}", country="OTHER")
+    healthlabs_nutrition_source(name=f"Whole egg sandwich {token}", country="OTHER")
     _, egg_id = healthlabs_nutrition_source(name=f"Egg {token}, raw", country="OTHER")
 
     response = api_client.get(

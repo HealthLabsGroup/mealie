@@ -339,13 +339,24 @@ class NutritionService:
                 )
             )
         )
+        generic_egg_query = bool({"egg", "eggs"}.intersection(terms)) and not {
+            "shell",
+            "shells",
+            "white",
+            "whites",
+            "yolk",
+            "yolks",
+        }.intersection(terms)
 
         def relevance(
             item: tuple[HealthLabsNutrientFood, HealthLabsNutrientSourceRelease],
         ) -> tuple[int, int, int, int, int, int, int, str, str]:
             food, source = item
             words = IngredientFoodModel.normalize(food.name).split()
-            egg_query = bool({"egg", "eggs"}.intersection(terms))
+            whole_egg_name = words[:2] in (["whole", "egg"], ["whole", "eggs"]) or any(
+                egg in {"egg", "eggs"} and qualifier == "whole"
+                for egg, qualifier in zip(words, words[1:], strict=False)
+            )
             positions: list[int] = []
             quality = 0
             for term in terms:
@@ -361,8 +372,8 @@ class NutritionService:
                 quality = max(quality, 1 if prefix else 2)
                 positions.append(prefix[0] if prefix else len(words))
             return (
-                0 if not egg_query or "whole" in words else 1,
-                0 if not egg_query or food.preparation_state == "raw" else 1,
+                0 if not generic_egg_query or whole_egg_name else 1,
+                0 if not generic_egg_query or food.preparation_state == "raw" else 1,
                 0 if food.id in measured_food_ids else 1,
                 quality,
                 positions[0],

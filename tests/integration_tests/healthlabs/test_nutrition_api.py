@@ -490,8 +490,8 @@ def test_source_food_search_prefers_whole_food_over_dishes_and_components(
     _, headers = healthlabs_provision()
     token = uuid4().hex[:10]
     healthlabs_nutrition_source(name=f"Egg burrito {token}", country="OTHER")
-    healthlabs_nutrition_source(name=f"Egg {token}, white, raw", country="OTHER")
-    _, whole_id = healthlabs_nutrition_source(name=f"Egg {token}, whole, raw", country="OTHER")
+    healthlabs_nutrition_source(name=f"Egg, white, raw {token}", country="OTHER")
+    _, whole_id = healthlabs_nutrition_source(name=f"Egg, whole, raw {token}", country="OTHER")
 
     response = api_client.get(
         "/api/healthlabs/v1/nutrition/source-foods",
@@ -501,6 +501,46 @@ def test_source_food_search_prefers_whole_food_over_dishes_and_components(
 
     assert response.status_code == 200, response.text
     assert response.json()[0]["id"] == whole_id
+
+
+def test_source_food_search_does_not_treat_whole_grain_dish_as_whole_egg(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_nutrition_source: Callable,
+) -> None:
+    _, headers = healthlabs_provision()
+    token = uuid4().hex[:10]
+    healthlabs_nutrition_source(name=f"Whole wheat egg sandwich {token}", country="OTHER")
+    _, egg_id = healthlabs_nutrition_source(name=f"Egg {token}, raw", country="OTHER")
+
+    response = api_client.get(
+        "/api/healthlabs/v1/nutrition/source-foods",
+        params={"q": f"egg {token}", "country": "GB"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()[0]["id"] == egg_id
+
+
+def test_source_food_search_preserves_component_match_for_egg_white_query(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+    healthlabs_nutrition_source: Callable,
+) -> None:
+    _, headers = healthlabs_provision()
+    token = uuid4().hex[:10]
+    healthlabs_nutrition_source(name=f"Egg white omelette {token} with whole eggs", country="OTHER")
+    _, egg_white_id = healthlabs_nutrition_source(name=f"Egg white {token}, raw", country="OTHER")
+
+    response = api_client.get(
+        "/api/healthlabs/v1/nutrition/source-foods",
+        params={"q": f"egg white {token}", "country": "GB"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()[0]["id"] == egg_white_id
 
 
 def test_source_food_detail_returns_authoritative_nutrition_and_portions(

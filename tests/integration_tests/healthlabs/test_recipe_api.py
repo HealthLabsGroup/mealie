@@ -144,3 +144,38 @@ def test_recipe_accepts_deterministic_ingredient_references_in_instructions(
     assert created.status_code == 201, created.text
     assert created.json()["ingredients"][0]["referenceId"] == reference_id
     assert created.json()["instructions"][0]["ingredientReferences"] == [reference_id]
+
+
+def test_enriched_recipe_pages_remain_bounded_and_cursor_covers_every_recipe(
+    api_client: TestClient,
+    healthlabs_provision: Callable,
+) -> None:
+    _, headers = healthlabs_provision()
+    name_prefix = f"Paged recipe {uuid4()}"
+    created_ids = set()
+    for index in range(21):
+        created = api_client.post(
+            "/api/healthlabs/v1/recipes",
+            json=_recipe_payload(f"{name_prefix} {index}"),
+            headers={**headers, "Idempotency-Key": f"create-{uuid4()}"},
+        )
+        assert created.status_code == 201
+        created_ids.add(created.json()["id"])
+
+    first = api_client.get("/api/healthlabs/v1/recipes", params={"q": name_prefix}, headers=headers)
+    assert first.status_code == 200
+    page = first.json()
+    assert len(page["items"]) == 20
+    assert page["nextCursor"]
+    assert all("nutritionMetadata" in item and "metadata" in item for item in page["items"])
+
+    second = api_client.get(
+        "/api/healthlabs/v1/recipes", params={"q": name_prefix, "cursor": page["nextCursor"]}, headers=headers
+    )
+    assert second.status_code == 200
+    last_page = second.json()
+    assert len(last_page["items"]) == 1
+    assert last_page["nextCursor"] is None
+    returned_ids = [item["id"] for item in page["items"] + last_page["items"]]
+    assert len(returned_ids) == len(set(returned_ids)) == 21
+    assert set(returned_ids) == created_ids

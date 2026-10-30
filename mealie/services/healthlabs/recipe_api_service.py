@@ -37,7 +37,8 @@ from mealie.services.healthlabs.recipe_metadata_service import RecipeMetadataSer
 from mealie.services.recipe.recipe_service import RecipeService
 
 AUTHORING_EXTRAS_KEY = "healthlabs.ephra"
-PAGE_SIZE = 50
+# Each item includes current nutrition and provenance; keep reads within the API timeout.
+PAGE_SIZE = 20
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_PIXELS = 40_000_000
 IMAGE_MIME_FORMATS = {

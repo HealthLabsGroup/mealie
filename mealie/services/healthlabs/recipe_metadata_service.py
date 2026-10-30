@@ -587,6 +587,41 @@ def project_metadata(
             provenance_ids=sorted(set(refs)) if available else [],
             missing_verified_ingredient_refs=missing,
         )
+    mass_total = Decimal(0)
+    mass_derived = bool(inputs.ingredients) and recorded["servings"] is not None
+    mass_available = bool(inputs.ingredients) and servings is not None
+    mass_refs = list(serving_refs)
+    for fact in inputs.ingredients:
+        plan = plans.get(fact.reference_id)
+        if plan is not None and not _compatible(fact, plan):
+            plan = None
+        grams = _current_grams(fact, plan)
+        resolved = valid_number(fact.resolved_grams, positive=True)
+        mass_derived = mass_derived and resolved
+        if not valid_number(grams, positive=True):
+            mass_available = False
+            continue
+        if resolved:
+            mass_refs.append(evidence(fact.reference_id, "source"))
+        else:
+            # Positive mass without a resolved source value requires a compatible plan.
+            mass_refs.append(
+                evidence(
+                    fact.reference_id, "assumption", assumption=cast(MetadataIngredientPlan, plan).quantity_assumption
+                )
+            )
+        try:
+            mass_total += Decimal(str(grams))
+        except DecimalException, OverflowError, ValueError:
+            mass_available = False
+    mass_result = _per_serving_value(mass_total, servings) if mass_available else None
+    mass_available = mass_available and mass_result is not None and mass_result > 0
+    per_serving_mass = MetadataField(
+        estimated=mass_result if mass_available and not mass_derived else None,
+        value=mass_result if mass_available else None,
+        quality="derived" if mass_available and mass_derived else "estimated" if mass_available else "unavailable",
+        provenance_ids=sorted(set(mass_refs)) if mass_available else [],
+    )
     required = [fields[code] for code in REQUIRED_NUTRIENTS]
     complete = all(item.value is not None for item in required)
     status = (
@@ -662,9 +697,13 @@ def project_metadata(
         effective_servings=servings,
         servings_quality="recorded" if recorded["servings"] else "estimated" if servings else "unavailable",
         per_serving=NutritionMetadataFields(**fields),
+        per_serving_mass=per_serving_mass,
         provenance=[
             provenance[key]
-            for key in sorted({key for value in fields.values() for key in value.provenance_ids} | set(serving_refs))
+            for key in sorted(
+                {key for value in (*fields.values(), per_serving_mass) for key in value.provenance_ids}
+                | set(serving_refs)
+            )
         ],
         input_fingerprint=inputs.input_fingerprint,
         calculated_at=calculated_at or get_utc_now(),

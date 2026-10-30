@@ -57,6 +57,14 @@ class NutritionMetadataFields(MetadataModel):
     water_ml: NutritionMetadataField = Field(default_factory=NutritionMetadataField)
 
 
+class MetadataField(MetadataModel):
+    recorded: Nonnegative | None = None
+    estimated: Nonnegative | None = None
+    value: Nonnegative | None = None
+    quality: Literal["recorded", "derived", "estimated", "unavailable"] = "unavailable"
+    provenance_ids: list[str] = Field(default_factory=list)
+
+
 class RecipeNutritionMetadata(MetadataModel):
     schema_version: Literal[1] = 1
     basis: Literal["per_serving"] = "per_serving"
@@ -66,17 +74,10 @@ class RecipeNutritionMetadata(MetadataModel):
     effective_servings: Positive | None = None
     servings_quality: Literal["recorded", "estimated", "unavailable"]
     per_serving: NutritionMetadataFields
+    per_serving_mass: MetadataField = Field(default_factory=MetadataField)
     provenance: list[NutritionProvenance] = Field(default_factory=list)
     input_fingerprint: str
     calculated_at: datetime
-
-
-class MetadataField(MetadataModel):
-    recorded: Nonnegative | None = None
-    estimated: Nonnegative | None = None
-    value: Nonnegative | None = None
-    quality: Literal["recorded", "derived", "estimated", "unavailable"] = "unavailable"
-    provenance_ids: list[str] = Field(default_factory=list)
 
 
 class MetadataEffortField(MetadataField):

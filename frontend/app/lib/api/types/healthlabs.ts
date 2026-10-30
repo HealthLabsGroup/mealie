@@ -472,6 +472,7 @@ export interface RecipeNutritionMetadata {
   effectiveServings?: number | null;
   servingsQuality: "recorded" | "estimated" | "unavailable";
   perServing: NutritionMetadataFields;
+  perServingMass?: MetadataField;
   provenance?: NutritionProvenance[];
   inputFingerprint: string;
   calculatedAt: string;
@@ -493,6 +494,13 @@ export interface NutritionMetadataField {
   provenanceIds?: string[];
   missingVerifiedIngredientRefs?: string[];
 }
+export interface MetadataField {
+  recorded?: number | null;
+  estimated?: number | null;
+  value?: number | null;
+  quality?: "recorded" | "derived" | "estimated" | "unavailable";
+  provenanceIds?: string[];
+}
 export interface NutritionProvenance {
   id: string;
   ingredientReference?: string | null;
@@ -513,13 +521,6 @@ export interface RecipeGeneralMetadata {
   source: MetadataSource;
   plants?: MetadataPlants;
   provenance?: NutritionProvenance[];
-}
-export interface MetadataField {
-  recorded?: number | null;
-  estimated?: number | null;
-  value?: number | null;
-  quality?: "recorded" | "derived" | "estimated" | "unavailable";
-  provenanceIds?: string[];
 }
 export interface MetadataEffortField {
   recorded?: (1 | 2) | null;

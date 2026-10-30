@@ -584,3 +584,111 @@ def test_wholly_fixed_source_energy_is_not_subject_to_model_plausibility():
     response = _response(inputs)
     response["ingredients"][0]["nutrients_per_100g"] = {}
     assert _plan(inputs, response).ingredients[0].model_nutrient_keys == []
+
+
+def test_per_serving_mass_uses_current_source_grams_without_rewriting_inputs():
+    from copy import deepcopy
+
+    from mealie.services.healthlabs.recipe_metadata_service import project_metadata
+
+    inputs = _inputs()
+    before = deepcopy(inputs)
+    nutrition, _ = project_metadata(inputs)
+    mass = nutrition.per_serving_mass
+    assert mass.value == 50
+    assert mass.quality == "derived"
+    assert mass.recorded is None and mass.estimated is None
+    assert mass.provenance_ids
+    assert set(mass.provenance_ids) <= {row.id for row in nutrition.provenance}
+    assert inputs == before
+
+
+def test_per_serving_mass_combines_all_current_source_and_assumed_weights():
+    from copy import deepcopy
+
+    from mealie.services.healthlabs.recipe_metadata_service import project_metadata
+
+    inputs = _inputs()
+    other = _inputs(grams=None).ingredients[0]
+    inputs.ingredients.append(other)
+    inputs.recipe.recipe_ingredient.append(RecipeIngredient(reference_id=other.reference_id, note="beans"))
+    response = _response(inputs)
+    response["ingredients"][0]["nutrients_per_100g"] = {}
+    response["ingredients"].append(
+        {
+            **response["ingredients"][0],
+            "reference_id": str(other.reference_id),
+            "effective_grams": 60,
+            "quantity_assumption": "Assume 60 g cooked beans",
+        }
+    )
+    response["general_metadata"]["plant_ingredient_references"].append(str(other.reference_id))
+    plan = _plan(inputs, response)
+    before = deepcopy(inputs)
+    nutrition, _ = project_metadata(inputs, plan)
+    mass = nutrition.per_serving_mass
+    assert mass.value == mass.estimated == 80
+    assert mass.recorded is None and mass.quality == "estimated"
+    evidence = {row.id: row for row in nutrition.provenance}
+    assert set(mass.provenance_ids) <= set(evidence)
+    assert any(evidence[key].kind == "source" for key in mass.provenance_ids)
+    assert any(evidence[key].assumption == "Assume 60 g cooked beans" for key in mass.provenance_ids)
+    assert inputs == before
+
+
+@pytest.mark.parametrize("unknown_mass", [False, True])
+def test_per_serving_mass_labels_assumed_yield_and_quantity(unknown_mass):
+    from mealie.services.healthlabs.recipe_metadata_service import project_metadata
+
+    inputs = _inputs(grams=None if unknown_mass else 100, servings=0)
+    response = _response(inputs)
+    response["ingredients"][0]["nutrients_per_100g"] = {}
+    if unknown_mass:
+        response["ingredients"][0]["quantity_assumption"] = "Assume 100 g cooked rice"
+    response["servings_assumption"] = "Assume two adult portions"
+    nutrition, _ = project_metadata(inputs, _plan(inputs, response))
+    mass = nutrition.per_serving_mass
+    assert mass.value == mass.estimated == 50
+    assert mass.quality == "estimated" and mass.recorded is None
+    evidence = {row.id: row for row in nutrition.provenance}
+    assert set(mass.provenance_ids) <= set(evidence)
+    assert any(evidence[key].assumption == "Assume two adult portions" for key in mass.provenance_ids)
+    if unknown_mass:
+        assert any(evidence[key].assumption == "Assume 100 g cooked rice" for key in mass.provenance_ids)
+
+
+@pytest.mark.parametrize("stale_plan", [False, True])
+def test_per_serving_mass_has_no_partial_weight_when_an_assumption_is_missing_or_stale(stale_plan):
+    from mealie.services.healthlabs.recipe_metadata_service import IngredientMetadataInput, project_metadata
+
+    inputs = _inputs(grams=None) if stale_plan else _inputs()
+    if stale_plan:
+        response = _response(inputs)
+        response["ingredients"][0].update(nutrients_per_100g={}, quantity_assumption="Assume 100 g")
+        plan = _plan(inputs, response)
+        inputs.authoring_fingerprint = "d" * 64
+    else:
+        inputs.ingredients.append(IngredientMetadataInput(reference_id=uuid4()))
+        plan = None
+    mass = project_metadata(inputs, plan)[0].per_serving_mass
+    assert mass.value is mass.recorded is mass.estimated is None
+    assert mass.quality == "unavailable"
+    assert mass.provenance_ids == []
+
+
+@pytest.mark.parametrize("grams", [0, -1, float("inf"), float("nan"), 0.0001])
+def test_per_serving_mass_rejects_nonpositive_nonfinite_or_rounded_zero_weights(grams):
+    from mealie.services.healthlabs.recipe_metadata_service import project_metadata
+
+    mass = project_metadata(_inputs(grams=grams))[0].per_serving_mass
+    assert mass.value is None and mass.quality == "unavailable"
+
+
+def test_per_serving_mass_needs_a_representable_value_and_known_yield():
+    from decimal import Decimal
+
+    from mealie.services.healthlabs.recipe_metadata_service import project_metadata
+
+    for inputs in [_inputs(servings=0), _inputs(grams=Decimal("1e308"), servings=1e-308)]:
+        mass = project_metadata(inputs)[0].per_serving_mass
+        assert mass.value is None and mass.quality == "unavailable"

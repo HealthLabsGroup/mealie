@@ -11,6 +11,7 @@ from mealie.core import root_logger
 from mealie.core.config import get_app_settings
 from mealie.db.db_setup import session_context
 from mealie.services.healthlabs.nutrition_curator_worker import NutritionCuratorReport, NutritionCuratorWorker
+from mealie.services.healthlabs.recipe_metadata_worker import RecipeMetadataReport, RecipeMetadataWorker
 
 logger = root_logger.get_logger(__name__)
 STOP = Event()
@@ -107,45 +108,106 @@ async def _drain(
     return total, concurrency, frozen
 
 
+async def _metadata_pause(seconds: float) -> None:
+    deadline = asyncio.get_running_loop().time() + seconds
+    while not STOP.is_set():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return
+        await asyncio.sleep(min(0.25, remaining))
+
+
+async def _metadata_loop(http_client: httpx2.AsyncClient) -> None:
+    async def execute(work_id: UUID) -> RecipeMetadataReport | None:
+        try:
+            with session_context() as session:
+                return await RecipeMetadataWorker(session, should_stop=STOP.is_set, http_client=http_client).run_work(
+                    work_id
+                )
+        except Exception as exc:
+            logger.error("Recipe metadata task failed error_type=%s", type(exc).__name__)
+            return None
+
+    cursor: UUID | None = None
+    poll = get_app_settings().HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS
+    while not STOP.is_set():
+        try:
+            with session_context() as session:
+                ids = RecipeMetadataWorker(session, should_stop=STOP.is_set).work_ids(
+                    limit=8, after=cursor, keyset=True
+                )
+            if not ids:
+                cursor = None
+                await _metadata_pause(poll)
+                continue
+            # Advance over INSPECTED rows even when credentials/claims fail.
+            # An empty page ends the pass and backs off before revisiting it.
+            cursor = ids[-1]
+            reports = await asyncio.gather(*(execute(work_id) for work_id in ids))
+            if any(report is not None and report.stopped for report in reports):
+                return
+            if any(
+                report is not None
+                and (report.provider_exhausted or report.local_limit_reached or report.failed or report.scope_changed)
+                for report in reports
+            ):
+                await _metadata_pause(poll)
+        except Exception as exc:
+            logger.error("Recipe metadata selection failed error_type=%s", type(exc).__name__)
+            await _metadata_pause(poll)
+
+
+async def _curator_loop(http_client: httpx2.AsyncClient) -> None:
+    settings = get_app_settings()
+    concurrency = min(
+        settings.HEALTHLABS_NUTRITION_CURATOR_CONCURRENCY, settings.HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY
+    )
+    frozen = False
+    cursor: UUID | None = None
+    while not STOP.is_set():
+        with session_context() as session:
+            work_ids = NutritionCuratorWorker(session, should_stop=STOP.is_set).work_ids(limit=64, after=cursor)
+        # Bound inspected IDs, including terminal/no-op prefixes. UUID keyset
+        # progression reaches later targets even when no decision is claimed.
+        cursor = work_ids[-1] if work_ids else None
+        report, concurrency, frozen = await _drain(
+            work_ids,
+            initial_concurrency=concurrency,
+            max_concurrency=settings.HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY,
+            frozen=frozen,
+            http_client=http_client,
+        )
+        logger.info(
+            "Nutrition curator claimed=%s approved=%s insufficient_evidence=%s failed=%s concurrency=%s",
+            report.claimed,
+            report.approved,
+            report.insufficient_evidence,
+            report.failed,
+            concurrency,
+        )
+        if STOP.is_set():
+            break
+        if not work_ids or report.provider_exhausted:
+            await asyncio.to_thread(STOP.wait, settings.HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS)
+        else:
+            await asyncio.sleep(0)
+
+
 async def _main() -> int:
     settings = get_app_settings()
     if not settings.HEALTHLABS_NUTRITION_CURATOR_ENABLED:
         return 0
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
-    concurrency = min(
-        settings.HEALTHLABS_NUTRITION_CURATOR_CONCURRENCY,
-        settings.HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY,
-    )
-    frozen = False
     limits = httpx2.Limits(
-        max_connections=settings.HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY,
-        max_keepalive_connections=min(512, settings.HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY),
+        max_connections=settings.HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY + 8,
+        max_keepalive_connections=min(512, settings.HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY + 8),
         keepalive_expiry=30,
     )
     async with httpx2.AsyncClient(limits=limits, follow_redirects=True) as http_client:
-        while not STOP.is_set():
-            with session_context() as session:
-                work_ids = NutritionCuratorWorker(session, should_stop=STOP.is_set).work_ids()
-            report, concurrency, frozen = await _drain(
-                work_ids,
-                initial_concurrency=concurrency,
-                max_concurrency=settings.HEALTHLABS_NUTRITION_CURATOR_MAX_CONCURRENCY,
-                frozen=frozen,
-                http_client=http_client,
-            )
-            logger.info(
-                "Nutrition curator claimed=%s approved=%s insufficient_evidence=%s failed=%s concurrency=%s",
-                report.claimed,
-                report.approved,
-                report.insufficient_evidence,
-                report.failed,
-                concurrency,
-            )
-            if STOP.is_set():
-                break
-            if report.claimed == 0 or report.provider_exhausted:
-                await asyncio.to_thread(STOP.wait, settings.HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS)
+        # Independent bounded consumers share process shutdown and the global
+        # provider ledger. Long curator I/O never blocks metadata dispatch.
+        await asyncio.gather(_metadata_loop(http_client), _curator_loop(http_client))
     return 0
 
 

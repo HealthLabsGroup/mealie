@@ -49,7 +49,7 @@ def test_main_waits_interruptibly_when_idle(monkeypatch) -> None:
             del session
             assert should_stop == stop.is_set
 
-        def work_ids(self):
+        def work_ids(self, **kwargs):
             return []
 
     monkeypatch.setattr(runner, "STOP", stop)
@@ -76,7 +76,7 @@ def test_signal_during_work_allows_current_decision_to_finish(monkeypatch, caplo
         def __init__(self, session, *, should_stop, http_client=None):
             del session, should_stop, http_client
 
-        def work_ids(self):
+        def work_ids(self, **kwargs):
             return [uuid4()]
 
         async def run_work(self, _work_id):
@@ -219,3 +219,131 @@ def test_drain_returns_to_last_stable_concurrency_after_transport_saturation(mon
 
     assert report.transport_error is True
     assert (concurrency, frozen) == (2, True)
+
+
+def test_metadata_consumer_advances_while_curator_request_is_waiting(monkeypatch):
+    from mealie.services.healthlabs.recipe_metadata_worker import RecipeMetadataReport
+
+    stop = StopEvent()
+    metadata_done = asyncio.Event()
+    curator_started = asyncio.Event()
+
+    @contextmanager
+    def session_context():
+        yield object()
+
+    class Curator:
+        def __init__(self, session, **kwargs):
+            pass
+
+        def work_ids(self, **kwargs):
+            return [uuid4()]
+
+        async def run_work(self, work_id):
+            curator_started.set()
+            await asyncio.wait_for(metadata_done.wait(), timeout=1)
+            stop.set()
+            return NutritionCuratorReport(1, 1, 0, 0, False)
+
+    class Metadata:
+        def __init__(self, session, **kwargs):
+            assert "provider_resolver" not in kwargs
+
+        def work_ids(self, **kwargs):
+            return [uuid4()]
+
+        async def run_work(self, work_id):
+            await asyncio.wait_for(curator_started.wait(), timeout=1)
+            metadata_done.set()
+            return RecipeMetadataReport(claimed=1, ready=1)
+
+    monkeypatch.setattr(runner, "STOP", stop)
+    monkeypatch.setattr(runner, "session_context", session_context)
+    monkeypatch.setattr(runner, "NutritionCuratorWorker", Curator)
+    monkeypatch.setattr(runner, "RecipeMetadataWorker", Metadata, raising=False)
+    monkeypatch.setattr(runner, "get_app_settings", _settings)
+    monkeypatch.setattr(signal, "signal", lambda *_args: None)
+    asyncio.run(runner._main())
+    assert metadata_done.is_set()
+
+
+def test_bounded_curator_windows_advance_past_terminal_prefix(monkeypatch):
+    from uuid import UUID
+
+    stop = StopEvent()
+    ids = [UUID(int=i + 1) for i in range(131)]
+    inspected = []
+    cursors = []
+
+    @contextmanager
+    def session_context():
+        yield object()
+
+    class Curator:
+        def __init__(self, session, **kwargs):
+            pass
+
+        def work_ids(self, *, limit, after):
+            assert limit == 64
+            cursors.append(after)
+            return [i for i in ids if after is None or i > after][:limit]
+
+        async def run_work(self, work_id):
+            inspected.append(work_id)
+            if work_id == ids[-1]:
+                stop.set()
+                return NutritionCuratorReport(1, 1, 0, 0, False)
+            return NutritionCuratorReport(0, 0, 0, 0, False)
+
+    monkeypatch.setattr(runner, "STOP", stop)
+    monkeypatch.setattr(runner, "session_context", session_context)
+    monkeypatch.setattr(runner, "NutritionCuratorWorker", Curator)
+    monkeypatch.setattr(runner, "get_app_settings", _settings)
+    asyncio.run(runner._curator_loop(object()))
+    assert inspected == ids
+    assert cursors == [None, ids[63], ids[127]]
+
+
+def test_metadata_cancellation_closes_every_session_and_client(monkeypatch):
+    import httpx2
+
+    stop = StopEvent()
+    started = asyncio.Event()
+    closed = []
+    sessions = []
+
+    @contextmanager
+    def session_context():
+        session = object()
+        sessions.append(session)
+        try:
+            yield session
+        finally:
+            closed.append(session)
+
+    class Worker:
+        def __init__(self, session, **kwargs):
+            pass
+
+        def work_ids(self, **kwargs):
+            return [uuid4()]
+
+        async def run_work(self, work_id):
+            started.set()
+            await asyncio.Event().wait()
+
+    async def run():
+        async with httpx2.AsyncClient() as client:
+            task = asyncio.create_task(runner._metadata_loop(client))
+            await asyncio.wait_for(started.wait(), 1)
+            task.cancel()
+            with __import__("pytest").raises(asyncio.CancelledError):
+                await task
+        assert client.is_closed
+
+    monkeypatch.setattr(runner, "STOP", stop)
+    monkeypatch.setattr(runner, "session_context", session_context)
+    monkeypatch.setattr(runner, "RecipeMetadataWorker", Worker)
+    monkeypatch.setattr(runner, "get_app_settings", _settings)
+    asyncio.run(run())
+    assert len(sessions) == 2 and closed == sessions

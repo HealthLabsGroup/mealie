@@ -36,6 +36,10 @@ from mealie.services.healthlabs.recipe_metadata_estimator import (
 )
 from mealie.services.healthlabs.recipe_metadata_scheduler import RecipeMetadataScheduler
 from mealie.services.healthlabs.recipe_metadata_service import POLICY_VERSION, RecipeMetadataService
+from mealie.services.healthlabs.recipe_metadata_source_refresh import (
+    RecipeAuthorizationChanged,
+    RecipeAuthorizationGuard,
+)
 from mealie.services.openai import OpenAIService
 from mealie.services.openai.openai import OpenAIRequestRejected
 
@@ -52,6 +56,7 @@ class RecipeMetadataReport:
     local_limit_reached: bool = False
     stopped: bool = False
     limit_reason: MetadataLimitReason | None = None
+    scope_changed: bool = False
 
 
 class RecipeMetadataWorker:
@@ -70,6 +75,7 @@ class RecipeMetadataWorker:
         provider_resolver: CuratorProviderResolver | None = None,
         group_ids: set[UUID] | frozenset[UUID] | None = None,
         recipe_ids: set[UUID] | frozenset[UUID] | None = None,
+        recipe_guard: RecipeAuthorizationGuard | None = None,
         limits: MetadataRequestLimits | None = None,
         http_client: AsyncClient | None = None,
         should_stop: Callable[[], bool] = lambda: False,
@@ -85,6 +91,8 @@ class RecipeMetadataWorker:
         self.provider_resolver = provider_resolver or resolve_default_provider
         self.group_ids = frozenset(group_ids) if group_ids is not None else None
         self.recipe_ids = frozenset(recipe_ids) if recipe_ids is not None else None
+        self.recipe_guard = recipe_guard
+        self._active_recipe_id: UUID | None = None
         self.limits = limits or MetadataRequestLimits()
         self.http_client, self.should_stop, self.max_attempts = http_client, should_stop, max_attempts
         self.estimator = RecipeMetadataEstimator(limits=self.limits, corrections=corrections)
@@ -115,7 +123,7 @@ class RecipeMetadataWorker:
             ),
         )
 
-    def work_ids(self, *, limit: int = 20) -> list[UUID]:
+    def work_ids(self, *, limit: int = 20, after: UUID | None = None, keyset: bool = False) -> list[UUID]:
         if not 1 <= limit <= 1000:
             raise ValueError("selection limit must be 1..1000")
         if self.should_stop():
@@ -129,11 +137,14 @@ class RecipeMetadataWorker:
                     AIProvider.settings_id == AIProviderSettings.id,
                 ),
             )
-        return list(
-            self.session.scalars(
-                query.where(*self._scope(), self._due()).order_by(Job.next_attempt_at, Job.id).limit(limit)
-            )
-        )
+        query = query.where(*self._scope(), self._due())
+        if keyset:
+            if after is not None:
+                query = query.where(Job.id > after)
+            query = query.order_by(Job.id)
+        else:
+            query = query.order_by(Job.next_attempt_at, Job.id)
+        return list(self.session.scalars(query.limit(limit)))
 
     async def run_once(self) -> RecipeMetadataReport:
         if self.should_stop():
@@ -142,7 +153,7 @@ class RecipeMetadataWorker:
         self.session.commit()
         for work_id in ids:
             report = await self.run_work(work_id)
-            if report.claimed or report.stopped or report.local_limit_reached:
+            if report.claimed or report.stopped or report.local_limit_reached or report.scope_changed:
                 return report
         return RecipeMetadataReport()
 
@@ -187,6 +198,10 @@ class RecipeMetadataWorker:
         def reserve(input_tokens: int, output_tokens: int) -> bool:
             nonlocal reservation
             cost = self.budget.cost_microusd(input_tokens, output_tokens)
+            if self.recipe_guard is not None and (
+                self._active_recipe_id is None or not self.recipe_guard(self.session, self._active_recipe_id)
+            ):
+                raise RecipeAuthorizationChanged
             if self.should_stop():
                 raise MetadataRequestLimited("operator_stopped")
             if input_tokens > limits.max_input_tokens:
@@ -256,6 +271,10 @@ class RecipeMetadataWorker:
             return RecipeMetadataReport()
         group_id, recipe_id, fingerprint = row.group_id, row.recipe_id, row.input_fingerprint
         attempt = row.attempt_count
+        self._active_recipe_id = recipe_id
+        if self.recipe_guard is not None and not self.recipe_guard(self.session, recipe_id):
+            self.session.rollback()
+            return RecipeMetadataReport(scope_changed=True)
         # Valid native drafts can have no ingredients. Close legacy jobs before
         # resolving providers or credentials, even when their fingerprint is old.
         repos = AllRepositories(self.session, group_id=group_id, household_id=None)
@@ -328,6 +347,8 @@ class RecipeMetadataWorker:
             if recipe is None:
                 self.session.rollback()
                 return RecipeMetadataReport(claimed=1)
+            if self.recipe_guard is not None and not self.recipe_guard(self.session, recipe_id):
+                raise RecipeAuthorizationChanged
             service = RecipeMetadataService(self.session, country=self.country)
             inputs = service.inputs(recipe)
             if inputs.input_fingerprint != fingerprint or not inputs.ingredients or not inputs.missing_fields():
@@ -345,6 +366,8 @@ class RecipeMetadataWorker:
             if fresh_recipe is None:
                 self.session.rollback()
                 return RecipeMetadataReport(claimed=1)
+            if self.recipe_guard is not None and not self.recipe_guard(self.session, recipe_id):
+                raise RecipeAuthorizationChanged
             fresh = service.inputs(fresh_recipe)
             if fresh.input_fingerprint != fingerprint:
                 self._finish(work_id, token, state="superseded")
@@ -360,6 +383,17 @@ class RecipeMetadataWorker:
                 provider_model=provider.model,
             )
             return RecipeMetadataReport(claimed=1, ready=int(applied), requests=self.requests - requests_before)
+        except RecipeAuthorizationChanged:
+            self.session.rollback()
+            self._finish(
+                work_id,
+                token,
+                state="pending",
+                attempt_count=attempt,
+                next_attempt_at=self._now(),
+                last_error_code="manifest_scope_changed",
+            )
+            return RecipeMetadataReport(claimed=1, scope_changed=True, requests=self.requests - requests_before)
         except MetadataRequestLimited as exc:
             self.session.rollback()
             requested = self.requests - requests_before

@@ -44,6 +44,7 @@ from mealie.services.healthlabs.nutrition_provider_resolution import (
     resolve_default_provider,
 )
 from mealie.services.healthlabs.nutrition_service import NutritionConflict, NutritionService
+from mealie.services.healthlabs.recipe_metadata_source_refresh import RecipeAuthorizationGuard, source_target_authorized
 
 PROMPT_NAME = "healthlabs.nutrition-curator"
 DECISION_VERSION = f"{PROMPT_VERSION}+response-v2"
@@ -76,8 +77,12 @@ class NutritionCuratorService:
         country: str = "GB",
         now: datetime | None = None,
         provider_resolver: CuratorProviderResolver | None = None,
+        refresh_recipe_ids: set[UUID] | frozenset[UUID] | None = None,
+        recipe_guard: RecipeAuthorizationGuard | None = None,
     ) -> None:
         self.session = session
+        self.refresh_recipe_ids = refresh_recipe_ids
+        self.recipe_guard = recipe_guard
         self.provider_resolver = provider_resolver or resolve_default_provider
         self.country = country.strip().upper()
         if not self.country:
@@ -86,18 +91,21 @@ class NutritionCuratorService:
 
     def start(self, work_id: UUID) -> StartedCuratorDecision | FinalizedCuratorDecision | None:
         initial = self.session.get(HealthLabsNutritionWork, work_id)
-        if initial is None or initial.state != "review_required":
+        if initial is None or initial.state != "review_required" or not self._work_in_scope(initial):
             return None
         if self._provider(initial.group_id) is None:
             return None
-        agent = NutritionCuratorIdentityService(self.session).get_or_create(initial.group_id)
+        # User construction queries its group/household before session.add.
+        # Avoid autoflushing that incomplete relationship in a fresh job Session.
+        with self.session.no_autoflush:
+            agent = NutritionCuratorIdentityService(self.session).get_or_create(initial.group_id)
 
         work = self.session.scalar(
             sa.select(HealthLabsNutritionWork)
             .where(HealthLabsNutritionWork.id == work_id, HealthLabsNutritionWork.state == "review_required")
             .with_for_update()
         )
-        if work is None or not self._agent_is_active(agent.id, work.group_id):
+        if work is None or not self._work_in_scope(work) or not self._agent_is_active(agent.id, work.group_id):
             return None
         provider = self._provider(work.group_id)
         if provider is None or not self._work_is_current(work):
@@ -300,6 +308,7 @@ class NutritionCuratorService:
         agent = self.session.get(User, decision.agent_user_id)
         if (
             work is None
+            or not self._work_in_scope(work)
             or provider is None
             or agent is None
             or not self._agent_is_active(agent.id, decision.group_id)
@@ -349,7 +358,18 @@ class NutritionCuratorService:
         work.lease_expires_at = None
         work.result = None
         work.last_error = None
-        return self._finalize(decision, "approved", response.reason_code, response=response, usage=usage)
+        state = self._finalize(decision, "approved", response.reason_code, response=response, usage=usage)
+        from mealie.services.healthlabs.recipe_metadata_source_refresh import refresh_source_recipes
+
+        refresh_source_recipes(
+            self.session,
+            group_id=decision.group_id,
+            kind=decision.kind,
+            target_id=decision.target_id,
+            recipe_ids=self.refresh_recipe_ids,
+            recipe_guard=self.recipe_guard,
+        )
+        return state
 
     def defer_until(self, decision_id: UUID, when: datetime, reason_code: str) -> str:
         decision = self._decision(decision_id)
@@ -515,6 +535,29 @@ class NutritionCuratorService:
             decision.rationale = response.rationale
         self.session.flush()
         return decision.state
+
+    def _work_in_scope(self, work: HealthLabsNutritionWork) -> bool:
+        if not source_target_authorized(
+            self.session,
+            group_id=work.group_id,
+            kind=work.kind,
+            target_id=work.target_id,
+            recipe_ids=self.refresh_recipe_ids,
+            recipe_guard=self.recipe_guard,
+        ):
+            return False
+        if self.refresh_recipe_ids is None:
+            return True
+        from mealie.services.healthlabs.recipe_metadata_source_refresh import source_work_recipe_scope
+
+        return (
+            self.session.scalar(
+                sa.select(HealthLabsNutritionWork.id).where(
+                    HealthLabsNutritionWork.id == work.id, source_work_recipe_scope(self.refresh_recipe_ids)
+                )
+            )
+            is not None
+        )
 
     def _work_is_current(self, work: HealthLabsNutritionWork) -> bool:
         current = NutritionFingerprintService(

@@ -1056,7 +1056,8 @@ class RecipeMetadataService:
             sa.or_(*(sa.and_(*(lower_name.contains(term, autoescape=True) for term in terms)) for terms in names))
         )
         expected_state = _preparation_key(preparation_state) or _preparation_from_text(text)
-        state_rank: sa.ColumnElement[int] = sa.literal(0)
+        # Omit an unused rank: PostgreSQL interprets a bare ORDER BY 0 as a column position.
+        preparation_order: list[sa.ColumnElement[int]] = []
         if expected_state:
             source_state = sa.func.lower(sa.func.trim(HealthLabsNutrientFood.preparation_state))
             # Mirror the existing native preparation normalization before the SQL cap.
@@ -1086,13 +1087,13 @@ class RecipeMetadataService:
                     sa.and_(sa.literal(preparation_state is None), HealthLabsNutrientFood.preparation_state.is_(None)),
                 )
             )
-            state_rank = sa.case((normalized_state == expected_state, 0), else_=1)
+            preparation_order.append(sa.case((normalized_state == expected_state, 0), else_=1))
         exact = lower_name.in_([" ".join(terms) for terms in names])
         # Rank meaning before the bounded cap, using UUID only to break genuine ties.
         rows = self.session.execute(
             query.order_by(
                 sa.case((exact, 0), else_=1),
-                state_rank,
+                *preparation_order,
                 sa.func.length(HealthLabsNutrientFood.name),
                 lower_name,
                 HealthLabsNutrientFood.id,

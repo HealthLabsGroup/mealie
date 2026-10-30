@@ -354,6 +354,7 @@ def test_commit_or_rollback_expires_every_snapshot_source_cache(unique_user_fn_s
 def test_candidate_country_group_preparation_and_portion_scopes_are_kept_separate(
     unique_user_fn_scoped,
 ):
+    _postgres_engine()
     from mealie.db.models.group import Group
     from mealie.db.models.healthlabs import HealthLabsFoodPortion
     from tests.unit_tests.healthlabs.test_nutrition_calculation import _nutrient_food, _source
@@ -363,7 +364,7 @@ def test_candidate_country_group_preparation_and_portion_scopes_are_kept_separat
     gb = _nutrient_food(user, _source(user, country="GB"), name=name, state="raw")
     cooked = _nutrient_food(user, _source(user, country="GB"), name=name, state="cooked")
     fr = _nutrient_food(user, _source(user, country="FR"), name=name, state="raw")
-    foreign_group = Group(name=f"Foreign {uuid4()}", session=user.repos.session)
+    foreign_group = Group(name=f"Foreign {uuid4()}", slug=f"foreign-{uuid4().hex}", session=user.repos.session)
     user.repos.session.add(foreign_group)
     user.repos.session.flush()
     own = HealthLabsFoodPortion(

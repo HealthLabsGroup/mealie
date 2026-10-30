@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
 from io import BytesIO
 from uuid import UUID
 
 import sqlalchemy as sa
 from PIL import Image, UnidentifiedImageError
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool
 
 from mealie.db.models.healthlabs import HealthLabsAccessAudit
 from mealie.db.models.recipe import RecipeModel
@@ -33,7 +37,7 @@ from mealie.schema.recipe.recipe import Recipe
 from mealie.schema.user import PrivateUser
 from mealie.services.healthlabs.access_policy import RecipeAccessDenied, RecipeAccessPolicy
 from mealie.services.healthlabs.nutrition_service import NutritionService
-from mealie.services.healthlabs.recipe_metadata_service import RecipeMetadataService
+from mealie.services.healthlabs.recipe_metadata_service import RecipeMetadataService, _ProjectionLookupCache
 from mealie.services.recipe.recipe_service import RecipeService
 
 AUTHORING_EXTRAS_KEY = "healthlabs.ephra"
@@ -56,6 +60,13 @@ class HealthLabsInvalidImage(ValueError):
     pass
 
 
+@dataclass
+class _RecipeReadProjection:
+    session: Session
+    nutrition: NutritionService
+    metadata: RecipeMetadataService
+
+
 class RecipeApiService:
     def __init__(self, session: Session, user: PrivateUser, translator: Translator) -> None:
         self.session = session
@@ -70,6 +81,41 @@ class RecipeApiService:
         self.unfiltered_recipes = get_repositories(session, group_id=None, household_id=None).recipes
         self.nutrition = NutritionService(session)
         self._audit_pending = False
+
+    @contextmanager
+    def _projection_snapshot(self) -> Iterator[_RecipeReadProjection | None]:
+        bind = self.session.get_bind(mapper=RecipeModel)
+        if (
+            not isinstance(bind, Engine)
+            or bind.dialect.name != "postgresql"
+            or self.session.new
+            or self.session.dirty
+            or self.session.deleted
+        ):
+            yield None
+            return
+        # A flush can leave no dirty objects while its uncommitted writes still
+        # need read-your-writes. Never hide those behind a second transaction.
+        if self.session.scalar(sa.text("SELECT txid_current_if_assigned()")) is not None:
+            yield None
+            return
+        # Auth already owns a pooled connection. A separate NullPool engine
+        # avoids all concurrent readers waiting for another auth-pool slot.
+        read_engine = sa.create_engine(bind.url, poolclass=NullPool, echo=False)
+        try:
+            with read_engine.connect().execution_options(
+                isolation_level="REPEATABLE READ", postgresql_readonly=True
+            ) as connection:
+                with Session(bind=connection, autoflush=False) as source_session, source_session.begin():
+                    nutrition = NutritionService(source_session)
+                    lookups = _ProjectionLookupCache(source_session, on_invalidate=nutrition._clear_cache)
+                    metadata = RecipeMetadataService(source_session, lookups=lookups, nutrition=nutrition)
+                    try:
+                        yield _RecipeReadProjection(source_session, nutrition, metadata)
+                    finally:
+                        lookups.close()
+        finally:
+            read_engine.dispose()
 
     def list_recipes(
         self,
@@ -94,15 +140,20 @@ class RecipeApiService:
             except ValueError as exc:
                 raise ValueError("Invalid recipe cursor") from exc
 
-        models = self.session.execute(query.order_by(RecipeModel.id).limit(PAGE_SIZE + 1)).unique().scalars().all()
-        visible = models[:PAGE_SIZE]
-        recipes: list[HealthLabsRecipeOut] = []
-        for model in visible:
-            recipe = Recipe.model_validate(model)
-            self._authorize_read(recipe, access_reason, break_glass_reason)
-            recipes.append(self.to_out(recipe))
+        with self._projection_snapshot() as projection:
+            source_session = projection.session if projection is not None else self.session
+            models = (
+                source_session.execute(query.order_by(RecipeModel.id).limit(PAGE_SIZE + 1)).unique().scalars().all()
+            )
+            visible = models[:PAGE_SIZE]
+            recipes: list[HealthLabsRecipeOut] = []
+            for model in visible:
+                recipe = Recipe.model_validate(model)
+                # Policy and cross-read audit writes retain their original session.
+                self._authorize_read(recipe, access_reason, break_glass_reason)
+                recipes.append(self.to_out(recipe, projection=projection) if projection else self.to_out(recipe))
+            next_cursor = str(visible[-1].id) if len(models) > PAGE_SIZE else None
         self._commit_audits()
-        next_cursor = str(visible[-1].id) if len(models) > PAGE_SIZE else None
         return HealthLabsRecipePage(items=recipes, next_cursor=next_cursor)
 
     def get_recipe(
@@ -213,19 +264,23 @@ class RecipeApiService:
         recipe: Recipe,
         *,
         revision: HealthLabsRecipeRevision | None = None,
+        projection: _RecipeReadProjection | None = None,
     ) -> HealthLabsRecipeOut:
         if recipe.id is None or recipe.name is None:
             raise ValueError("Persisted recipe is missing an id or name")
+        source_session = projection.session if projection is not None else self.session
+        nutrition = projection.nutrition if projection is not None else self.nutrition
         if revision is None:
-            revision = self.session.scalar(
+            revision = source_session.scalar(
                 sa.select(HealthLabsRecipeRevision)
                 .where(HealthLabsRecipeRevision.recipe_id == recipe.id)
                 .order_by(HealthLabsRecipeRevision.revision_number.desc())
                 .limit(1)
             )
-        calculated_nutrition = self.nutrition.calculate_recipe(recipe, "OTHER")
-        nutrition_metadata, metadata = RecipeMetadataService(self.session).project(recipe)
-        ingredients = [self._ingredient_out(item) for item in recipe.recipe_ingredient]
+        calculated_nutrition = nutrition.calculate_recipe(recipe, "OTHER")
+        metadata_service = projection.metadata if projection is not None else RecipeMetadataService(self.session)
+        nutrition_metadata, metadata = metadata_service.project(recipe)
+        ingredients = [self._ingredient_out(item, nutrition_service=nutrition) for item in recipe.recipe_ingredient]
         instructions = [
             HealthLabsInstruction(
                 title=step.title,
@@ -243,7 +298,7 @@ class RecipeApiService:
             and recipe.healthlabs_scope == NativeRecipeScope.PERSONAL
             and recipe.user_id is not None
         ):
-            owner = self.session.get(User, recipe.user_id)
+            owner = source_session.get(User, recipe.user_id)
             owner_external_subject_id = owner.external_subject_id if owner is not None else None
         return HealthLabsRecipeOut(
             id=recipe.id,
@@ -338,10 +393,10 @@ class RecipeApiService:
             raise HealthLabsInvalidImage("Image content does not match its content type")
         return extension
 
-    def _ingredient_out(self, item) -> HealthLabsIngredientOut:
+    def _ingredient_out(self, item, *, nutrition_service: NutritionService | None = None) -> HealthLabsIngredientOut:
         nutrition = None
         if item.food is not None and item.food.id is not None:
-            nutrition = self.nutrition.food_facts(
+            nutrition = (nutrition_service or self.nutrition).food_facts(
                 item.food.id,
                 item.unit.id if item.unit is not None else None,
                 item.quantity,

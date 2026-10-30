@@ -488,3 +488,121 @@ def test_portion_context_preserves_bounded_candidate_and_portion_ids():
         assert len(sent["portions"]) == 4
         assert [p["id"] for p in sent["portions"]] == [p.id for p in original.portions[:4]]
         assert all(p["recorded_amount_compatible"] for p in sent["portions"])
+
+
+def _mixed_general_case():
+    from dataclasses import replace
+
+    inputs, provider, _ = _nullable_candidate_case(
+        {"kcal": 120, "protein_g": 4, "carbs_g": 22, "fat_g": 2, "fibre_g": 0}, {}
+    )
+    original = inputs.ingredients[0]
+    inputs.ingredients = [replace(original, reference_id=uuid4()) for _ in range(3)]
+    for fact, group in zip(inputs.ingredients[:2], ("meat", "water"), strict=True):
+        fact.plant_classified, fact.accepted_food_group = True, group
+    ingredient = inputs.recipe.recipe_ingredient[0]
+    inputs.recipe.recipe_ingredient = [
+        ingredient.model_copy(update={"reference_id": fact.reference_id}) for fact in inputs.ingredients
+    ]
+    response = _general_response(inputs)
+    response["general_metadata"]["plants"] = [
+        {
+            "plant_id": "pea",
+            "name": "Pea",
+            "quantities": [
+                {
+                    "amount": 100,
+                    "unit": "g",
+                    "ingredient_name": "Example plant",
+                    "ingredient_position": 2,
+                    "kind": "direct",
+                }
+            ],
+        }
+    ]
+    return inputs, provider, response
+
+
+def test_general_coverage_correction_requires_explicit_review_of_nonplants():
+    inputs, provider, response = _mixed_general_case()
+    all_refs = [str(f.reference_id) for f in inputs.ingredients]
+    response["general_metadata"]["plant_ingredient_references"] = all_refs[2:]
+    calls = []
+
+    async def request(service, provider, message, schema, limits):
+        context = json.loads(message)
+        calls.append(context)
+        if len(calls) == 2:
+            assert context["correction"] == {
+                "code": "incomplete_plant_analysis",
+                "fields": ["plant_ingredient_references"],
+                "missing_reference_ids": all_refs[:2],
+                "reasons": ["missing_references"],
+            }
+            response["general_metadata"]["plant_ingredient_references"] = all_refs
+        return schema.model_validate(response)
+
+    plan = asyncio.run(RecipeMetadataEstimator().estimate(inputs, provider, None, request=request))
+    assert len(calls) == 2 and all(c["phase"] == "general" for c in calls)
+    assert [str(ref) for ref in plan.general_metadata.plant_ingredient_references] == all_refs
+    assert len(plan.general_metadata.plants) == 1
+    assert not inputs.missing_fields(plan)
+
+
+@pytest.mark.parametrize("failure", ["missing", "duplicate", "foreign", "rationale"])
+def test_invalid_general_coverage_stays_rejected_with_private_bounded_feedback(failure, caplog):
+    from mealie.services.healthlabs.recipe_metadata_estimator import InvalidMetadataPlan
+
+    inputs, provider, response = _mixed_general_case()
+    all_refs = [str(f.reference_id) for f in inputs.ingredients]
+    general = response["general_metadata"]
+    foreign = str(uuid4())
+    expected_missing = []
+    expected_fields = ["plant_ingredient_references"]
+    if failure == "missing":
+        general["plant_ingredient_references"] = all_refs[2:]
+        expected_missing = all_refs[:2]
+        reason = "missing_references"
+    elif failure == "duplicate":
+        general["plant_ingredient_references"] = all_refs + all_refs[:1]
+        reason = "duplicate_references"
+    elif failure == "foreign":
+        general["plant_ingredient_references"] = all_refs + [foreign]
+        reason = "foreign_references"
+    else:
+        general["plants_rationale"] = "   "
+        expected_fields = ["plants_rationale"]
+        reason = "missing_rationale"
+    general["rationales"]["effort"] = "PRIVATE_PLANT_SENTINEL"
+    calls = []
+
+    async def request(service, provider, message, schema, limits):
+        calls.append(json.loads(message))
+        return schema.model_validate(response)
+
+    with pytest.raises(InvalidMetadataPlan, match="^incomplete_plant_analysis$"):
+        asyncio.run(RecipeMetadataEstimator().estimate(inputs, provider, None, request=request))
+    assert len(calls) == 2
+    assert calls[1]["correction"] == {
+        "code": "incomplete_plant_analysis",
+        "fields": expected_fields,
+        "missing_reference_ids": expected_missing,
+        "reasons": [reason],
+    }
+    assert foreign not in json.dumps(calls)
+    assert "PRIVATE_PLANT_SENTINEL" not in json.dumps(calls)
+    assert "PRIVATE_PLANT_SENTINEL" not in caplog.text
+
+
+def test_empty_plant_list_with_explicit_complete_review_remains_valid():
+    inputs, provider, response = _mixed_general_case()
+    response["general_metadata"]["plants"] = []
+
+    async def request(service, provider, message, schema, limits):
+        return schema.model_validate(response)
+
+    plan = asyncio.run(RecipeMetadataEstimator().estimate(inputs, provider, None, request=request))
+    assert not inputs.missing_fields(plan)
+    assert plan.general_metadata.plants == []
+    assert len(plan.general_metadata.plant_ingredient_references) == 3
+    assert plan.general_metadata.plants_rationale

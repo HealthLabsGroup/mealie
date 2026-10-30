@@ -344,3 +344,23 @@ def test_assumed_portion_correction_obeys_real_job_request_cap(
         else ["assumed_portion_amount", "quantity_assumption"],
     }
     assert portion.grams == 25 and portion.amount == 1
+
+
+def test_general_coverage_correction_cannot_exceed_job_request_cap(
+    unique_user_fn_scoped, curator_settings, monkeypatch
+):
+    user = unique_user_fn_scoped
+    recipe, _ = _recipe(user)
+    work_id = _schedule(user, recipe)
+    calls = []
+
+    def incomplete_review(result):
+        assert not result["ingredients"]
+        result["general_metadata"]["plant_ingredient_references"] = []
+
+    _fake_client(monkeypatch, user.repos.session, calls, transform=incomplete_review)
+    report = asyncio.run(_worker(user, limits=MetadataRequestLimits(max_requests_per_job=1)).run_work(work_id))
+    row = user.repos.session.get(HealthLabsRecipeMetadataEstimate, work_id)
+    assert row.state == "rejected" and row.last_error_code == "job_request_limit_exceeded"
+    assert report.requests == len(calls) == row.usage["requests"] == 1
+    assert not report.provider_exhausted and row.payload is None

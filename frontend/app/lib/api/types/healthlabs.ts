@@ -534,10 +534,15 @@ export interface MetadataSource {
   attributionStatus: "recorded" | "not_recorded";
 }
 export interface MetadataPlants {
-  recorded?: MetadataPlant[];
+  recorded?: MetadataRecordedPlant[];
   estimated?: MetadataPlant[];
   status?: "complete" | "partial" | "unavailable";
   provenanceIds?: string[];
+}
+export interface MetadataRecordedPlant {
+  plantId: string;
+  name: string;
+  quantities?: MetadataPlantQuantity[];
 }
 export interface HealthLabsRecipePage {
   items: HealthLabsRecipeOut[];

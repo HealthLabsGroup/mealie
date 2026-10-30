@@ -99,14 +99,23 @@ class MetadataPlantQuantity(MetadataModel):
     kind: Literal["direct", "shared", "product"] = "direct"
 
 
-class MetadataPlant(MetadataModel):
-    plant_id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,79}$")
-    name: str = Field(min_length=1, max_length=120)
+class MetadataRecordedPlant(MetadataModel):
+    """Accepted native identities retain their original public-write values."""
+
+    plant_id: str
+    name: str
     quantities: list[MetadataPlantQuantity] = Field(default_factory=list, max_length=100)
 
 
+class MetadataPlant(MetadataRecordedPlant):
+    """New inference remains canonical and bounded independently of recorded facts."""
+
+    plant_id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,79}$")
+    name: str = Field(min_length=1, max_length=120)
+
+
 class MetadataPlants(MetadataModel):
-    recorded: list[MetadataPlant] = Field(default_factory=list)
+    recorded: list[MetadataRecordedPlant] = Field(default_factory=list)
     estimated: list[MetadataPlant] = Field(default_factory=list)
     status: Literal["complete", "partial", "unavailable"] = "unavailable"
     provenance_ids: list[str] = Field(default_factory=list)

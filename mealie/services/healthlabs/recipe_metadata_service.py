@@ -43,8 +43,8 @@ from mealie.schema.healthlabs.recipe_metadata import (
     MetadataIngredientPlan,
     MetadataIngredientResponse,
     MetadataModelReview,
-    MetadataPlant,
     MetadataPlants,
+    MetadataRecordedPlant,
     MetadataReuseOrigin,
     MetadataSource,
     MetadataValidation,
@@ -619,7 +619,7 @@ def project_metadata(
             provenance_ids=refs,
         )
     plants = {
-        fact.plant_id: MetadataPlant(plant_id=fact.plant_id, name=fact.plant_name or fact.plant_id)
+        fact.plant_id: MetadataRecordedPlant(plant_id=fact.plant_id, name=fact.plant_name or fact.plant_id)
         for fact in inputs.ingredients
         if fact.plant_id
     }

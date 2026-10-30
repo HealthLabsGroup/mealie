@@ -90,6 +90,35 @@ def test_five_field_source_coverage_survives_missing_water_and_preserves_zero():
     assert metadata.source.attribution_status == "not_recorded"
 
 
+@pytest.mark.parametrize(("plant_id", "name"), [("Rice plant", "Rice"), ("r" * 81, "Rice"), ("rice", "x" * 121)])
+def test_accepted_plant_values_need_no_model_redeclaration(plant_id, name):
+    from mealie.services.healthlabs.recipe_metadata_service import project_metadata
+
+    inputs = _inputs()
+    fact = inputs.ingredients[0]
+    fact.plant_id, fact.plant_name, fact.plant_classified = plant_id, name, True
+    response = _response(inputs)
+    response["ingredients"][0]["nutrients_per_100g"] = {}
+    response["general_metadata"]["plant_ingredient_references"] = []
+    response["general_metadata"]["plants_rationale"] = None
+    _, metadata = project_metadata(inputs, _plan(inputs, response))
+    assert metadata.plants.recorded[0].plant_id == plant_id
+    assert metadata.plants.recorded[0].name == name
+    assert metadata.plants.estimated == []
+
+
+@pytest.mark.parametrize(
+    ("plant_id", "name"), [("Rice plant", "Rice"), ("r" * 81, "Rice"), ("rice", "x" * 121), ("rice", "")]
+)
+def test_untrusted_inferred_plants_still_require_canonical_bounded_values(plant_id, name):
+    inputs = _inputs()
+    response = _response(inputs)
+    response["ingredients"][0]["nutrients_per_100g"] = {}
+    response["general_metadata"]["plants"] = [{"plant_id": plant_id, "name": name, "quantities": []}]
+    with pytest.raises(ValueError):
+        _plan(inputs, response)
+
+
 def test_only_missing_nutrient_is_estimated_and_totals_are_calculated_in_code():
     from mealie.services.healthlabs.recipe_metadata_service import project_metadata
 

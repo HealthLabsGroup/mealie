@@ -10,16 +10,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, DecimalException
 from math import isfinite, ulp
-from typing import Any, TypeGuard
+from typing import Any, TypeGuard, TypeVar, cast
 from uuid import UUID
 
 import sqlalchemy as sa
 from pydantic import ValidationError
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 from mealie.db.models._model_utils.datetime import get_utc_now
@@ -674,11 +675,147 @@ def project_metadata(
 def _row_data(row) -> dict | None:
     if row is None:
         return None
+    if isinstance(row, _ProjectionRow):
+        return dict(row.values)
     return {
         column.name: getattr(row, column.name)
         for column in row.__table__.columns
         if column.name not in {"created_at", "update_at", "updated_at"}
     }
+
+
+@dataclass(frozen=True)
+class _ProjectionRow:
+    """Detached source values, never an identity-mapped ORM object."""
+
+    values: dict[str, Any]
+    aliases: tuple[_ProjectionRow, ...] = ()
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self.values[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
+def _projection_encode(value: Any) -> Any:
+    # Explicit tags preserve Decimal/UUID/date types and cannot collide with
+    # user-authored dictionaries. Only these immutable bytes enter the cache.
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return ["scalar", value]
+    if isinstance(value, UUID):
+        return ["uuid", str(value)]
+    if isinstance(value, Decimal):
+        return ["decimal", str(value)]
+    if isinstance(value, datetime):
+        return ["datetime", value.isoformat()]
+    if isinstance(value, date):
+        return ["date", value.isoformat()]
+    if isinstance(value, dict):
+        return ["dict", [[_projection_encode(key), _projection_encode(item)] for key, item in value.items()]]
+    if isinstance(value, list | tuple):
+        return ["tuple" if isinstance(value, tuple) else "list", [_projection_encode(item) for item in value]]
+    if isinstance(value, _ProjectionRow):
+        return ["row", _projection_encode(value.values), _projection_encode(value.aliases)]
+    if hasattr(value, "__table__"):
+        return [
+            "row",
+            _projection_encode(_row_data(value)),
+            _projection_encode(tuple(value.aliases) if isinstance(value, IngredientUnitModel) else ()),
+        ]
+    if isinstance(value, MetadataSourceCandidate | MetadataPortionCandidate):
+        return [type(value).__name__, _projection_encode(asdict(value))]
+    raise TypeError("Unsupported projection source value")
+
+
+def _projection_decode(value: Any) -> Any:
+    kind, data, *rest = value
+    if kind == "scalar":
+        return data
+    if kind == "uuid":
+        return UUID(data)
+    if kind == "decimal":
+        return Decimal(data)
+    if kind == "datetime":
+        return datetime.fromisoformat(data)
+    if kind == "date":
+        return date.fromisoformat(data)
+    if kind == "dict":
+        return {_projection_decode(key): _projection_decode(item) for key, item in data}
+    if kind in {"tuple", "list"}:
+        items = [_projection_decode(item) for item in data]
+        return tuple(items) if kind == "tuple" else items
+    if kind == "row":
+        return _ProjectionRow(_projection_decode(data), _projection_decode(rest[0]))
+    values = _projection_decode(data)
+    if kind == "MetadataPortionCandidate":
+        return MetadataPortionCandidate(**values)
+    if kind == "MetadataSourceCandidate":
+        values["portions"] = [MetadataPortionCandidate(**item) for item in values["portions"]]
+        return MetadataSourceCandidate(**values)
+    raise ValueError("Unsupported projection source tag")
+
+
+_PROJECTION_CACHE_MAX_ENTRIES = 512
+_PROJECTION_CACHE_MAX_BYTES = 8 * 1024 * 1024
+_ProjectionValue = TypeVar("_ProjectionValue")
+
+
+class _ProjectionLookupCache:
+    """One read-only snapshot; exact serialized key + value budget, no ORM rows."""
+
+    def __init__(self, session: Session, *, on_invalidate: Callable[[], None] | None = None) -> None:
+        self.session = session
+        self.transaction = session.get_transaction()
+        self._on_invalidate = on_invalidate
+        self.values: dict[bytes, bytes] = {}
+        self.byte_size = 0
+        bind = session.get_bind()
+        options = bind.get_execution_options()
+        self.enabled = (
+            self.transaction is not None
+            and isinstance(bind, Connection)
+            and bind.dialect.name == "postgresql"
+            and options.get("isolation_level") == "REPEATABLE READ"
+            and options.get("postgresql_readonly") is True
+        )
+        sa.event.listen(session, "after_transaction_end", self._transaction_ended)
+
+    def _transaction_ended(self, session: Session, transaction: Any) -> None:
+        self.values.clear()
+        self.byte_size = 0
+        self.enabled = False
+        if self._on_invalidate is not None:
+            self._on_invalidate()
+
+    def close(self) -> None:
+        sa.event.remove(self.session, "after_transaction_end", self._transaction_ended)
+        self._transaction_ended(self.session, self.transaction)
+
+    def remember(self, key: tuple[Any, ...], load: Callable[[], _ProjectionValue]) -> _ProjectionValue:
+        if (
+            self.session.get_transaction() is not self.transaction
+            or self.session.in_nested_transaction()
+            or self.session.new
+            or self.session.dirty
+            or self.session.deleted
+        ):
+            self._transaction_ended(self.session, self.transaction)
+        if not self.enabled:
+            return load()
+        encoded_key = json.dumps(_projection_encode(key), separators=(",", ":"), allow_nan=False).encode()
+        if cached := self.values.get(encoded_key):
+            return cast(_ProjectionValue, _projection_decode(json.loads(cached)))
+        result = load()
+        try:
+            encoded = json.dumps(_projection_encode(result), separators=(",", ":"), allow_nan=False).encode()
+        except TypeError, ValueError:
+            return result
+        cost = len(encoded_key) + len(encoded)
+        if len(self.values) < _PROJECTION_CACHE_MAX_ENTRIES and self.byte_size + cost <= _PROJECTION_CACHE_MAX_BYTES:
+            self.values[encoded_key] = encoded
+            self.byte_size += cost
+        return result
 
 
 def _source_values(food: HealthLabsNutrientFood) -> dict[str, float | None]:
@@ -757,9 +894,140 @@ class RecipeMetadataService:
     nutrient values are loaded here, never accepted as model-asserted source facts.
     """
 
-    def __init__(self, session: Session, *, country: str = "GB") -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        country: str = "GB",
+        lookups: _ProjectionLookupCache | None = None,
+        nutrition: NutritionService | None = None,
+    ) -> None:
         self.session = session
         self.country = country.upper()
+        self._lookups = lookups
+        self._nutrition = nutrition
+
+    def _cached(self, key: tuple[Any, ...], load: Callable[[], _ProjectionValue]) -> _ProjectionValue:
+        return self._lookups.remember(key, load) if self._lookups is not None else load()
+
+    def _source_row(self, model: Any, identifier: UUID | None) -> Any:
+        if identifier is None:
+            return None
+        return self._cached(
+            ("source_row", model.__tablename__, identifier), lambda: self.session.get(model, identifier)
+        )
+
+    def _ingredient_sources(self, food_id: UUID | None, unit_id: UUID | None, group_id: UUID) -> dict[str, Any]:
+        def load() -> dict[str, Any]:
+            food = (
+                self.session.scalar(
+                    sa.select(IngredientFoodModel).where(
+                        IngredientFoodModel.id == food_id, IngredientFoodModel.group_id == group_id
+                    )
+                )
+                if food_id
+                else None
+            )
+            unit = (
+                self.session.scalar(
+                    sa.select(IngredientUnitModel).where(
+                        IngredientUnitModel.id == unit_id, IngredientUnitModel.group_id == group_id
+                    )
+                )
+                if unit_id
+                else None
+            )
+            if food_id and food is None or unit_id and unit is None:
+                return {
+                    "food": food,
+                    "unit": unit,
+                    "match": None,
+                    "suppression": None,
+                    "source_food": None,
+                    "source": None,
+                    "portions": [],
+                    "mappings": [],
+                    "densities": [],
+                }
+            match = (
+                self.session.scalar(
+                    sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
+                )
+                if food
+                else None
+            )
+            suppression = (
+                self.session.scalar(
+                    sa.select(HealthLabsFoodMatchSuppression).where(
+                        HealthLabsFoodMatchSuppression.ingredient_food_id == food_id
+                    )
+                )
+                if food
+                else None
+            )
+            source_food = self._source_row(HealthLabsNutrientFood, match.nutrient_food_id) if match else None
+            source = (
+                self._source_row(HealthLabsNutrientSourceRelease, source_food.source_release_id)
+                if source_food
+                else None
+            )
+            portions = (
+                list(
+                    self.session.scalars(
+                        sa.select(HealthLabsFoodPortion)
+                        .where(
+                            HealthLabsFoodPortion.nutrient_food_id == source_food.id,
+                            sa.or_(
+                                HealthLabsFoodPortion.source_managed.is_(True),
+                                HealthLabsFoodPortion.group_id == group_id,
+                            ),
+                        )
+                        .order_by(HealthLabsFoodPortion.id)
+                    )
+                )
+                if source_food
+                else []
+            )
+            mappings = (
+                list(
+                    self.session.scalars(
+                        sa.select(HealthLabsFoodPortionMapping)
+                        .where(
+                            HealthLabsFoodPortionMapping.group_id == group_id,
+                            HealthLabsFoodPortionMapping.ingredient_food_id == food_id,
+                            HealthLabsFoodPortionMapping.ingredient_unit_id == unit_id,
+                        )
+                        .order_by(HealthLabsFoodPortionMapping.id)
+                    )
+                )
+                if food and unit
+                else []
+            )
+            density_ids = [portion.density_id for portion in portions if portion.density_id]
+            densities = (
+                list(
+                    self.session.scalars(
+                        sa.select(HealthLabsFoodDensity)
+                        .where(HealthLabsFoodDensity.id.in_(density_ids))
+                        .order_by(HealthLabsFoodDensity.id)
+                    )
+                )
+                if density_ids
+                else []
+            )
+            return {
+                "food": food,
+                "unit": unit,
+                "match": match,
+                "suppression": suppression,
+                "source_food": source_food,
+                "source": source,
+                "portions": portions,
+                "mappings": mappings,
+                "densities": densities,
+            }
+
+        return self._cached(("ingredient_sources", group_id, food_id, unit_id), load)
 
     def inputs(self, recipe: Recipe) -> RecipeMetadataInputs:
         data = recipe.model_dump(mode="json", by_alias=False)
@@ -793,30 +1061,14 @@ class RecipeMetadataService:
         authoring_hash = fingerprint(authoring)
         dependencies = []
         ingredients = []
-        nutrition = NutritionService(self.session)
+        nutrition = self._nutrition or NutritionService(self.session)
         for ingredient in recipe.recipe_ingredient:
             fact = IngredientMetadataInput(reference_id=ingredient.reference_id)
             ingredients.append(fact)
             food_id = ingredient.food.id if ingredient.food else None
             unit_id = ingredient.unit.id if ingredient.unit else None
-            food = (
-                self.session.scalar(
-                    sa.select(IngredientFoodModel).where(
-                        IngredientFoodModel.id == food_id, IngredientFoodModel.group_id == recipe.group_id
-                    )
-                )
-                if food_id
-                else None
-            )
-            unit = (
-                self.session.scalar(
-                    sa.select(IngredientUnitModel).where(
-                        IngredientUnitModel.id == unit_id, IngredientUnitModel.group_id == recipe.group_id
-                    )
-                )
-                if unit_id
-                else None
-            )
+            sources = self._ingredient_sources(food_id, unit_id, recipe.group_id)
+            food, unit = sources["food"], sources["unit"]
             if food_id and food is None or unit_id and unit is None:
                 dependencies.append({"reference": ingredient.reference_id, "invalid_group_reference": True})
                 continue
@@ -845,73 +1097,10 @@ class RecipeMetadataService:
                     fact.resolved_grams = (
                         Decimal(str(ingredient.quantity)) * Decimal(str(unit.standard_quantity or 1)) * mass_factor
                     )
-            match = (
-                self.session.scalar(
-                    sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food_id)
-                )
-                if food
-                else None
-            )
-            suppression = (
-                self.session.scalar(
-                    sa.select(HealthLabsFoodMatchSuppression).where(
-                        HealthLabsFoodMatchSuppression.ingredient_food_id == food_id
-                    )
-                )
-                if food
-                else None
-            )
+            match, suppression = sources["match"], sources["suppression"]
             accepted = nutrition.food_facts(food.id, unit.id if unit else None, ingredient.quantity) if food else None
-            source_food = self.session.get(HealthLabsNutrientFood, match.nutrient_food_id) if match else None
-            source = (
-                self.session.get(HealthLabsNutrientSourceRelease, source_food.source_release_id)
-                if source_food
-                else None
-            )
-            portions = (
-                list(
-                    self.session.scalars(
-                        sa.select(HealthLabsFoodPortion)
-                        .where(
-                            HealthLabsFoodPortion.nutrient_food_id == source_food.id,
-                            sa.or_(
-                                HealthLabsFoodPortion.source_managed.is_(True),
-                                HealthLabsFoodPortion.group_id == recipe.group_id,
-                            ),
-                        )
-                        .order_by(HealthLabsFoodPortion.id)
-                    )
-                )
-                if source_food
-                else []
-            )
-            mappings = (
-                list(
-                    self.session.scalars(
-                        sa.select(HealthLabsFoodPortionMapping)
-                        .where(
-                            HealthLabsFoodPortionMapping.group_id == recipe.group_id,
-                            HealthLabsFoodPortionMapping.ingredient_food_id == food_id,
-                            HealthLabsFoodPortionMapping.ingredient_unit_id == unit_id,
-                        )
-                        .order_by(HealthLabsFoodPortionMapping.id)
-                    )
-                )
-                if food and unit
-                else []
-            )
-            density_ids = [portion.density_id for portion in portions if portion.density_id]
-            densities = (
-                list(
-                    self.session.scalars(
-                        sa.select(HealthLabsFoodDensity)
-                        .where(HealthLabsFoodDensity.id.in_(density_ids))
-                        .order_by(HealthLabsFoodDensity.id)
-                    )
-                )
-                if density_ids
-                else []
-            )
+            source_food, source = sources["source_food"], sources["source"]
+            portions, mappings, densities = sources["portions"], sources["mappings"], sources["densities"]
             if (
                 accepted
                 and accepted.status == "matched"
@@ -1009,6 +1198,9 @@ class RecipeMetadataService:
         )
 
     def _portions(self, food_id: UUID, group_id: UUID | None) -> list[MetadataPortionCandidate]:
+        return self._cached(("eligible_portions", food_id, group_id), lambda: self._load_portions(food_id, group_id))
+
+    def _load_portions(self, food_id: UUID, group_id: UUID | None) -> list[MetadataPortionCandidate]:
         query = sa.select(HealthLabsFoodPortion).where(HealthLabsFoodPortion.nutrient_food_id == food_id)
         query = (
             query.where(
@@ -1019,8 +1211,8 @@ class RecipeMetadataService:
         )
         result = []
         for portion in self.session.scalars(query.order_by(HealthLabsFoodPortion.id).limit(64)):
-            density = self.session.get(HealthLabsFoodDensity, portion.density_id) if portion.density_id else None
-            release = self.session.get(HealthLabsNutrientSourceRelease, density.source_release_id) if density else None
+            density = self._source_row(HealthLabsFoodDensity, portion.density_id) if portion.density_id else None
+            release = self._source_row(HealthLabsNutrientSourceRelease, density.source_release_id) if density else None
             result.append(
                 MetadataPortionCandidate(
                     id=portion.id,
@@ -1038,6 +1230,14 @@ class RecipeMetadataService:
         return result
 
     def _candidates(
+        self, text: str, *, group_id: UUID | None = None, preparation_state: str | None = None
+    ) -> list[MetadataSourceCandidate]:
+        return self._cached(
+            ("candidates", self.country, group_id, text, preparation_state),
+            lambda: self._load_candidates(text, group_id=group_id, preparation_state=preparation_state),
+        )
+
+    def _load_candidates(
         self, text: str, *, group_id: UUID | None = None, preparation_state: str | None = None
     ) -> list[MetadataSourceCandidate]:
         names = _candidate_names(text)

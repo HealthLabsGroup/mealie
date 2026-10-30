@@ -1604,7 +1604,7 @@ def test_runtime_reconciliation_parser_transport_and_suggestion_audit(unique_use
     identity = uuid4()
     resolver = SessionProviderResolver(
         identity_ids={user.group_id: identity},
-        name="oai-kensai-prod",
+        name="session-provider",
         base_url="https://azure.example/openai/v1",
         model="gpt-5.6-sol",
         credential=lambda: "fake-session-secret",

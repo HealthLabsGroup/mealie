@@ -606,3 +606,158 @@ def test_empty_plant_list_with_explicit_complete_review_remains_valid():
     assert plan.general_metadata.plants == []
     assert len(plan.general_metadata.plant_ingredient_references) == 3
     assert plan.general_metadata.plants_rationale
+
+
+def _ingredient_coverage_case():
+    from copy import deepcopy
+    from dataclasses import replace
+    from uuid import UUID
+
+    inputs, provider, response = _nullable_candidate_case(
+        {"fat_g": 0}, {"kcal": 100, "protein_g": 4, "carbs_g": 21, "fat_g": 0, "fibre_g": 0}
+    )
+    original = inputs.ingredients[0]
+    inputs.ingredients = [replace(original, reference_id=UUID(int=value)) for value in (3, 1, 2)]
+    ingredient = inputs.recipe.recipe_ingredient[0]
+    inputs.recipe.recipe_ingredient = [
+        ingredient.model_copy(update={"reference_id": fact.reference_id}) for fact in inputs.ingredients
+    ]
+    template = response["ingredients"][0]
+    response["ingredients"] = [
+        {**deepcopy(template), "reference_id": str(fact.reference_id)} for fact in inputs.ingredients
+    ]
+    return inputs, provider, response
+
+
+def test_missing_ingredient_correction_supplies_exact_current_chunk_in_original_order():
+    from copy import deepcopy
+
+    inputs, provider, response = _ingredient_coverage_case()
+    before = deepcopy(inputs.ingredients)
+    all_refs = [row["reference_id"] for row in response["ingredients"]]
+    calls = []
+
+    async def request(service, provider, message, schema, limits):
+        context = json.loads(message)
+        calls.append(context)
+        if context["phase"] == "general":
+            return schema.model_validate(_general_response(inputs))
+        expected = [row["reference_id"] for row in context["ingredients"]]
+        value = deepcopy(response)
+        value["ingredients"] = [row for row in value["ingredients"] if row["reference_id"] in expected]
+        if expected == all_refs[:2]:
+            # The synthetic provider fixes the omission ONLY after exact trusted feedback.
+            if context["correction"] == {
+                "code": "ingredient_references",
+                "fields": ["ingredients"],
+                "expected_reference_ids": all_refs[:2],
+                "missing_reference_ids": all_refs[1:2],
+                "duplicate_reference_ids": [],
+                "reasons": ["missing_references"],
+            }:
+                return schema.model_validate(value)
+            value["ingredients"] = value["ingredients"][:1]
+        return schema.model_validate(value)
+
+    plan = asyncio.run(RecipeMetadataEstimator(chunk_size=2).estimate(inputs, provider, None, request=request))
+    assert len(calls) == 4
+    assert calls[2]["correction"] is None
+    assert all_refs[2] not in json.dumps(calls[1]["correction"])
+    assert not inputs.missing_fields(plan)
+    assert inputs.ingredients == before
+
+
+@pytest.mark.parametrize("failure", ["missing", "duplicate", "unexpected", "all_wrong", "foreign_duplicate"])
+def test_ingredient_coverage_remains_strict_with_trusted_private_feedback(failure, caplog):
+    from copy import deepcopy
+
+    from mealie.services.healthlabs.recipe_metadata_estimator import InvalidMetadataPlan
+
+    inputs, provider, response = _ingredient_coverage_case()
+    all_refs = [row["reference_id"] for row in response["ingredients"]]
+    foreign = str(uuid4())
+    secret = "sk-synthetic-private-ingredient-text"
+    response["ingredients"][0]["rationale"] = secret
+    expected_missing, expected_duplicates, reasons = [], [], []
+    if failure == "missing":
+        response["ingredients"] = response["ingredients"][:1]
+        expected_missing, reasons = all_refs[1:], ["missing_references"]
+    elif failure == "duplicate":
+        response["ingredients"] += deepcopy(response["ingredients"][:2])
+        expected_duplicates, reasons = all_refs[:2], ["duplicate_references"]
+    elif failure == "unexpected":
+        response["ingredients"].append({**response["ingredients"][0], "reference_id": foreign})
+        reasons = ["unexpected_references"]
+    else:
+        response["ingredients"] = [{**response["ingredients"][0], "reference_id": foreign}]
+        expected_missing = all_refs
+        if failure == "foreign_duplicate":
+            response["ingredients"] *= 2
+        reasons = ["missing_references", "unexpected_references"]
+        if failure == "foreign_duplicate":
+            reasons.append("duplicate_references")
+    calls = []
+
+    async def request(service, provider, message, schema, limits):
+        calls.append(json.loads(message))
+        return schema.model_validate(response)
+
+    with pytest.raises(InvalidMetadataPlan, match="^ingredient_references$"):
+        asyncio.run(RecipeMetadataEstimator().estimate(inputs, provider, None, request=request))
+    assert len(calls) == 2
+    feedback = calls[1]["correction"]
+    assert feedback == {
+        "code": "ingredient_references",
+        "fields": ["ingredients"],
+        "expected_reference_ids": all_refs,
+        "missing_reference_ids": expected_missing,
+        "duplicate_reference_ids": expected_duplicates,
+        "reasons": reasons,
+    }
+    assert foreign not in json.dumps(feedback)
+    assert secret not in json.dumps(feedback) + caplog.text
+
+
+def test_fixed_mass_rewrite_stays_rejected_with_trusted_reference_and_field():
+    from copy import deepcopy
+
+    from mealie.services.healthlabs.recipe_metadata_estimator import InvalidMetadataPlan
+
+    inputs, provider, response = _ingredient_coverage_case()
+    before = deepcopy(inputs.ingredients)
+    target = inputs.ingredients[1]
+    response["ingredients"][1]["effective_grams"] = target.resolved_grams
+    calls = []
+
+    async def request(service, provider, message, schema, limits):
+        calls.append(json.loads(message))
+        return schema.model_validate(response)
+
+    with pytest.raises(InvalidMetadataPlan, match="^fixed_mass_must_be_null$"):
+        asyncio.run(RecipeMetadataEstimator().estimate(inputs, provider, None, request=request))
+    assert len(calls) == 2
+    assert calls[1]["correction"] == {
+        "code": "fixed_mass_must_be_null",
+        "reference_id": str(target.reference_id),
+        "fields": ["effective_grams"],
+    }
+    assert inputs.ingredients == before
+
+
+def test_keylike_invalid_reference_never_enters_correction_or_logs(caplog):
+    from mealie.services.healthlabs.recipe_metadata_estimator import InvalidMetadataPlan
+
+    inputs, provider, response = _ingredient_coverage_case()
+    secret = "sk-synthetic-private-reference-input"
+    response["ingredients"][0]["reference_id"] = secret
+    calls = []
+
+    async def request(service, provider, message, schema, limits):
+        calls.append(json.loads(message))
+        return schema.model_validate(response)
+
+    with pytest.raises(InvalidMetadataPlan, match="^invalid_plan_values_or_source_rewrite$"):
+        asyncio.run(RecipeMetadataEstimator().estimate(inputs, provider, None, request=request))
+    assert len(calls) == 2
+    assert calls[1]["correction"] == "invalid_plan_values_or_source_rewrite"
+    assert secret not in json.dumps(calls) + caplog.text

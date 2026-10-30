@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from typing import Any, Literal, Self
@@ -160,12 +161,38 @@ class InvalidIngredientPlan(InvalidMetadataPlan):
             "missing_quantity_assumption",
             "missing_portion_amount",
             "missing_density_amount",
+            "fixed_mass_must_be_null",
         ],
         reference_id: UUID,
         fields: list[str],
     ) -> None:
         super().__init__(code)
         self.feedback: dict[str, str | list[str]] = {"code": code, "reference_id": str(reference_id), "fields": fields}
+
+
+class InvalidIngredientCoverage(InvalidMetadataPlan):
+    """Describe exact chunk coverage using only trusted input reference IDs."""
+
+    def __init__(self, expected: list[UUID], actual: list[UUID]) -> None:
+        super().__init__("ingredient_references")
+        counts = Counter(actual)
+        missing = [str(reference_id) for reference_id in expected if reference_id not in counts]
+        duplicates = [str(reference_id) for reference_id in expected if counts[reference_id] > 1]
+        reasons = []
+        if missing:
+            reasons.append("missing_references")
+        if counts.keys() - set(expected):
+            reasons.append("unexpected_references")
+        if len(actual) != len(counts):
+            reasons.append("duplicate_references")
+        self.feedback: dict[str, str | list[str]] = {
+            "code": "ingredient_references",
+            "fields": ["ingredients"],
+            "expected_reference_ids": [str(reference_id) for reference_id in expected],
+            "missing_reference_ids": missing,
+            "duplicate_reference_ids": duplicates,
+            "reasons": reasons,
+        }
 
 
 class InvalidPlantAnalysis(InvalidMetadataPlan):
@@ -466,7 +493,7 @@ class RecipeMetadataEstimator:
                         expected = {fact.reference_id: fact for fact in chunk}
                         ids = [row.reference_id for row in response.ingredients]
                         if len(ids) != len(set(ids)) or set(ids) != set(expected):
-                            raise InvalidMetadataPlan("ingredient_references")
+                            raise InvalidIngredientCoverage(list(expected), ids)
                         if (
                             response.general_metadata is not None
                             or response.effective_servings is not None
@@ -483,7 +510,9 @@ class RecipeMetadataEstimator:
                                 raise InvalidMetadataPlan("unsupplied_source_id")
                             # Reject a fixed-source rewrite, even when the adapter could ignore it.
                             if fact.resolved_grams is not None and row.effective_grams is not None:
-                                raise InvalidMetadataPlan("fixed_mass_must_be_null")
+                                raise InvalidIngredientPlan(
+                                    "fixed_mass_must_be_null", fact.reference_id, ["effective_grams"]
+                                )
                             values["effective_grams"] = (
                                 float(fact.resolved_grams) if fact.resolved_grams is not None else row.effective_grams
                             )
@@ -524,7 +553,9 @@ class RecipeMetadataEstimator:
                     # Only fixed codes enter a correction prompt; never raw provider text.
                     code = str(exc) if isinstance(exc, InvalidMetadataPlan) else "invalid_plan_values_or_source_rewrite"
                     error_code = (
-                        exc.feedback if isinstance(exc, (InvalidIngredientPlan, InvalidPlantAnalysis)) else code
+                        exc.feedback
+                        if isinstance(exc, (InvalidIngredientPlan, InvalidIngredientCoverage, InvalidPlantAnalysis))
+                        else code
                     )
                     if correction == self.corrections:
                         raise InvalidMetadataPlan(code) from None

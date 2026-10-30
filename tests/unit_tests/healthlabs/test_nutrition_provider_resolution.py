@@ -12,7 +12,7 @@ from mealie.services.healthlabs.nutrition_provider_resolution import SessionProv
 def _resolver(group_id, *, key=lambda: "fake-session-secret"):
     return SessionProviderResolver(
         identity_ids={group_id: uuid4()},
-        name="oai-kensai-prod",
+        name="session-provider",
         base_url="https://azure.example/openai/v1",
         model="gpt-5.6-sol",
         credential=key,

@@ -33,6 +33,7 @@ from mealie.schema.recipe.recipe import Recipe
 from mealie.schema.user import PrivateUser
 from mealie.services.healthlabs.access_policy import RecipeAccessDenied, RecipeAccessPolicy
 from mealie.services.healthlabs.nutrition_service import NutritionService
+from mealie.services.healthlabs.recipe_metadata_service import RecipeMetadataService
 from mealie.services.recipe.recipe_service import RecipeService
 
 AUTHORING_EXTRAS_KEY = "healthlabs.ephra"
@@ -222,6 +223,7 @@ class RecipeApiService:
                 .limit(1)
             )
         calculated_nutrition = self.nutrition.calculate_recipe(recipe, "OTHER")
+        nutrition_metadata, metadata = RecipeMetadataService(self.session).project(recipe)
         ingredients = [self._ingredient_out(item) for item in recipe.recipe_ingredient]
         instructions = [
             HealthLabsInstruction(
@@ -266,6 +268,8 @@ class RecipeApiService:
             instructions=instructions,
             authoring=self._decode_authoring(recipe.extras or {}),
             calculated_nutrition=calculated_nutrition,
+            nutrition_metadata=nutrition_metadata,
+            metadata=metadata,
         )
 
     def _native_write(self, data: HealthLabsRecipeWrite, *, scope: HealthLabsRecipeScope) -> Recipe:

@@ -352,6 +352,72 @@ export interface HealthLabsPlanPublicationWrite {
   days: 3 | 7 | 14;
   entries: HealthLabsPlanEntryWrite[];
 }
+export interface HealthLabsRecipeMetadataEstimatePayload {
+  effectiveServings: number;
+  servingsAssumption?: string | null;
+  ingredients: MetadataIngredientPlan[];
+  generalMetadata: MetadataGeneralPlan;
+  modelReview: MetadataModelReview;
+  validation: MetadataValidation;
+}
+export interface MetadataIngredientPlan {
+  referenceId: string;
+  effectiveGrams: number;
+  quantityAssumption?: string | null;
+  sourceFoodId?: string | null;
+  portionOrDensityId?: string | null;
+  assumedPortionAmount?: number | null;
+  nutrientsPer100g?: {
+    [k: string]: number | null;
+  };
+  rationale: string;
+  gramsQuality: "recorded" | "source_conversion" | "estimated";
+  nutrientQuality: {
+    [k: string]: "source_backed" | "estimated" | "unavailable";
+  };
+  sourceReleaseId?: string | null;
+  sourceRecordHash?: string | null;
+  methods?: ("assumed_quantity" | "generic_food" | "source_substitution" | "model_estimate")[];
+  interpretation?: string | null;
+  acceptedSourceFoodId?: string | null;
+  acceptedInterpretation?: string | null;
+  modelNutrientKeys?: ("kcal" | "protein_g" | "carbs_g" | "fat_g" | "fibre_g" | "water_ml")[];
+}
+export interface MetadataGeneralPlan {
+  totalMinutes?: number | null;
+  prepMinutes?: number | null;
+  activeMinutes?: number | null;
+  effort?: (1 | 2) | null;
+  rationales?: {
+    [k: string]: string;
+  };
+  plants?: MetadataPlant[];
+  plantIngredientReferences?: string[];
+  plantsRationale?: string | null;
+}
+export interface MetadataPlant {
+  plantId: string;
+  name: string;
+  quantities?: MetadataPlantQuantity[];
+}
+export interface MetadataPlantQuantity {
+  amount?: number | null;
+  unit?: string;
+  ingredientName: string;
+  ingredientPosition: number;
+  kind?: "direct" | "shared" | "product";
+}
+export interface MetadataModelReview {
+  provider: string;
+  model: string;
+}
+export interface MetadataValidation {
+  groupId: string;
+  recipeId: string;
+  authoringFingerprint: string;
+  inputFingerprint: string;
+  policyVersion: string;
+}
 export interface HealthLabsRecipeNutrition {
   totals?: HealthLabsNutritionValues;
   perServing?: HealthLabsNutritionValues;
@@ -385,6 +451,84 @@ export interface HealthLabsRecipeOut {
     [k: string]: boolean;
   };
   calculatedNutrition?: HealthLabsRecipeNutrition | null;
+  nutritionMetadata?: RecipeNutritionMetadata | null;
+  metadata?: RecipeGeneralMetadata | null;
+}
+export interface RecipeNutritionMetadata {
+  schemaVersion?: 1;
+  basis?: "per_serving";
+  status: "source_backed" | "estimated" | "partial" | "unavailable";
+  complete: boolean;
+  nativeComplete: boolean;
+  effectiveServings?: number | null;
+  servingsQuality: "recorded" | "estimated" | "unavailable";
+  perServing: NutritionMetadataFields;
+  provenance?: NutritionProvenance[];
+  inputFingerprint: string;
+  calculatedAt: string;
+}
+export interface NutritionMetadataFields {
+  kcal?: NutritionMetadataField;
+  proteinG?: NutritionMetadataField;
+  carbsG?: NutritionMetadataField;
+  fatG?: NutritionMetadataField;
+  fibreG?: NutritionMetadataField;
+  waterMl?: NutritionMetadataField;
+}
+export interface NutritionMetadataField {
+  verified?: number | null;
+  estimated?: number | null;
+  value?: number | null;
+  quality?: "source_backed" | "estimated" | "unavailable";
+  estimateMethods?: ("assumed_quantity" | "generic_food" | "source_substitution" | "model_estimate")[];
+  provenanceIds?: string[];
+  missingVerifiedIngredientRefs?: string[];
+}
+export interface NutritionProvenance {
+  id: string;
+  ingredientReference?: string | null;
+  kind: "source" | "assumption" | "model_estimate";
+  sourceFoodId?: string | null;
+  sourceReleaseId?: string | null;
+  sourceUrl?: string | null;
+  assumption?: string | null;
+  provider?: string | null;
+  model?: string | null;
+}
+export interface RecipeGeneralMetadata {
+  servings?: MetadataField;
+  totalMinutes?: MetadataField;
+  prepMinutes?: MetadataField;
+  activeMinutes?: MetadataField;
+  effort?: MetadataEffortField;
+  source: MetadataSource;
+  plants?: MetadataPlants;
+  provenance?: NutritionProvenance[];
+}
+export interface MetadataField {
+  recorded?: number | null;
+  estimated?: number | null;
+  value?: number | null;
+  quality?: "recorded" | "derived" | "estimated" | "unavailable";
+  provenanceIds?: string[];
+}
+export interface MetadataEffortField {
+  recorded?: (1 | 2) | null;
+  estimated?: (1 | 2) | null;
+  value?: (1 | 2) | null;
+  quality?: "recorded" | "derived" | "estimated" | "unavailable";
+  provenanceIds?: string[];
+}
+export interface MetadataSource {
+  ownership: "ephra" | "own";
+  url?: string | null;
+  attributionStatus: "recorded" | "not_recorded";
+}
+export interface MetadataPlants {
+  recorded?: MetadataPlant[];
+  estimated?: MetadataPlant[];
+  status?: "complete" | "partial" | "unavailable";
+  provenanceIds?: string[];
 }
 export interface HealthLabsRecipePage {
   items: HealthLabsRecipeOut[];
@@ -415,6 +559,19 @@ export interface HealthLabsRecipeWrite {
     [k: string]: boolean;
   };
 }
+export interface MetadataIngredientResponse {
+  referenceId: string;
+  effectiveGrams: number;
+  quantityAssumption?: string | null;
+  sourceFoodId?: string | null;
+  portionOrDensityId?: string | null;
+  assumedPortionAmount?: number | null;
+  nutrientsPer100g?: {
+    [k: string]: number | null;
+  };
+  rationale: string;
+}
+export interface MetadataModel {}
 export interface NutrientValue {
   amount?: number | null;
   unit: string;
@@ -425,6 +582,12 @@ export interface NutritionImportResult {
   createdRelease: boolean;
   foodsImported: number;
   portionsImported: number;
+}
+export interface RecipeMetadataProviderResponse {
+  effectiveServings: number;
+  servingsAssumption?: string | null;
+  ingredients: MetadataIngredientResponse[];
+  generalMetadata: MetadataGeneralPlan;
 }
 export interface SourceDensityRow {
   sourceRecordId: string;

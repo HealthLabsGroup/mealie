@@ -14,6 +14,7 @@ from mealie.schema.healthlabs.nutrition import (
     HealthLabsIngredientNutrition,
     HealthLabsRecipeNutrition,
 )
+from mealie.schema.healthlabs.recipe_metadata import RecipeGeneralMetadata, RecipeNutritionMetadata
 
 
 class HealthLabsRecipeScope(StrEnum):
@@ -136,6 +137,8 @@ class HealthLabsRecipeOut(MealieModel):
     instructions: list[HealthLabsInstruction] = []
     authoring: dict[str, bool] = {}
     calculated_nutrition: HealthLabsRecipeNutrition | None = None
+    nutrition_metadata: RecipeNutritionMetadata | None = None
+    metadata: RecipeGeneralMetadata | None = None
 
 
 class HealthLabsRecipePage(MealieModel):

@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from datetime import datetime
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi.testclient import TestClient
@@ -63,7 +64,13 @@ def test_recipe_crud_search_revision_and_exact_structured_round_trip(
 
     fetched = api_client.get(f"/api/healthlabs/v1/recipes/{recipe['id']}", headers=headers)
     assert fetched.status_code == 200
-    assert fetched.json() == recipe
+    fetched_body = fetched.json()
+    # Projection timestamps describe each calculation; all recipe content and values stay identical.
+    created_at = datetime.fromisoformat(recipe["nutritionMetadata"]["calculatedAt"])
+    fetched_at = datetime.fromisoformat(fetched_body["nutritionMetadata"]["calculatedAt"])
+    assert fetched_at >= created_at
+    fetched_body["nutritionMetadata"]["calculatedAt"] = recipe["nutritionMetadata"]["calculatedAt"]
+    assert fetched_body == recipe
 
     search = api_client.get("/api/healthlabs/v1/recipes", params={"q": name}, headers=headers)
     assert search.status_code == 200

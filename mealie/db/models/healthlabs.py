@@ -548,6 +548,53 @@ class HealthLabsFoodPortionMapping(SqlAlchemyBase, BaseMixins):
     )
 
 
+class HealthLabsRecipeMetadataEstimate(SqlAlchemyBase, BaseMixins):
+    """Durable metadata work and separate inference evidence; never accepted facts."""
+
+    __tablename__ = "healthlabs_recipe_metadata_estimates"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "group_id", "recipe_id", "input_fingerprint", "policy_version", name="hl_recipe_metadata_identity_key"
+        ),
+        sa.CheckConstraint(
+            "state IN ('pending','running','ready','rejected','failed','superseded')",
+            name="hl_recipe_metadata_state_valid",
+        ),
+        sa.CheckConstraint("attempt_count >= 0", name="hl_recipe_metadata_attempt_valid"),
+        sa.Index("hl_recipe_metadata_recipe_idx", "group_id", "recipe_id", "created_at"),
+        sa.Index("hl_recipe_metadata_due_idx", "state", "next_attempt_at", "lease_expires_at"),
+    )
+
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    group_id: Mapped[GUID] = mapped_column(GUID, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
+    recipe_id: Mapped[GUID] = mapped_column(GUID, ForeignKey("recipes.id", ondelete="CASCADE"), nullable=False)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    authoring_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", server_default="pending")
+    payload: Mapped[dict[str, Any] | None] = mapped_column(sa.JSON, nullable=True)
+    provider_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
+    next_attempt_at: Mapped[datetime] = mapped_column(NaiveDateTime, nullable=False, default=get_utc_now)
+    lease_token: Mapped[GUID | None] = mapped_column(GUID, nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(NaiveDateTime, nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(NaiveDateTime, nullable=False, default=get_utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        NaiveDateTime, nullable=False, default=get_utc_now, onupdate=get_utc_now
+    )
+
+    @validates("payload")
+    def validate_metadata_payload(self, _key: str, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        # Lazy import keeps schema generation independent of ORM registration.
+        from mealie.schema.healthlabs.recipe_metadata import HealthLabsRecipeMetadataEstimatePayload
+
+        return HealthLabsRecipeMetadataEstimatePayload.model_validate(value).model_dump(mode="json")
+
+
 class HealthLabsNutritionProviderUsage(SqlAlchemyBase, BaseMixins):
     __tablename__ = "healthlabs_nutrition_provider_usage"
     __table_args__ = (

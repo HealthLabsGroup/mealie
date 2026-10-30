@@ -90,3 +90,7 @@ def test_current_and_revision_recipe_reads_expose_the_same_calculated_nutrition(
     assert current_body["calculatedNutrition"]["totals"]["kcal"] == 50
     assert current_body["calculatedNutrition"]["perServing"]["kcal"] == 25
     assert current_body["calculatedNutrition"] == revision_body["calculatedNutrition"]
+    assert current_body["nutritionMetadata"]["perServing"]["proteinG"]["verified"] == 5
+    assert current_body["nutritionMetadata"]["nativeComplete"] is True
+    assert current_body["metadata"]["servings"]["recorded"] == 2
+    assert current_body["metadata"]["source"]["attributionStatus"] == "not_recorded"

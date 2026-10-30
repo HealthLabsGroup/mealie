@@ -260,3 +260,231 @@ def test_nullable_candidate_rejection_stays_bounded_and_feedback_contains_no_pro
     }
     assert "PRIVATE_RESPONSE_SENTINEL" not in json.dumps(calls)
     assert "PRIVATE_RESPONSE_SENTINEL" not in caplog.text
+
+
+@pytest.mark.parametrize("kind", ["portion", "density"])
+def test_assumed_source_amount_requires_targeted_quantity_rationale(kind):
+    inputs, provider, response = _nullable_candidate_case(
+        {}, {"kcal": 120, "protein_g": 4, "carbs_g": 22, "fat_g": 2, "fibre_g": 0}
+    )
+    fact = inputs.ingredients[0]
+    fact.resolved_grams = None
+    portion = MetadataPortionCandidate(
+        id=uuid4(),
+        description="piece",
+        amount=1,
+        unit="piece",
+        grams=25,
+        density_id=uuid4(),
+        density_grams_per_ml=0.8,
+    )
+    fact.candidates[0].portions = [portion]
+    row = response["ingredients"][0]
+    row["portion_or_density_id"] = str(portion.id if kind == "portion" else portion.density_id)
+    row["assumed_portion_amount"] = 2 if kind == "portion" else 50
+    calls = []
+
+    async def request(service, provider, message, schema, limits):
+        context = json.loads(message)
+        calls.append(context)
+        if context["phase"] == "general":
+            return schema.model_validate(_general_response(inputs))
+        if len(calls) == 2:
+            assert context["correction"] == {
+                "code": "missing_quantity_assumption",
+                "reference_id": str(fact.reference_id),
+                "fields": ["quantity_assumption"],
+            }
+            row["quantity_assumption"] = "Assume two pieces" if kind == "portion" else "Assume 50 ml"
+        return schema.model_validate(response)
+
+    plan = asyncio.run(RecipeMetadataEstimator().estimate(inputs, provider, None, request=request))
+    assert len(calls) == 3
+    assert plan.ingredients[0].effective_grams == (50 if kind == "portion" else 40)
+    assert plan.ingredients[0].portion_or_density_id == (portion.id if kind == "portion" else portion.density_id)
+    assert fact.resolved_grams is None
+    assert not inputs.missing_fields(plan)
+
+
+@pytest.mark.parametrize("kind", ["portion", "density"])
+@pytest.mark.parametrize("missing", ["rationale", "amount"])
+def test_missing_source_amount_rationale_remains_rejected_and_private(kind, missing, caplog):
+    from mealie.services.healthlabs.recipe_metadata_estimator import InvalidMetadataPlan
+
+    inputs, provider, response = _nullable_candidate_case(
+        {}, {"kcal": 120, "protein_g": 4, "carbs_g": 22, "fat_g": 2, "fibre_g": 0}
+    )
+    fact = inputs.ingredients[0]
+    fact.resolved_grams = None
+    portion = MetadataPortionCandidate(
+        id=uuid4(),
+        description="piece",
+        amount=1,
+        unit="piece",
+        grams=25,
+        density_id=uuid4(),
+        density_grams_per_ml=0.8,
+    )
+    fact.candidates[0].portions = [portion]
+    row = response["ingredients"][0]
+    row["portion_or_density_id"] = str(portion.id if kind == "portion" else portion.density_id)
+    row["assumed_portion_amount"] = 2 if missing == "rationale" else None
+    row["quantity_assumption"] = "   " if missing == "rationale" else "PRIVATE_PORTION_SENTINEL"
+    row["rationale"] = "PRIVATE_PORTION_SENTINEL"
+    calls = []
+
+    async def request(service, provider, message, schema, limits):
+        calls.append(json.loads(message))
+        return schema.model_validate(response)
+
+    code = "missing_quantity_assumption" if missing == "rationale" else f"missing_{kind}_amount"
+    with pytest.raises(InvalidMetadataPlan, match=f"^{code}$"):
+        asyncio.run(RecipeMetadataEstimator().estimate(inputs, provider, None, request=request))
+    assert len(calls) == 2
+    assert calls[1]["correction"] == {
+        "code": code,
+        "reference_id": str(fact.reference_id),
+        "fields": ["quantity_assumption"]
+        if missing == "rationale"
+        else ["assumed_portion_amount", "quantity_assumption"],
+    }
+    assert "PRIVATE_PORTION_SENTINEL" not in json.dumps(calls)
+    assert "PRIVATE_PORTION_SENTINEL" not in caplog.text
+
+
+def test_numeric_fixed_mass_still_rejects_quantity_assumption():
+    from mealie.services.healthlabs.recipe_metadata_estimator import InvalidMetadataPlan
+
+    inputs, provider, response = _nullable_candidate_case(
+        {}, {"kcal": 120, "protein_g": 4, "carbs_g": 22, "fat_g": 2, "fibre_g": 0}
+    )
+    response["ingredients"][0]["quantity_assumption"] = "Unsupported rewrite of fixed mass"
+    calls = []
+
+    async def request(service, provider, message, schema, limits):
+        calls.append(json.loads(message))
+        return schema.model_validate(response)
+
+    with pytest.raises(InvalidMetadataPlan, match="^invalid_plan_values_or_source_rewrite$"):
+        asyncio.run(RecipeMetadataEstimator().estimate(inputs, provider, None, request=request))
+    assert len(calls) == 2
+    assert inputs.ingredients[0].resolved_grams == 100
+
+
+@pytest.mark.parametrize(
+    ("quantity", "units", "expected"),
+    [(2, ("PIECE",), True), (0, ("piece",), True), (None, ("piece",), False), (2, (), False), (2, ("cup",), False)],
+)
+def test_portion_context_uses_calculator_recorded_amount_eligibility(quantity, units, expected):
+    inputs, _, _ = _nullable_candidate_case({}, {})
+    fact = inputs.ingredients[0]
+    fact.quantity, fact.unit_names = quantity, units
+    fact.candidates[0].portions = [
+        MetadataPortionCandidate(
+            id=uuid4(),
+            description="one piece",
+            amount=1,
+            unit="piece",
+            grams=25,
+        )
+    ]
+    context = RecipeMetadataEstimator._context(fact)
+    assert context["candidates"][0]["portions"][0]["recorded_amount_compatible"] is expected
+    assert context["candidates"][0]["portions"][0]["recorded_density_amount_compatible"] is False
+
+
+@pytest.mark.parametrize("millilitres", [None, 0, 50])
+def test_density_context_exposes_actual_recorded_volume_and_independent_eligibility(millilitres):
+    inputs, _, _ = _nullable_candidate_case({}, {})
+    fact = inputs.ingredients[0]
+    fact.input_millilitres = millilitres
+    fact.quantity, fact.unit_names = 2, ("cup",)
+    fact.portions = [
+        MetadataPortionCandidate(
+            id=uuid4(),
+            description="piece",
+            amount=1,
+            unit="piece",
+            grams=25,
+            density_id=uuid4(),
+            density_grams_per_ml=0.8,
+        )
+    ]
+    context = RecipeMetadataEstimator._context(fact)
+    assert context["input_millilitres"] == millilitres
+    assert context["portions"][0]["recorded_amount_compatible"] is False
+    assert context["portions"][0]["recorded_density_amount_compatible"] is (millilitres is not None)
+
+
+@pytest.mark.parametrize("kind", ["portion", "density"])
+def test_incompatible_recorded_amount_feedback_requires_explicit_assumed_amount(kind):
+    inputs, provider, response = _nullable_candidate_case(
+        {}, {"kcal": 120, "protein_g": 4, "carbs_g": 22, "fat_g": 2, "fibre_g": 0}
+    )
+    fact = inputs.ingredients[0]
+    fact.resolved_grams = None
+    fact.quantity, fact.unit_names = 2, ()
+    portion = MetadataPortionCandidate(
+        id=uuid4(),
+        description="piece",
+        amount=1,
+        unit="piece",
+        grams=25,
+        density_id=uuid4(),
+        density_grams_per_ml=0.8,
+    )
+    fact.candidates[0].portions = [portion]
+    row = response["ingredients"][0]
+    row["portion_or_density_id"] = str(portion.id if kind == "portion" else portion.density_id)
+    row["quantity_assumption"] = "Interpret recipe text as two pieces" if kind == "portion" else "Assume 50 ml"
+    calls = []
+
+    async def request(service, provider, message, schema, limits):
+        context = json.loads(message)
+        calls.append(context)
+        if context["phase"] == "general":
+            return schema.model_validate(_general_response(inputs))
+        if len(calls) == 2:
+            assert context["correction"] == {
+                "code": f"missing_{kind}_amount",
+                "reference_id": str(fact.reference_id),
+                "fields": ["assumed_portion_amount", "quantity_assumption"],
+            }
+            row["assumed_portion_amount"] = 2 if kind == "portion" else 50
+        return schema.model_validate(response)
+
+    plan = asyncio.run(RecipeMetadataEstimator().estimate(inputs, provider, None, request=request))
+    assert len(calls) == 3
+    assert plan.ingredients[0].effective_grams == (50 if kind == "portion" else 40)
+    assert not inputs.missing_fields(plan)
+
+
+def test_portion_context_preserves_bounded_candidate_and_portion_ids():
+    from copy import deepcopy
+
+    inputs, _, _ = _nullable_candidate_case({}, {})
+    fact = inputs.ingredients[0]
+    fact.quantity, fact.unit_names = 2, ("piece",)
+    template = fact.candidates[0]
+    for _ in range(4):
+        candidate = deepcopy(template)
+        candidate.id = uuid4()
+        fact.candidates.append(candidate)
+    for candidate in fact.candidates:
+        candidate.portions = [
+            MetadataPortionCandidate(
+                id=uuid4(),
+                description="piece",
+                amount=1,
+                unit="piece",
+                grams=25,
+            )
+            for _ in range(8)
+        ]
+    context = RecipeMetadataEstimator._context(fact)
+    assert len(context["candidates"]) == 3
+    for original, sent in zip(fact.candidates, context["candidates"], strict=False):
+        assert sent["id"] == original.id
+        assert len(sent["portions"]) == 4
+        assert [p["id"] for p in sent["portions"]] == [p.id for p in original.portions[:4]]
+        assert all(p["recorded_amount_compatible"] for p in sent["portions"])

@@ -359,6 +359,7 @@ export interface HealthLabsRecipeMetadataEstimatePayload {
   generalMetadata: MetadataGeneralPlan;
   modelReview: MetadataModelReview;
   validation: MetadataValidation;
+  reuseOrigin?: MetadataReuseOrigin | null;
 }
 export interface MetadataIngredientPlan {
   referenceId: string;
@@ -380,6 +381,9 @@ export interface MetadataIngredientPlan {
   methods?: ("assumed_quantity" | "generic_food" | "source_substitution" | "model_estimate")[];
   interpretation?: string | null;
   acceptedSourceFoodId?: string | null;
+  acceptedPlantId?: string | null;
+  acceptedPlantClassified?: boolean | null;
+  acceptedFoodGroup?: string | null;
   acceptedInterpretation?: string | null;
   modelNutrientKeys?: ("kcal" | "protein_g" | "carbs_g" | "fat_g" | "fibre_g" | "water_ml")[];
 }
@@ -417,6 +421,11 @@ export interface MetadataValidation {
   authoringFingerprint: string;
   inputFingerprint: string;
   policyVersion: string;
+}
+export interface MetadataReuseOrigin {
+  estimateId: string;
+  inputFingerprint: string;
+  inferredAt: string;
 }
 export interface HealthLabsRecipeNutrition {
   totals?: HealthLabsNutritionValues;

@@ -162,6 +162,9 @@ class MetadataIngredientPlan(MetadataIngredientResponse):
     methods: list[EstimateMethod] = Field(default_factory=list)
     interpretation: str | None = None
     accepted_source_food_id: UUID | None = None
+    accepted_plant_id: str | None = None
+    accepted_plant_classified: bool | None = None
+    accepted_food_group: str | None = None
     accepted_interpretation: str | None = None
     model_nutrient_keys: list[NutrientKey] = Field(default_factory=list)
 
@@ -188,6 +191,12 @@ class MetadataValidation(MetadataModel):
     policy_version: str
 
 
+class MetadataReuseOrigin(MetadataModel):
+    estimate_id: UUID
+    input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    inferred_at: datetime
+
+
 class HealthLabsRecipeMetadataEstimatePayload(MetadataModel):
     effective_servings: Positive
     servings_assumption: str | None = None
@@ -195,6 +204,7 @@ class HealthLabsRecipeMetadataEstimatePayload(MetadataModel):
     general_metadata: MetadataGeneralPlan
     model_review: MetadataModelReview
     validation: MetadataValidation
+    reuse_origin: MetadataReuseOrigin | None = None
 
     @model_validator(mode="after")
     def unique_references(self) -> Self:

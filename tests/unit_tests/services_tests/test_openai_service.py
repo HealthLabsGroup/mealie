@@ -491,3 +491,38 @@ async def test_get_response_raises_on_content_filter_finish_reason(settings_stub
 
     with pytest.raises(Exception, match="content filter"):
         await svc.get_response("system prompt", "hello", response_schema=_SampleSchema, provider=_make_provider())
+
+
+@pytest.mark.asyncio
+async def test_unspecified_sdk_retry_setting_preserves_normal_service_retries(settings_stub):
+    from mealie.schema.openai.general import OpenAIText
+
+    calls = []
+
+    def transport(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx2.Response(500, json={"error": {"message": "offline retry test"}})
+        return httpx2.Response(
+            200,
+            json={
+                "id": "offline",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-test",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": '{"text":"normal retry preserved"}'},
+                    }
+                ],
+            },
+        )
+
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(transport)) as client:
+        service = OpenAIService(_make_mock_repos(), http_client=client)
+        response = await service.get_response(
+            "Offline prompt", "Offline input", response_schema=OpenAIText, provider=_make_test_provider()
+        )
+    assert response.text == "normal retry preserved" and len(calls) == 2

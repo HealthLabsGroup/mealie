@@ -183,6 +183,8 @@ class AppSettings(AppLoggingSettings):
     HEALTHLABS_NUTRITION_PROVIDER_INPUT_USD_PER_MILLION_TOKENS: Annotated[Decimal, Field(ge=0)] = Decimal("0")
     HEALTHLABS_NUTRITION_PROVIDER_OUTPUT_USD_PER_MILLION_TOKENS: Annotated[Decimal, Field(ge=0)] = Decimal("0")
     HEALTHLABS_NUTRITION_PROVIDER_MAX_OUTPUT_TOKENS: Annotated[int, Field(gt=0)] = 256
+    HEALTHLABS_NUTRITION_RECONCILIATION_ENABLED: bool = True
+    """Pause only the periodic API reconciliation callback; manual workers are unaffected."""
     HEALTHLABS_NUTRITION_CURATOR_ENABLED: bool = False
     HEALTHLABS_NUTRITION_CURATOR_POLL_SECONDS: Annotated[int, Field(ge=1)] = 30
     HEALTHLABS_NUTRITION_CURATOR_CONCURRENCY: Annotated[int, Field(ge=1, le=4096)] = 1

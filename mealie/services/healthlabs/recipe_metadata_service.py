@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal, DecimalException
@@ -44,6 +45,7 @@ from mealie.schema.healthlabs.recipe_metadata import (
     MetadataModelReview,
     MetadataPlant,
     MetadataPlants,
+    MetadataReuseOrigin,
     MetadataSource,
     MetadataValidation,
     NutrientKey,
@@ -119,6 +121,7 @@ class IngredientMetadataInput:
     plant_id: str | None = None
     plant_name: str | None = None
     plant_classified: bool = False
+    accepted_food_group: str | None = None
     portions: list[MetadataPortionCandidate] = field(default_factory=list)
     quantity: float | None = None
     unit_names: tuple[str, ...] = ()
@@ -325,6 +328,9 @@ def validate_plan(
                 methods=methods,
                 interpretation=candidate.interpretation if candidate else fact.interpretation,
                 accepted_source_food_id=fact.accepted_source_food_id,
+                accepted_plant_id=fact.plant_id,
+                accepted_plant_classified=fact.plant_classified,
+                accepted_food_group=fact.accepted_food_group,
                 model_nutrient_keys=model_nutrient_keys,
                 accepted_interpretation=fact.interpretation,
             )
@@ -415,6 +421,18 @@ def _compatible(fact: IngredientMetadataInput, plan: MetadataIngredientPlan) -> 
     )
 
 
+def _plant_compatible(fact: IngredientMetadataInput, plan: MetadataIngredientPlan) -> bool:
+    # None plant ID alone conflates unknown taxonomy with accepted nonplants.
+    # Legacy plans lacking classification identity fail closed for plant reuse,
+    # while independent nutrition/time assumptions retain their existing guards.
+    return (
+        _compatible(fact, plan)
+        and fact.plant_id == plan.accepted_plant_id
+        and fact.plant_classified == plan.accepted_plant_classified
+        and fact.accepted_food_group == plan.accepted_food_group
+    )
+
+
 def _current_grams(fact: IngredientMetadataInput, plan: MetadataIngredientPlan | None) -> Decimal | float | None:
     if valid_number(fact.resolved_grams):
         return fact.resolved_grams
@@ -478,7 +496,11 @@ def project_metadata(
             if fact
             else None,
             "assumption": assumption,
-            "evidence": payload.validation.input_fingerprint if payload and kind != "source" else None,
+            "evidence": (
+                payload.reuse_origin.input_fingerprint if payload.reuse_origin else payload.validation.input_fingerprint
+            )
+            if payload and kind != "source"
+            else None,
             "source_record": fact.source_record_hash if fact else None,
             "provider": payload.model_review.provider if payload and kind != "source" else None,
             "model": payload.model_review.model if payload and kind != "source" else None,
@@ -606,7 +628,7 @@ def project_metadata(
     plant_refs = []
     if (
         payload
-        and all(_compatible(fact, plans[fact.reference_id]) for fact in inputs.ingredients)
+        and all(_plant_compatible(fact, plans[fact.reference_id]) for fact in inputs.ingredients)
         and payload.general_metadata.plant_ingredient_references
     ):
         inferred = [plant for plant in payload.general_metadata.plants if plant.plant_id not in plants]
@@ -917,7 +939,8 @@ class RecipeMetadataService:
                 )
                 fact.plant_id = match.plant_id
                 fact.plant_name = food.name
-                fact.plant_classified = bool(match.plant_id) or match.food_group in {
+                fact.accepted_food_group = (match.food_group or "").strip().casefold() or None
+                fact.plant_classified = bool(match.plant_id) or fact.accepted_food_group in {
                     "meat",
                     "fish",
                     "eggs",
@@ -1090,8 +1113,10 @@ class RecipeMetadataService:
             for food, source in rows
         ]
 
-    def project(self, recipe: Recipe) -> tuple[RecipeNutritionMetadata, RecipeGeneralMetadata]:
-        inputs = self.inputs(recipe)
+    def _ready_evidence(
+        self, inputs: RecipeMetadataInputs
+    ) -> Iterator[tuple[HealthLabsRecipeMetadataEstimate, HealthLabsRecipeMetadataEstimatePayload]]:
+        recipe = inputs.recipe
         rows = self.session.scalars(
             sa.select(HealthLabsRecipeMetadataEstimate)
             .where(
@@ -1123,7 +1148,104 @@ class RecipeMetadataService:
                     continue
                 for ingredient in payload.ingredients:
                     _bounds(ingredient.nutrients_per_100g, set(ingredient.model_nutrient_keys))
-                return project_metadata(inputs, payload)
+                if payload.reuse_origin:
+                    origin = self.session.get(HealthLabsRecipeMetadataEstimate, payload.reuse_origin.estimate_id)
+                    if (
+                        origin is None
+                        or origin.state != "ready"
+                        or (
+                            origin.group_id != row.group_id
+                            or origin.recipe_id != row.recipe_id
+                            or origin.authoring_fingerprint != row.authoring_fingerprint
+                            or origin.policy_version != row.policy_version
+                            or origin.input_fingerprint != payload.reuse_origin.input_fingerprint
+                            or origin.updated_at != payload.reuse_origin.inferred_at
+                            or origin.provider_name != row.provider_name
+                            or origin.provider_model != row.provider_model
+                        )
+                    ):
+                        continue
+                yield row, payload
             except ValidationError, ValueError, TypeError, DecimalException, OverflowError:
                 continue
+
+    def reusable_payload(self, inputs: RecipeMetadataInputs) -> HealthLabsRecipeMetadataEstimatePayload | None:
+        """Materialize only current, complete assumption inputs, preserving inference lineage.
+
+        This never writes. All source values and conversions are re-read from inputs;
+        only proven-compatible missing assumptions pass the ordinary validator again.
+        """
+        for evidence, prior in self._ready_evidence(inputs):
+            if inputs.missing_fields(prior):
+                continue
+            try:
+                old_rows = {row.reference_id: row for row in prior.ingredients}
+                rows = []
+                compatible_plants = True
+                for fact in inputs.ingredients:
+                    old = old_rows[fact.reference_id]
+                    compatible = _compatible(fact, old)
+                    compatible_plants &= _plant_compatible(fact, old)
+                    selected = next((c for c in fact.candidates if c.id == old.source_food_id), None)
+                    grams = _current_grams(fact, old if compatible else None)
+                    if grams is None:
+                        raise ValueError("missing current mass")
+                    rows.append(
+                        MetadataIngredientResponse(
+                            reference_id=fact.reference_id,
+                            effective_grams=float(grams),
+                            quantity_assumption=old.quantity_assumption
+                            if fact.resolved_grams is None and compatible
+                            else None,
+                            source_food_id=old.source_food_id if compatible else None,
+                            portion_or_density_id=old.portion_or_density_id
+                            if fact.resolved_grams is None and compatible
+                            else None,
+                            assumed_portion_amount=old.assumed_portion_amount
+                            if fact.resolved_grams is None and compatible
+                            else None,
+                            nutrients_per_100g={
+                                key: old.nutrients_per_100g.get(key)
+                                for key in old.model_nutrient_keys
+                                if compatible
+                                and fact.nutrients_per_100g.get(key) is None
+                                and (selected is None or selected.nutrients_per_100g.get(key) is None)
+                            },
+                            rationale=old.rationale,
+                        )
+                    )
+                general = prior.general_metadata.model_copy(deep=True)
+                if not compatible_plants:
+                    general.plants, general.plant_ingredient_references, general.plants_rationale = [], [], None
+                payload = validate_plan(
+                    inputs,
+                    RecipeMetadataProviderResponse(
+                        effective_servings=inputs.recipe.recipe_servings
+                        if valid_number(inputs.recipe.recipe_servings, positive=True)
+                        else prior.effective_servings,
+                        servings_assumption=None
+                        if valid_number(inputs.recipe.recipe_servings, positive=True)
+                        else prior.servings_assumption,
+                        ingredients=rows,
+                        general_metadata=general,
+                    ),
+                    provider=prior.model_review.provider,
+                    model=prior.model_review.model,
+                )
+                if inputs.missing_fields(payload):
+                    continue
+                payload.reuse_origin = prior.reuse_origin or MetadataReuseOrigin(
+                    estimate_id=evidence.id,
+                    input_fingerprint=evidence.input_fingerprint,
+                    inferred_at=evidence.updated_at,
+                )
+                return payload
+            except ValidationError, ValueError, TypeError, DecimalException, OverflowError, KeyError:
+                continue
+        return None
+
+    def project(self, recipe: Recipe) -> tuple[RecipeNutritionMetadata, RecipeGeneralMetadata]:
+        inputs = self.inputs(recipe)
+        for _, payload in self._ready_evidence(inputs):
+            return project_metadata(inputs, payload)
         return project_metadata(inputs)

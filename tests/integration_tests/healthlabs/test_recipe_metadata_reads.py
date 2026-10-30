@@ -47,7 +47,14 @@ def test_read_only_projection_attaches_fieldwise_current_facts(unique_user_fn_sc
     assert nutrition.per_serving.water_ml.value is None
     assert nutrition.complete is True
     assert metadata.servings.recorded == 2
-    assert user.repos.session.scalar(sa.select(sa.func.count()).select_from(HealthLabsRecipeMetadataEstimate)) == 0
+    assert (
+        user.repos.session.scalar(
+            sa.select(sa.func.count())
+            .select_from(HealthLabsRecipeMetadataEstimate)
+            .where(HealthLabsRecipeMetadataEstimate.recipe_id == recipe.id)
+        )
+        == 0
+    )
     assert "prep_minutes" in service.inputs(recipe).missing_fields()
 
 

@@ -572,6 +572,7 @@ class HealthLabsRecipeMetadataEstimate(SqlAlchemyBase, BaseMixins):
     authoring_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", server_default="pending")
+    usage: Mapped[dict[str, Any] | None] = mapped_column(sa.JSON, nullable=True)
     payload: Mapped[dict[str, Any] | None] = mapped_column(sa.JSON, nullable=True)
     provider_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     provider_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -833,3 +834,16 @@ class HealthLabsPlanEntryStatus(SqlAlchemyBase, BaseMixins):
         nullable=True,
     )
     version: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=1)
+
+
+class HealthLabsRecipeMetadataScan(SqlAlchemyBase, BaseMixins):
+    """One durable keyset cursor per explicit recipe scan scope."""
+
+    __tablename__ = "healthlabs_recipe_metadata_scans"
+    id: Mapped[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
+    created_at: Mapped[datetime] = mapped_column(NaiveDateTime, nullable=False, default=get_utc_now)
+    scope_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    cursor_recipe_id: Mapped[GUID | None] = mapped_column(GUID, nullable=True)
+    generation: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
+    cycles: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(NaiveDateTime, nullable=False, default=get_utc_now)

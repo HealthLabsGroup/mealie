@@ -112,6 +112,16 @@ class RecipeService(RecipeServiceBase):
 
     def _record_revision(self, recipe: Recipe) -> Recipe:
         self.revision_service.record(recipe, actor_user_id=self.user.id)
+        # Authoring/revision are already committed. A failed enqueue must not turn
+        # that successful write into an error; periodic keyset scanning repairs it.
+        from mealie.services.healthlabs.recipe_metadata_scheduler import RecipeMetadataScheduler
+
+        try:
+            RecipeMetadataScheduler(self.repos.session).schedule(recipe)
+            self.repos.session.commit()
+        except Exception:
+            self.repos.session.rollback()
+            self.logger.warning("Recipe metadata scheduling deferred to periodic repair")
         return recipe
 
     @staticmethod

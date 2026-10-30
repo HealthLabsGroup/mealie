@@ -129,7 +129,12 @@ class OpenAIService(BaseService):
     PROMPTS_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "prompts"
     TESTING_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "testing"
 
-    def __init__(self, repos: AllRepositories, *, http_client: AsyncClient | None = None) -> None:
+    def __init__(
+        self, repos: AllRepositories, *, http_client: AsyncClient | None = None, sdk_max_retries: int | None = None
+    ) -> None:
+        if sdk_max_retries is not None and sdk_max_retries < 0:
+            raise ValueError("sdk_max_retries cannot be negative")
+        self.sdk_max_retries = sdk_max_retries
         self.repos = repos
         self.http_client = http_client
         self.provider_settings = repos.group_ai_provider_settings.get_one(repos.group_id)
@@ -158,9 +163,10 @@ class OpenAIService(BaseService):
         super().__init__()
 
     def get_client(self, provider: AIProviderOut) -> AsyncOpenAI:
-        from openai import AsyncOpenAI
+        from openai import DEFAULT_MAX_RETRIES, AsyncOpenAI
 
         return AsyncOpenAI(
+            max_retries=DEFAULT_MAX_RETRIES if self.sdk_max_retries is None else self.sdk_max_retries,
             base_url=provider.base_url or None,
             api_key=provider.api_key,
             timeout=provider.timeout,

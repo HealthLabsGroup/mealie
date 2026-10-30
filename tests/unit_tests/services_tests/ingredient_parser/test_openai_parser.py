@@ -434,7 +434,7 @@ def test_runtime_parser_uses_explicit_scoped_provider_without_default(
     identity = uuid4()
     provider = SessionProviderResolver(
         identity_ids={user.group_id: identity},
-        name="oai-kensai-prod",
+        name="session-provider",
         base_url="https://azure.example/openai/v1",
         model="gpt-5.6-sol",
         credential=lambda: "fake-session-secret",

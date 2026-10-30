@@ -622,7 +622,7 @@ def test_session_override_without_default_is_scoped_truthful_and_memory_only(
     identity = uuid4()
     resolver = SessionProviderResolver(
         identity_ids={user.group_id: identity},
-        name="oai-kensai-prod",
+        name="session-provider",
         base_url="https://azure.example/openai/v1",
         model="gpt-5.6-sol",
         credential=lambda: "fake-session-secret",
@@ -663,7 +663,7 @@ def test_session_override_without_default_is_scoped_truthful_and_memory_only(
             sa.select(HealthLabsNutritionCuratorDecision).where(HealthLabsNutritionCuratorDecision.work_id == work.id)
         )
         assert decision.provider_id is None
-        assert decision.provider_name == "oai-kensai-prod"
+        assert decision.provider_name == "session-provider"
         assert decision.provider_model == "gpt-5.6-sol"
         assert len(calls) == 1
         assert "fake-session-secret" not in repr(statements) + caplog.text + repr(decision.candidate_snapshot)
@@ -690,7 +690,7 @@ def test_runtime_apply_rejects_changed_identity_or_stale_work(unique_user_fn_sco
     identity = uuid4()
     values = {
         "identity_ids": {user.group_id: identity},
-        "name": "oai-kensai-prod",
+        "name": "session-provider",
         "base_url": "https://azure.example/openai/v1",
         "model": "gpt-5.6-sol",
         "credential": lambda: "fake-session-secret",
@@ -735,7 +735,7 @@ def test_missing_session_key_or_foreign_group_cannot_create_decision_or_agent(un
     for groups, key in [({uuid4(): uuid4()}, "fake-session-secret"), ({user.group_id: uuid4()}, "")]:
         resolver = SessionProviderResolver(
             identity_ids=groups,
-            name="oai-kensai-prod",
+            name="session-provider",
             base_url="https://azure.example/openai/v1",
             model="gpt-5.6-sol",
             credential=lambda key=key: key,
@@ -783,7 +783,7 @@ def test_session_manifest_dry_run_respects_work_bound_and_needs_no_key(
     manifest = module.SessionManifest(
         identity_ids={user.group_id: uuid4()},
         work_ids=[work.id, work.id, uuid4()],
-        name="oai-kensai-prod",
+        name="session-provider",
         base_url="https://azure.example/openai/v1",
         model="gpt-5.6-sol",
     )
@@ -925,7 +925,7 @@ def test_session_manifest_advances_past_unclaimable_prefix(
     manifest = module.SessionManifest(
         identity_ids={user.group_id: uuid4()},
         work_ids=[work.id for work in works],
-        name="oai-kensai-prod",
+        name="session-provider",
         base_url="https://azure.example/openai/v1",
         model="gpt-5.6-sol",
     )

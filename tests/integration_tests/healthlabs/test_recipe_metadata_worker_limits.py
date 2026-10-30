@@ -239,7 +239,8 @@ def test_per_job_request_bound_rejects_impossible_shape_before_inference(
     assert report.rejected == 1 and report.requests == 0 and row.attempt_count == 0 and not calls
 
 
-def test_per_job_request_bound_also_counts_corrections(unique_user_fn_scoped, curator_settings, monkeypatch):
+@pytest.mark.parametrize("failure", ["schema", "missing_nutrient"])
+def test_per_job_request_bound_also_counts_corrections(unique_user_fn_scoped, curator_settings, monkeypatch, failure):
     user = unique_user_fn_scoped
     recipe, source = _recipe(user)
     source.nutrient_values = {k: v for k, v in source.nutrient_values.items() if k != "fibre_g"}
@@ -249,13 +250,19 @@ def test_per_job_request_bound_also_counts_corrections(unique_user_fn_scoped, cu
 
     def first_invalid(result):
         if len(calls) == 1:
-            result["ingredients"][0]["nutrients_per_100g"]["fibre_g"] = -1
+            result["ingredients"][0]["nutrients_per_100g"]["fibre_g"] = -1 if failure == "schema" else None
 
     _fake_client(monkeypatch, user.repos.session, calls, transform=first_invalid)
     report = asyncio.run(_worker(user, limits=MetadataRequestLimits(max_requests_per_job=2)).run_work(work_id))
     row = user.repos.session.get(HealthLabsRecipeMetadataEstimate, work_id)
     assert row.state == "rejected" and row.last_error_code == "job_request_limit_exceeded"
     assert report.requests == len(calls) == 2 and not report.provider_exhausted
+    if failure == "missing_nutrient":
+        assert calls[1]["context"]["correction"] == {
+            "code": "missing_required_nutrients",
+            "reference_id": str(recipe.recipe_ingredient[0].reference_id),
+            "fields": ["nutrients_per_100g.fibre_g"],
+        }
 
 
 def test_stop_after_a_chunk_preserves_same_day_resume_and_usage(unique_user_fn_scoped, curator_settings, monkeypatch):
@@ -289,3 +296,71 @@ def test_stopped_run_once_reports_halt_without_claim(unique_user_fn_scoped, cura
     assert report.stopped and report.limit_reason == "operator_stopped" and report.claimed == 0
     row = user.repos.session.get(HealthLabsRecipeMetadataEstimate, work_id)
     assert row.state == "pending" and row.attempt_count == 0
+
+
+@pytest.mark.parametrize("failure", ["quantity_assumption", "portion_amount"])
+def test_assumed_portion_correction_obeys_real_job_request_cap(
+    unique_user_fn_scoped, curator_settings, monkeypatch, failure
+):
+    from mealie.db.models.healthlabs import HealthLabsFoodPortion
+
+    user = unique_user_fn_scoped
+    recipe, source = _recipe(user)
+    recipe.recipe_ingredient[0].unit = None
+    recipe = user.repos.recipes.update(recipe.slug, recipe)
+    portion = HealthLabsFoodPortion(
+        nutrient_food_id=source.id,
+        description="piece",
+        amount=1,
+        unit="piece",
+        grams=25,
+    )
+    user.repos.session.add(portion)
+    user.repos.session.commit()
+    work_id = _schedule(user, recipe)
+    calls = []
+
+    def missing_then_corrected(result):
+        row = result["ingredients"][0]
+        context = calls[-1]["context"]["ingredients"][0]
+        assert context["fixed_grams"] is None
+        row["portion_or_density_id"] = str(portion.id)
+        row["assumed_portion_amount"] = None if len(calls) == 1 and failure == "portion_amount" else 2
+        row["quantity_assumption"] = (
+            None if len(calls) == 1 and failure == "quantity_assumption" else "Assume two pieces"
+        )
+        row["nutrients_per_100g"]["fibre_g"] = None
+
+    _fake_client(monkeypatch, user.repos.session, calls, transform=missing_then_corrected)
+    report = asyncio.run(_worker(user, limits=MetadataRequestLimits(max_requests_per_job=2)).run_work(work_id))
+    row = user.repos.session.get(HealthLabsRecipeMetadataEstimate, work_id)
+    assert row.state == "rejected" and row.last_error_code == "job_request_limit_exceeded"
+    assert report.requests == len(calls) == 2 and not report.provider_exhausted
+    assert calls[1]["context"]["correction"] == {
+        "code": f"missing_{failure}",
+        "reference_id": str(recipe.recipe_ingredient[0].reference_id),
+        "fields": ["quantity_assumption"]
+        if failure == "quantity_assumption"
+        else ["assumed_portion_amount", "quantity_assumption"],
+    }
+    assert portion.grams == 25 and portion.amount == 1
+
+
+def test_general_coverage_correction_cannot_exceed_job_request_cap(
+    unique_user_fn_scoped, curator_settings, monkeypatch
+):
+    user = unique_user_fn_scoped
+    recipe, _ = _recipe(user)
+    work_id = _schedule(user, recipe)
+    calls = []
+
+    def incomplete_review(result):
+        assert not result["ingredients"]
+        result["general_metadata"]["plant_ingredient_references"] = []
+
+    _fake_client(monkeypatch, user.repos.session, calls, transform=incomplete_review)
+    report = asyncio.run(_worker(user, limits=MetadataRequestLimits(max_requests_per_job=1)).run_work(work_id))
+    row = user.repos.session.get(HealthLabsRecipeMetadataEstimate, work_id)
+    assert row.state == "rejected" and row.last_error_code == "job_request_limit_exceeded"
+    assert report.requests == len(calls) == row.usage["requests"] == 1
+    assert not report.provider_exhausted and row.payload is None

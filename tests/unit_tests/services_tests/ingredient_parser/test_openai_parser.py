@@ -419,3 +419,41 @@ def test_openai_parser_confidence(
         assert abs(confidence.average - expected_avg) < 0.001, (
             f"Average confidence mismatch: expected {expected_avg}, got {confidence.average}"
         )
+
+
+def test_runtime_parser_uses_explicit_scoped_provider_without_default(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from uuid import uuid4
+
+    from mealie.services.healthlabs.nutrition_provider_resolution import SessionProviderResolver
+    from mealie.services.parser_services.openai.parser import OpenAIParser
+
+    user = unique_user_fn_scoped
+    identity = uuid4()
+    provider = SessionProviderResolver(
+        identity_ids={user.group_id: identity},
+        name="oai-kensai-prod",
+        base_url="https://azure.example/openai/v1",
+        model="gpt-5.6-sol",
+        credential=lambda: "fake-session-secret",
+    )(user.repos.session, user.group_id)
+    seen = []
+
+    async def complete(self, _prompt, _message, *, provider, **kwargs):
+        seen.append(provider.id)
+        assert provider.model == "gpt-5.6-sol"
+        assert provider.api_key == "fake-session-secret"
+        return OpenAIIngredients(ingredients=[OpenAIIngredient(quantity=1, unit="g", food="apple", note="")])
+
+    monkeypatch.setattr(OpenAIService, "get_response", complete)
+    parser = OpenAIParser(user.group_id, user.repos.session, get_locale_provider())
+    parser.resolved_provider = provider
+    assert len(asyncio.run(parser.parse(["1 g apple"]))) == 1
+    assert seen == [identity]
+    foreign = OpenAIParser(uuid4(), user.repos.session, get_locale_provider())
+    foreign.resolved_provider = provider
+    with pytest.raises(ValueError, match="provider group mismatch"):
+        asyncio.run(foreign.parse(["1 g apple"]))
+    assert seen == [identity]

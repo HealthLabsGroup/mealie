@@ -12,7 +12,6 @@ import sqlalchemy as sa
 from rapidfuzz import fuzz
 from sqlalchemy.orm import Session
 
-from mealie.db.models.group.ai_providers import AIProvider
 from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
     HealthLabsFoodMatchSuppression,
@@ -34,6 +33,7 @@ from mealie.services.healthlabs.nutrition_curator_prompt import (
     NutritionCuratorPrompt,
 )
 from mealie.services.healthlabs.nutrition_fingerprint_service import NutritionFingerprintService
+from mealie.services.healthlabs.nutrition_provider_resolution import ResolvedCuratorProvider
 from mealie.services.healthlabs.nutrition_service import NutritionService
 
 MAX_CANDIDATES = 8
@@ -74,9 +74,9 @@ class NutritionCuratorCandidateService:
     def build(
         self,
         work: HealthLabsNutritionWork,
-        provider: AIProvider,
+        provider: ResolvedCuratorProvider,
     ) -> NutritionCuratorCandidateSet | None:
-        if provider.settings.group_id != work.group_id:
+        if provider.group_id != work.group_id:
             return None
         if work.kind == "ingredient_structure":
             payload = self._ingredient_payload(work)
@@ -501,7 +501,7 @@ class NutritionCuratorCandidateService:
     def _fingerprints(
         self,
         work: HealthLabsNutritionWork,
-        provider: AIProvider,
+        provider: ResolvedCuratorProvider,
         prompt_payload: dict[str, Any],
         snapshot: dict[str, Any],
     ) -> tuple[str, str]:
@@ -522,21 +522,7 @@ class NutritionCuratorCandidateService:
             "workInput": work.input_sha256,
             "catalogue": catalogue,
             "sources": [tuple(map(str, release)) for release in releases],
-            "provider": {
-                "id": str(provider.id),
-                "name": provider.name,
-                "baseUrl": provider.base_url,
-                "model": provider.model,
-                "timeout": provider.timeout,
-                "headers": sorted(
-                    (item.key_name or "", item.update_at.isoformat() if item.update_at else "")
-                    for item in provider.request_headers
-                ),
-                "params": sorted(
-                    (item.key_name or "", item.update_at.isoformat() if item.update_at else "")
-                    for item in provider.request_params
-                ),
-            },
+            "provider": provider.identity_context(),
             "personaVersion": PERSONA_VERSION,
             "promptVersion": PROMPT_VERSION,
             "policyVersion": POLICY_VERSION,

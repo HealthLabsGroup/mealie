@@ -11,7 +11,7 @@ from mealie.schema._mealie import MealieModel
 class AIProviderCreate(MealieModel):
     name: str
     base_url: str | None = None
-    api_key: str = Field("", exclude=True)
+    api_key: str = Field("", exclude=True, repr=False)
     model: str
     timeout: int = 300
 

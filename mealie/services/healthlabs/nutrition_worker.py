@@ -11,7 +11,6 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
 from mealie.db.models._model_utils.datetime import get_utc_now
-from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
 from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
     HealthLabsFoodMatchSuppression,
@@ -23,6 +22,7 @@ from mealie.schema.recipe import IngredientFood, IngredientUnit, RecipeIngredien
 from mealie.services.healthlabs.ingredient_structure_service import IngredientStructureService
 from mealie.services.healthlabs.nutrition_fingerprint_service import NutritionFingerprintService
 from mealie.services.healthlabs.nutrition_provider_budget import NutritionProviderBudget, ProviderReservation
+from mealie.services.healthlabs.nutrition_provider_resolution import CuratorProviderResolver, resolve_default_provider
 from mealie.services.healthlabs.nutrition_service import NutritionService
 from mealie.services.openai.openai import OpenAIRequestRejected
 from mealie.services.parser_services.openai.parser import OpenAIParser
@@ -57,6 +57,7 @@ class NutritionReconciliationWorker:
         group_id: UUID | None = None,
         now: datetime | None = None,
         should_stop: Callable[[], bool] = lambda: False,
+        provider_resolver: CuratorProviderResolver | None = None,
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
@@ -65,6 +66,7 @@ class NutritionReconciliationWorker:
         if not (country := country.strip().upper()):
             raise ValueError("country is required")
         self.session = session
+        self.provider_resolver = provider_resolver
         self.country = country
         self.batch_size = batch_size
         self.provider_max_output_tokens = provider_max_output_tokens
@@ -398,12 +400,15 @@ class NutritionReconciliationWorker:
             work.state = "review_required"
             work.result = {"reason": "provider_disabled"}
             return
-        if not self._provider_available(work.group_id):
+        provider = (self.provider_resolver or resolve_default_provider)(self.session, work.group_id)
+        if provider is None or provider.group_id != work.group_id:
             work.state = "review_required"
             work.result = {"reason": "provider_unconfigured"}
             return
         source = (ingredient.original_text or "").strip() or (ingredient.note or "").strip()
         parser = OpenAIParser(work.group_id, self.session, get_locale_provider())
+        if self.provider_resolver is not None:
+            parser.resolved_provider = provider
         parser.data_matcher = service.matcher  # type: ignore[assignment]
         reservation: int | None = None
 
@@ -444,7 +449,9 @@ class NutritionReconciliationWorker:
             expected = (ingredient.original_text, ingredient.quantity, ingredient.note, ingredient.title)
             if self._apply_provider_ingredient(ingredient, value, expected):
                 work.state = "completed"
-                work.result = None
+                work.result = (
+                    {"executionProvider": provider.identity_context()} if self.provider_resolver is not None else None
+                )
             else:
                 self._requeue_ingredient(work, ingredient)
             return
@@ -459,6 +466,9 @@ class NutritionReconciliationWorker:
                 "note": (suggestion.note or "").strip(),
             },
         }
+
+        if self.provider_resolver is not None:
+            work.result = {**work.result, "executionProvider": provider.identity_context()}
 
     @staticmethod
     def _apply_ingredient(ingredient: RecipeIngredientModel, value: RecipeIngredient) -> None:
@@ -543,20 +553,6 @@ class NutritionReconciliationWorker:
             fingerprint,
             work=work,
             preserve_active_claim=False,
-        )
-
-    def _provider_available(self, group_id: UUID) -> bool:
-        settings = self.session.scalar(sa.select(AIProviderSettings).where(AIProviderSettings.group_id == group_id))
-        if settings is None or settings.default_provider_id is None:
-            return False
-        return (
-            self.session.scalar(
-                sa.select(AIProvider.id).where(
-                    AIProvider.id == settings.default_provider_id,
-                    AIProvider.settings_id == settings.id,
-                )
-            )
-            is not None
         )
 
     def _reserve_provider_request(

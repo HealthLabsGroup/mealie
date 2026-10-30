@@ -25,6 +25,7 @@ from mealie.services.healthlabs.nutrition_curator_service import (
     StartedCuratorDecision,
 )
 from mealie.services.healthlabs.nutrition_provider_budget import NutritionProviderBudget, ProviderReservation
+from mealie.services.healthlabs.nutrition_provider_resolution import CuratorProviderResolver
 from mealie.services.openai import OpenAIService
 from mealie.services.openai.openai import OpenAIRequestRejected
 
@@ -55,6 +56,8 @@ class NutritionCuratorWorker:
         now: datetime | None = None,
         should_stop: Callable[[], bool] = lambda: False,
         http_client: AsyncClient | None = None,
+        provider_resolver: CuratorProviderResolver | None = None,
+        group_ids: set[UUID] | frozenset[UUID] | None = None,
     ) -> None:
         if not (country := country.strip().upper()):
             raise ValueError("country is required")
@@ -71,6 +74,8 @@ class NutritionCuratorWorker:
         self._fixed_now = now
         self.should_stop = should_stop
         self.http_client = http_client
+        self.provider_resolver = provider_resolver
+        self.group_ids = frozenset(UUID(str(group_id)) for group_id in group_ids) if group_ids is not None else None
         self.settings = get_app_settings()
         self.budget = NutritionProviderBudget.from_settings(session, self.settings, now=lambda: self._current_time())
 
@@ -105,22 +110,25 @@ class NutritionCuratorWorker:
             HealthLabsNutritionCuratorDecision.work_id == HealthLabsNutritionWork.id,
             HealthLabsNutritionCuratorDecision.prompt_version == DECISION_VERSION,
         )
+        query = sa.select(HealthLabsNutritionWork.id)
+        if self.provider_resolver is None or self.group_ids is None:
+            query = query.join(
+                AIProviderSettings, AIProviderSettings.group_id == HealthLabsNutritionWork.group_id
+            ).join(
+                AIProvider,
+                sa.and_(
+                    AIProvider.id == AIProviderSettings.default_provider_id,
+                    AIProvider.settings_id == AIProviderSettings.id,
+                ),
+            )
+        if self.group_ids is not None:
+            query = query.where(HealthLabsNutritionWork.group_id.in_(self.group_ids))
         return list(
             self.session.scalars(
-                sa.select(HealthLabsNutritionWork.id)
-                .join(AIProviderSettings, AIProviderSettings.group_id == HealthLabsNutritionWork.group_id)
-                .join(
-                    AIProvider,
-                    sa.and_(
-                        AIProvider.id == AIProviderSettings.default_provider_id,
-                        AIProvider.settings_id == AIProviderSettings.id,
-                    ),
-                )
-                .where(
+                query.where(
                     HealthLabsNutritionWork.state == "review_required",
                     HealthLabsNutritionWork.next_attempt_at <= now,
-                )
-                .order_by(
+                ).order_by(
                     sa.case(
                         (due_existing_decision, 0),
                         (sa.and_(old_failed_contract, ~current_contract_attempt), 1),
@@ -150,8 +158,16 @@ class NutritionCuratorWorker:
         empty = NutritionCuratorReport(0, 0, 0, 0, False)
         if self.should_stop() or not self.settings.HEALTHLABS_NUTRITION_CURATOR_ENABLED or not self.budget.enabled:
             return empty
+        if self.group_ids is not None:
+            group_id = self.session.scalar(
+                sa.select(HealthLabsNutritionWork.group_id).where(HealthLabsNutritionWork.id == work_id)
+            )
+            if group_id not in self.group_ids:
+                return empty
         now = self._current_time()
-        started = NutritionCuratorService(self.session, country=self.country, now=now).start(work_id)
+        started = NutritionCuratorService(
+            self.session, country=self.country, now=now, provider_resolver=self.provider_resolver
+        ).start(work_id)
         if isinstance(started, FinalizedCuratorDecision):
             self.session.commit()
             return NutritionCuratorReport(
@@ -198,7 +214,9 @@ class NutritionCuratorWorker:
             if response is None or reservation is None or usage is None:
                 raise RuntimeError("provider response did not include reserved token usage")
             self.budget.record(reservation, usage)
-            state = NutritionCuratorService(self.session, country=self.country, now=now).apply(
+            state = NutritionCuratorService(
+                self.session, country=self.country, now=now, provider_resolver=self.provider_resolver
+            ).apply(
                 started.decision_id,
                 response,
                 usage,
@@ -217,7 +235,9 @@ class NutritionCuratorWorker:
             if reservation is not None:
                 return self._fail(started.decision_id, exc, finished_at)
             tomorrow = datetime.combine(finished_at.date() + timedelta(days=1), time.min, tzinfo=UTC)
-            NutritionCuratorService(self.session, country=self.country, now=finished_at).defer_until(
+            NutritionCuratorService(
+                self.session, country=self.country, now=finished_at, provider_resolver=self.provider_resolver
+            ).defer_until(
                 started.decision_id,
                 tomorrow,
                 "provider_budget_exhausted",
@@ -251,7 +271,9 @@ class NutritionCuratorWorker:
     def _fail(self, decision_id: UUID, exc: Exception, now: datetime) -> NutritionCuratorReport:
         cause = exc.__cause__ or exc
         logger.warning("Nutrition curator provider failure error_type=%s", type(cause).__name__)
-        state = NutritionCuratorService(self.session, country=self.country, now=now).fail(decision_id, exc)
+        state = NutritionCuratorService(
+            self.session, country=self.country, now=now, provider_resolver=self.provider_resolver
+        ).fail(decision_id, exc)
         self.session.commit()
         return NutritionCuratorReport(
             1,

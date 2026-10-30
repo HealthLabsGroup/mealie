@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
@@ -11,7 +11,6 @@ import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
 from mealie.db.models.healthlabs import (
     HealthLabsCapabilityGrant,
     HealthLabsFoodMatch,
@@ -39,6 +38,11 @@ from mealie.services.healthlabs.nutrition_curator_identity_service import (
 )
 from mealie.services.healthlabs.nutrition_curator_prompt import PROMPT_VERSION, NutritionCuratorPrompt
 from mealie.services.healthlabs.nutrition_fingerprint_service import NutritionFingerprintService
+from mealie.services.healthlabs.nutrition_provider_resolution import (
+    CuratorProviderResolver,
+    ResolvedCuratorProvider,
+    resolve_default_provider,
+)
 from mealie.services.healthlabs.nutrition_service import NutritionConflict, NutritionService
 
 PROMPT_NAME = "healthlabs.nutrition-curator"
@@ -52,7 +56,7 @@ _USAGE_KEYS = frozenset({"input_tokens", "cached_input_tokens", "output_tokens"}
 class StartedCuratorDecision:
     decision_id: UUID
     agent_user_id: UUID
-    provider: AIProviderOut
+    provider: AIProviderOut = field(repr=False)
     prompt_name: str
     prompt_payload: str
     response_schema: type[NutritionCuratorProviderDecision]
@@ -65,8 +69,16 @@ class FinalizedCuratorDecision:
 
 
 class NutritionCuratorService:
-    def __init__(self, session: Session, *, country: str = "GB", now: datetime | None = None) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        country: str = "GB",
+        now: datetime | None = None,
+        provider_resolver: CuratorProviderResolver | None = None,
+    ) -> None:
         self.session = session
+        self.provider_resolver = provider_resolver or resolve_default_provider
         self.country = country.strip().upper()
         if not self.country:
             raise ValueError("country is required")
@@ -75,6 +87,8 @@ class NutritionCuratorService:
     def start(self, work_id: UUID) -> StartedCuratorDecision | FinalizedCuratorDecision | None:
         initial = self.session.get(HealthLabsNutritionWork, work_id)
         if initial is None or initial.state != "review_required":
+            return None
+        if self._provider(initial.group_id) is None:
             return None
         agent = NutritionCuratorIdentityService(self.session).get_or_create(initial.group_id)
 
@@ -125,7 +139,7 @@ class NutritionCuratorService:
             confidence=0 if empty or reuse_conflict else None,
             runner_up_confidence=0 if empty or reuse_conflict else None,
             reason_code="insufficient_candidates" if empty else "reuse_conflict" if reuse_conflict else None,
-            provider_id=provider.id,
+            provider_id=provider.audit_provider_id,
             provider_name=provider.name,
             provider_model=provider.model,
             prompt_version=DECISION_VERSION,
@@ -190,7 +204,7 @@ class NutritionCuratorService:
     def _candidate_set(
         self,
         work: HealthLabsNutritionWork,
-        provider: AIProvider,
+        provider: ResolvedCuratorProvider,
     ) -> NutritionCuratorCandidateSet | None:
         candidate_set = NutritionCuratorCandidateService(
             self.session,
@@ -510,16 +524,11 @@ class NutritionCuratorService:
         ).current_work_input(work)
         return current is not None and current == work.input_sha256
 
-    def _provider(self, group_id: UUID) -> AIProvider | None:
-        settings = self.session.scalar(sa.select(AIProviderSettings).where(AIProviderSettings.group_id == group_id))
-        if settings is None or settings.default_provider_id is None:
+    def _provider(self, group_id: UUID) -> ResolvedCuratorProvider | None:
+        provider = self.provider_resolver(self.session, group_id)
+        if provider is not None and provider.group_id != group_id:
             return None
-        return self.session.scalar(
-            sa.select(AIProvider).where(
-                AIProvider.id == settings.default_provider_id,
-                AIProvider.settings_id == settings.id,
-            )
-        )
+        return provider
 
     def _agent_is_active(self, user_id: UUID, group_id: UUID) -> bool:
         user = self.session.get(User, user_id)
@@ -565,13 +574,13 @@ class NutritionCuratorService:
     def _started(
         decision: HealthLabsNutritionCuratorDecision,
         agent: PrivateUser,
-        provider: AIProvider,
+        provider: ResolvedCuratorProvider,
         candidate_set: NutritionCuratorCandidateSet,
     ) -> StartedCuratorDecision:
         return StartedCuratorDecision(
             decision_id=decision.id,
             agent_user_id=agent.id,
-            provider=AIProviderOut.model_validate(provider),
+            provider=provider.transport(),
             prompt_name=PROMPT_NAME,
             prompt_payload=NutritionCuratorPrompt.input(candidate_set),
             response_schema=NutritionCuratorProviderDecision,

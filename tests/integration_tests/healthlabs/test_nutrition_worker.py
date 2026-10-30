@@ -1592,3 +1592,52 @@ def test_provider_failures_retry_after_five_and_thirty_minutes_then_stop(
     work = fail_at(retry_now + timedelta(minutes=35))
     assert (work.state, work.attempt_count, work.last_error) == ("failed", 3, "ValueError")
     assert "raw provider response" not in json.dumps(work.result)
+
+
+def test_runtime_reconciliation_parser_transport_and_suggestion_audit(unique_user_fn_scoped: TestUser, monkeypatch):
+    from mealie.schema.openai.recipe_ingredient import OpenAIIngredient, OpenAIIngredients
+    from mealie.services.healthlabs.nutrition_provider_resolution import SessionProviderResolver
+    from mealie.services.openai import OpenAIService
+
+    user = unique_user_fn_scoped
+    ingredient = _recipe_ingredients(user, ["a dash of mystery ingredient"])[0]
+    identity = uuid4()
+    resolver = SessionProviderResolver(
+        identity_ids={user.group_id: identity},
+        name="oai-kensai-prod",
+        base_url="https://azure.example/openai/v1",
+        model="gpt-5.6-sol",
+        credential=lambda: "fake-session-secret",
+    )
+    seen = []
+
+    async def complete(self, prompt, message, *, provider, request_guard, usage_callback, **kwargs):
+        assert provider.id == identity
+        assert provider.api_key == "fake-session-secret"
+        assert request_guard(1, 256)
+        usage_callback({"input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1})
+        seen.append(provider.model)
+        return OpenAIIngredients(ingredients=[OpenAIIngredient(quantity=1, unit="dash", food="mystery", note="")])
+
+    monkeypatch.setattr(OpenAIService, "get_response", complete)
+    worker = NutritionReconciliationWorker(
+        user.repos.session,
+        group_id=user.group_id,
+        now=NOW,
+        provider_resolver=resolver,
+        provider_daily_request_limit=10,
+        **PROVIDER_BUDGET,
+    )
+    asyncio.run(worker.run())
+    work = user.repos.session.scalar(
+        sa.select(HealthLabsNutritionWork).where(
+            HealthLabsNutritionWork.group_id == user.group_id,
+            HealthLabsNutritionWork.target_id == str(ingredient.id),
+            HealthLabsNutritionWork.kind == "ingredient_structure",
+        )
+    )
+    assert seen == ["gpt-5.6-sol"]
+    assert work.state == "review_required"
+    assert work.result["executionProvider"]["id"] == str(identity)
+    assert work.result["executionProvider"]["model"] == "gpt-5.6-sol"
+    assert "fake-session-secret" not in repr(work.result)

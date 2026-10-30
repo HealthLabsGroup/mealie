@@ -607,3 +607,360 @@ def test_budget_exhaustion_defers_without_consuming_attempt(
         sa.select(HealthLabsNutritionProviderUsage).where(HealthLabsNutritionProviderUsage.usage_date == NOW.date())
     )
     assert usage is not None and usage.request_count == initial_request_count
+
+
+def test_session_override_without_default_is_scoped_truthful_and_memory_only(
+    unique_user_fn_scoped: TestUser,
+    curator_settings,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    from mealie.services.healthlabs.nutrition_provider_resolution import SessionProviderResolver
+
+    user = unique_user_fn_scoped
+    _, nutrient_food, work = _food_work(user, provider=False)
+    identity = uuid4()
+    resolver = SessionProviderResolver(
+        identity_ids={user.group_id: identity},
+        name="oai-kensai-prod",
+        base_url="https://azure.example/openai/v1",
+        model="gpt-5.6-sol",
+        credential=lambda: "fake-session-secret",
+    )
+    statements = []
+
+    def capture(_conn, _cursor, statement, parameters, _context, _many):
+        statements.append((statement, parameters))
+
+    engine = user.repos.session.get_bind()
+    sa.event.listen(engine, "before_cursor_execute", capture)
+    calls = []
+    _install_success(monkeypatch, calls)
+    original = OpenAIService.get_response
+
+    async def inspect_transport(self, *args, provider, **kwargs):
+        assert provider.id == identity
+        assert provider.model == "gpt-5.6-sol"
+        assert provider.base_url == "https://azure.example/openai/v1"
+        assert provider.api_key == "fake-session-secret"
+        return await original(self, *args, provider=provider, **kwargs)
+
+    monkeypatch.setattr(OpenAIService, "get_response", inspect_transport)
+    try:
+        worker = NutritionCuratorWorker(
+            user.repos.session, now=NOW + timedelta(days=365), provider_resolver=resolver, group_ids={user.group_id}
+        )
+        assert work.id in worker.work_ids()
+        assert (
+            NutritionCuratorWorker(
+                user.repos.session, now=NOW + timedelta(days=365), provider_resolver=resolver, group_ids={uuid4()}
+            ).work_ids()
+            == []
+        )
+        report = worker.run_once()
+        assert report.approved == 1
+        decision = user.repos.session.scalar(
+            sa.select(HealthLabsNutritionCuratorDecision).where(HealthLabsNutritionCuratorDecision.work_id == work.id)
+        )
+        assert decision.provider_id is None
+        assert decision.provider_name == "oai-kensai-prod"
+        assert decision.provider_model == "gpt-5.6-sol"
+        assert len(calls) == 1
+        assert "fake-session-secret" not in repr(statements) + caplog.text + repr(decision.candidate_snapshot)
+        assert (
+            user.repos.session.scalar(
+                sa.select(sa.func.count(AIProvider.id))
+                .join(AIProviderSettings, AIProvider.settings_id == AIProviderSettings.id)
+                .where(AIProviderSettings.group_id == user.group_id)
+            )
+            == 0
+        )
+    finally:
+        sa.event.remove(engine, "before_cursor_execute", capture)
+
+
+@pytest.mark.parametrize("change", ["model", "identity", "work_input", "default_path"])
+def test_runtime_apply_rejects_changed_identity_or_stale_work(unique_user_fn_scoped: TestUser, change: str):
+    from mealie.db.models.healthlabs import HealthLabsFoodMatch
+    from mealie.services.healthlabs.nutrition_curator_service import StartedCuratorDecision
+    from mealie.services.healthlabs.nutrition_provider_resolution import SessionProviderResolver
+
+    user = unique_user_fn_scoped
+    food, nutrient_food, work = _food_work(user, provider=False)
+    identity = uuid4()
+    values = {
+        "identity_ids": {user.group_id: identity},
+        "name": "oai-kensai-prod",
+        "base_url": "https://azure.example/openai/v1",
+        "model": "gpt-5.6-sol",
+        "credential": lambda: "fake-session-secret",
+    }
+    service = NutritionCuratorService(user.repos.session, now=NOW, provider_resolver=SessionProviderResolver(**values))
+    started = service.start(work.id)
+    assert isinstance(started, StartedCuratorDecision)
+    user.repos.session.commit()
+    response = NutritionCuratorProviderDecision(
+        decision="select",
+        kind="food_match",
+        nutrient_food_id=nutrient_food.id,
+        confidence=0.99,
+        runner_up_confidence=0.1,
+        reason_code="name_and_context_match",
+        rationale="Supplied candidate.",
+    )
+    if change == "model":
+        values["model"] = "other/model"
+    elif change == "identity":
+        values["identity_ids"] = {user.group_id: uuid4()}
+    elif change == "work_input":
+        work.input_sha256 = "0" * 64
+        user.repos.session.commit()
+    final_resolver = None if change == "default_path" else SessionProviderResolver(**values)
+    finalizer = NutritionCuratorService(user.repos.session, now=NOW, provider_resolver=final_resolver)
+    assert finalizer.apply(started.decision_id, response, {}) == "insufficient_evidence"
+    user.repos.session.commit()
+    assert (
+        user.repos.session.scalar(
+            sa.select(HealthLabsFoodMatch).where(HealthLabsFoodMatch.ingredient_food_id == food.id)
+        )
+        is None
+    )
+
+
+def test_missing_session_key_or_foreign_group_cannot_create_decision_or_agent(unique_user_fn_scoped: TestUser):
+    from mealie.services.healthlabs.nutrition_provider_resolution import SessionProviderResolver
+
+    user = unique_user_fn_scoped
+    _, _, work = _food_work(user, provider=False)
+    for groups, key in [({uuid4(): uuid4()}, "fake-session-secret"), ({user.group_id: uuid4()}, "")]:
+        resolver = SessionProviderResolver(
+            identity_ids=groups,
+            name="oai-kensai-prod",
+            base_url="https://azure.example/openai/v1",
+            model="gpt-5.6-sol",
+            credential=lambda key=key: key,
+        )
+        service = NutritionCuratorService(user.repos.session, now=NOW, provider_resolver=resolver)
+        if key:
+            assert service.start(work.id) is None
+        else:
+            with pytest.raises(ValueError, match="credential unavailable"):
+                service.start(work.id)
+    assert (
+        user.repos.session.scalar(
+            sa.select(HealthLabsNutritionCuratorDecision.id).where(
+                HealthLabsNutritionCuratorDecision.work_id == work.id
+            )
+        )
+        is None
+    )
+    assert (
+        user.repos.session.scalar(
+            sa.select(User.id).where(User.group_id == user.group_id, User.user_type == UserType.AGENT)
+        )
+        is None
+    )
+
+
+def test_session_manifest_dry_run_respects_work_bound_and_needs_no_key(
+    unique_user_fn_scoped: TestUser,
+    curator_settings,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import asyncio
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    path = Path(__file__).parents[3] / "scripts/healthlabs/run-session-nutrition-curator.py"
+    spec = importlib.util.spec_from_file_location("session_curator_operator", path)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    user = unique_user_fn_scoped
+    _, _, work = _food_work(user, provider=False)
+    monkeypatch.delenv("FAKE_SESSION_TEST_KEY", raising=False)
+    manifest = module.SessionManifest(
+        identity_ids={user.group_id: uuid4()},
+        work_ids=[work.id, work.id, uuid4()],
+        name="oai-kensai-prod",
+        base_url="https://azure.example/openai/v1",
+        model="gpt-5.6-sol",
+    )
+    counts = asyncio.run(module.run_manifest(manifest, credential_env="FAKE_SESSION_TEST_KEY", apply=False, max_work=1))
+    assert counts == {"eligible": 1, "claimed": 0, "approved": 0, "insufficient_evidence": 0, "failed": 0}
+    assert (
+        user.repos.session.scalar(
+            sa.select(HealthLabsNutritionCuratorDecision.id).where(
+                HealthLabsNutritionCuratorDecision.work_id == work.id
+            )
+        )
+        is None
+    )
+    with pytest.raises(ValueError, match="credential unavailable"):
+        asyncio.run(module.run_manifest(manifest, credential_env="FAKE_SESSION_TEST_KEY", apply=True, max_work=1))
+    with pytest.raises(ValueError, match="max_work must be positive"):
+        asyncio.run(module.run_manifest(manifest, credential_env="FAKE_SESSION_TEST_KEY", apply=False, max_work=0))
+
+
+def _legacy_provider_context(provider):
+    return {
+        "id": str(provider.id),
+        "name": provider.name,
+        "baseUrl": provider.base_url,
+        "model": provider.model,
+        "timeout": provider.timeout,
+        "headers": sorted(
+            (item.key_name or "", item.update_at.isoformat() if item.update_at else "")
+            for item in provider.request_headers
+        ),
+        "params": sorted(
+            (item.key_name or "", item.update_at.isoformat() if item.update_at else "")
+            for item in provider.request_params
+        ),
+    }
+
+
+@pytest.mark.parametrize("outcome", ["insufficient_evidence", "failed", "pending", "approved_reuse"])
+def test_persisted_legacy_hash_preserves_decisions_and_retry_timing(
+    unique_user_fn_scoped: TestUser,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+):
+    from mealie.db.models.group.ai_providers import AIProviderHeaders, AIProviderParams
+    from mealie.services.healthlabs.nutrition_curator_service import FinalizedCuratorDecision, StartedCuratorDecision
+    from mealie.services.healthlabs.nutrition_provider_resolution import ResolvedCuratorProvider
+
+    user = unique_user_fn_scoped
+    _, food, unit, work = _ingredient_work(user)
+    provider = user.repos.session.scalar(
+        sa.select(AIProvider)
+        .join(AIProviderSettings, AIProvider.settings_id == AIProviderSettings.id)
+        .where(AIProviderSettings.group_id == user.group_id, AIProvider.id == AIProviderSettings.default_provider_id)
+    )
+    provider.request_headers.append(AIProviderHeaders("X-Client", "curator"))
+    provider.request_params.append(AIProviderParams("temperature", "0"))
+    user.repos.session.commit()
+    work.input_sha256 = NutritionFingerprintService(
+        user.repos.session, country="GB", provider_enabled=True
+    ).current_work_input(work)
+    user.repos.session.commit()
+    second_work = None
+    if outcome == "approved_reuse":
+        _, _, _, second_work = _ingredient_work(user, provider=False, food=food, unit=unit)
+    legacy_context = _legacy_provider_context(provider)
+    with monkeypatch.context() as old_code:
+        old_code.setattr(ResolvedCuratorProvider, "identity_context", lambda self: legacy_context)
+        service = NutritionCuratorService(user.repos.session, now=NOW)
+        started = service.start(work.id)
+        assert isinstance(started, StartedCuratorDecision)
+        if outcome in {"failed", "pending"}:
+            assert service.fail(started.decision_id, RuntimeError("offline failure")) == "pending"
+            user.repos.session.commit()
+            if outcome == "failed":
+                for due in (NOW + timedelta(minutes=5), NOW + timedelta(minutes=35)):
+                    retry_service = NutritionCuratorService(user.repos.session, now=due)
+                    retry = retry_service.start(work.id)
+                    assert retry.decision_id == started.decision_id
+                    retry_service.fail(retry.decision_id, RuntimeError("offline failure"))
+                    user.repos.session.commit()
+        else:
+            response = NutritionCuratorProviderDecision(
+                decision="select" if outcome == "approved_reuse" else "insufficient_evidence",
+                kind="ingredient_structure",
+                food_id=food.id if outcome == "approved_reuse" else None,
+                unit_id=unit.id if outcome == "approved_reuse" else None,
+                confidence=0.99 if outcome == "approved_reuse" else 0,
+                runner_up_confidence=0,
+                reason_code="name_and_context_match" if outcome == "approved_reuse" else "insufficient_candidates",
+                rationale="Supplied existing candidates only.",
+            )
+            assert service.apply(started.decision_id, response, {}) == (
+                "approved" if outcome == "approved_reuse" else "insufficient_evidence"
+            )
+            user.repos.session.commit()
+    upgraded = NutritionCuratorService(user.repos.session, now=NOW + timedelta(minutes=1))
+    if outcome == "approved_reuse":
+        reused = upgraded.start(second_work.id)
+        assert isinstance(reused, FinalizedCuratorDecision) and reused.state == "approved"
+        decision = user.repos.session.get(HealthLabsNutritionCuratorDecision, reused.decision_id)
+        assert decision.reused_from_decision_id == started.decision_id
+    else:
+        assert upgraded.start(work.id) is None
+        decision = user.repos.session.get(HealthLabsNutritionCuratorDecision, started.decision_id)
+        assert decision.state == outcome
+        assert decision.attempt_count == (3 if outcome == "failed" else 1)
+        if outcome == "pending":
+            assert decision.next_attempt_at == NOW + timedelta(minutes=5)
+            user.repos.session.commit()
+            retry = NutritionCuratorService(user.repos.session, now=NOW + timedelta(minutes=5)).start(work.id)
+            assert isinstance(retry, StartedCuratorDecision) and retry.decision_id == started.decision_id
+    user.repos.session.commit()
+
+
+@pytest.mark.parametrize("prefix_state", ["insufficient_evidence", "running", "pending"])
+def test_session_manifest_advances_past_unclaimable_prefix(
+    unique_user_fn_scoped: TestUser,
+    curator_settings,
+    monkeypatch: pytest.MonkeyPatch,
+    prefix_state: str,
+):
+    import asyncio
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    path = Path(__file__).parents[3] / "scripts/healthlabs/run-session-nutrition-curator.py"
+    spec = importlib.util.spec_from_file_location("session_curator_resume_operator", path)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    user = unique_user_fn_scoped
+    works = [_food_work(user, provider=False)[2] for _ in range(3)]
+    fingerprints = NutritionFingerprintService(user.repos.session, country="GB", provider_enabled=True)
+    for work in works:
+        work.input_sha256 = fingerprints.current_work_input(work)
+    user.repos.session.commit()
+    monkeypatch.setenv("FAKE_SESSION_RESUME_KEY", "fake-session-secret")
+    manifest = module.SessionManifest(
+        identity_ids={user.group_id: uuid4()},
+        work_ids=[work.id for work in works],
+        name="oai-kensai-prod",
+        base_url="https://azure.example/openai/v1",
+        model="gpt-5.6-sol",
+    )
+    now = datetime.now(UTC)
+    service = NutritionCuratorService(
+        user.repos.session, now=now, provider_resolver=manifest.resolver("FAKE_SESSION_RESUME_KEY")
+    )
+    started = service.start(works[0].id)
+    if prefix_state == "insufficient_evidence":
+        response = NutritionCuratorProviderDecision(
+            decision="insufficient_evidence",
+            kind="food_match",
+            confidence=0,
+            runner_up_confidence=0,
+            reason_code="insufficient_candidates",
+            rationale="No safe choice.",
+        )
+        assert service.apply(started.decision_id, response, {}) == prefix_state
+    elif prefix_state == "pending":
+        assert service.fail(started.decision_id, RuntimeError("offline failure")) == prefix_state
+    user.repos.session.commit()
+    calls = []
+    _install_success(monkeypatch, calls)
+    for index in (1, 2):
+        counts = asyncio.run(
+            module.run_manifest(manifest, credential_env="FAKE_SESSION_RESUME_KEY", apply=True, max_work=1)
+        )
+        assert counts["claimed"] == 1 and counts["approved"] == 1
+        assert len(calls) == index
+        user.repos.session.expire_all()
+        decision = user.repos.session.scalar(
+            sa.select(HealthLabsNutritionCuratorDecision).where(
+                HealthLabsNutritionCuratorDecision.work_id == works[index].id
+            )
+        )
+        assert decision.state == "approved"
+    unchanged = user.repos.session.get(HealthLabsNutritionCuratorDecision, started.decision_id)
+    assert unchanged.state == prefix_state and unchanged.attempt_count == 1

@@ -59,6 +59,7 @@ class AlchemyExporter(BaseService):
     look_for_datetime = {
         "created_at",
         "update_at",
+        "updated_at",
         "date_updated",
         "timestamp",
         "expires_at",

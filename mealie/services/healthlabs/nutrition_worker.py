@@ -11,7 +11,6 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
 from mealie.db.models._model_utils.datetime import get_utc_now
-from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
 from mealie.db.models.healthlabs import (
     HealthLabsFoodMatch,
     HealthLabsFoodMatchSuppression,
@@ -23,7 +22,9 @@ from mealie.schema.recipe import IngredientFood, IngredientUnit, RecipeIngredien
 from mealie.services.healthlabs.ingredient_structure_service import IngredientStructureService
 from mealie.services.healthlabs.nutrition_fingerprint_service import NutritionFingerprintService
 from mealie.services.healthlabs.nutrition_provider_budget import NutritionProviderBudget, ProviderReservation
+from mealie.services.healthlabs.nutrition_provider_resolution import CuratorProviderResolver, resolve_default_provider
 from mealie.services.healthlabs.nutrition_service import NutritionService
+from mealie.services.healthlabs.recipe_metadata_source_refresh import RecipeAuthorizationGuard, source_target_authorized
 from mealie.services.openai.openai import OpenAIRequestRejected
 from mealie.services.parser_services.openai.parser import OpenAIParser
 
@@ -57,6 +58,11 @@ class NutritionReconciliationWorker:
         group_id: UUID | None = None,
         now: datetime | None = None,
         should_stop: Callable[[], bool] = lambda: False,
+        provider_resolver: CuratorProviderResolver | None = None,
+        target_ids: dict[str, frozenset[str]] | None = None,
+        recipe_ids: frozenset[UUID] | None = None,
+        recipe_guard: RecipeAuthorizationGuard | None = None,
+        deterministic_only: bool = False,
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
@@ -65,6 +71,11 @@ class NutritionReconciliationWorker:
         if not (country := country.strip().upper()):
             raise ValueError("country is required")
         self.session = session
+        self.target_ids = target_ids
+        self.recipe_ids = recipe_ids
+        self.recipe_guard = recipe_guard
+        self.deterministic_only = deterministic_only
+        self.provider_resolver = provider_resolver
         self.country = country
         self.batch_size = batch_size
         self.provider_max_output_tokens = provider_max_output_tokens
@@ -108,6 +119,17 @@ class NutritionReconciliationWorker:
                 work.last_error = None
                 self.session.commit()
                 if work.state == "completed":
+                    from mealie.services.healthlabs.recipe_metadata_source_refresh import refresh_source_recipes
+
+                    refresh_source_recipes(
+                        self.session,
+                        group_id=work.group_id,
+                        kind=work.kind,
+                        target_id=work.target_id,
+                        recipe_ids=self.recipe_ids,
+                        recipe_guard=self.recipe_guard,
+                    )
+                    self.session.commit()
                     completed += 1
                 elif work.state == "review_required":
                     review_required += 1
@@ -170,6 +192,14 @@ class NutritionReconciliationWorker:
         )
         if self.group_id is not None:
             statement = statement.where(RecipeModel.group_id == self.group_id)
+        if self.target_ids is not None:
+            statement = statement.where(
+                sa.cast(RecipeIngredientModel.id, sa.String).in_(
+                    self.target_ids.get("ingredient_structure", frozenset())
+                )
+            )
+        if self.recipe_ids is not None:
+            statement = statement.where(RecipeModel.id.in_(self.recipe_ids))
         rows = self.session.execute(
             statement.order_by(
                 sa.func.coalesce(work_row.update_at, RecipeIngredientModel.update_at),
@@ -222,6 +252,21 @@ class NutritionReconciliationWorker:
         )
         if self.group_id is not None:
             statement = statement.where(IngredientFoodModel.group_id == self.group_id)
+        if self.target_ids is not None:
+            statement = statement.where(
+                IngredientFoodModel.id.in_([UUID(i) for i in self.target_ids.get("food_match", frozenset())])
+            )
+        if self.recipe_ids is not None:
+            statement = statement.where(
+                sa.select(RecipeIngredientModel.id)
+                .join(RecipeModel, RecipeModel.id == RecipeIngredientModel.recipe_id)
+                .where(
+                    RecipeIngredientModel.food_id == IngredientFoodModel.id,
+                    RecipeModel.id.in_(self.recipe_ids),
+                    RecipeModel.group_id == IngredientFoodModel.group_id,
+                )
+                .exists()
+            )
         rows = self.session.execute(
             statement.order_by(
                 sa.func.coalesce(work_row.update_at, IngredientFoodModel.update_at),
@@ -266,6 +311,12 @@ class NutritionReconciliationWorker:
         )
         if self.group_id is not None:
             statement = statement.where(RecipeModel.group_id == self.group_id)
+        if self.target_ids is not None:
+            statement = statement.where(
+                sa.cast(RecipeIngredientModel.id, sa.String).in_(self.target_ids.get("portion_resolution", frozenset()))
+            )
+        if self.recipe_ids is not None:
+            statement = statement.where(RecipeModel.id.in_(self.recipe_ids))
         rows = self.session.execute(
             statement.order_by(
                 sa.func.coalesce(work_row.update_at, RecipeIngredientModel.update_at),
@@ -290,6 +341,15 @@ class NutritionReconciliationWorker:
         work: HealthLabsNutritionWork | None = None,
         preserve_active_claim: bool = True,
     ) -> int:
+        if not source_target_authorized(
+            self.session,
+            group_id=group_id,
+            kind=kind,
+            target_id=target_id,
+            recipe_ids=self.recipe_ids,
+            recipe_guard=self.recipe_guard,
+        ):
+            return 0
         work = work or self._work(kind, target_id)
         if work is None:
             self.session.add(
@@ -335,7 +395,7 @@ class NutritionReconciliationWorker:
                 ),
             ),
         )
-        statement = sa.select(HealthLabsNutritionWork.id).where(due)
+        statement = sa.select(HealthLabsNutritionWork.id).where(due, self._target_scope())
         if self.group_id is not None:
             statement = statement.where(HealthLabsNutritionWork.group_id == self.group_id)
         return list(
@@ -349,6 +409,16 @@ class NutritionReconciliationWorker:
         )
 
     def _claim(self, work_id: UUID) -> bool:
+        work = self.session.get(HealthLabsNutritionWork, work_id)
+        if work is None or not source_target_authorized(
+            self.session,
+            group_id=work.group_id,
+            kind=work.kind,
+            target_id=work.target_id,
+            recipe_ids=self.recipe_ids,
+            recipe_guard=self.recipe_guard,
+        ):
+            return False
         claim_now = self._current_time()
         due = sa.and_(
             HealthLabsNutritionWork.id == work_id,
@@ -363,7 +433,7 @@ class NutritionReconciliationWorker:
         )
         claimed = self.session.execute(
             sa.update(HealthLabsNutritionWork)
-            .where(due)
+            .where(due, self._target_scope())
             .values(state="running", lease_expires_at=claim_now + LEASE_DURATION)
         ).rowcount
         self.session.commit()
@@ -394,16 +464,19 @@ class NutritionReconciliationWorker:
             work.state = "completed"
             work.result = None
             return
-        if not self.provider_enabled:
+        if not self.provider_enabled or self.deterministic_only:
             work.state = "review_required"
             work.result = {"reason": "provider_disabled"}
             return
-        if not self._provider_available(work.group_id):
+        provider = (self.provider_resolver or resolve_default_provider)(self.session, work.group_id)
+        if provider is None or provider.group_id != work.group_id:
             work.state = "review_required"
             work.result = {"reason": "provider_unconfigured"}
             return
         source = (ingredient.original_text or "").strip() or (ingredient.note or "").strip()
         parser = OpenAIParser(work.group_id, self.session, get_locale_provider())
+        if self.provider_resolver is not None:
+            parser.resolved_provider = provider
         parser.data_matcher = service.matcher  # type: ignore[assignment]
         reservation: int | None = None
 
@@ -444,7 +517,9 @@ class NutritionReconciliationWorker:
             expected = (ingredient.original_text, ingredient.quantity, ingredient.note, ingredient.title)
             if self._apply_provider_ingredient(ingredient, value, expected):
                 work.state = "completed"
-                work.result = None
+                work.result = (
+                    {"executionProvider": provider.identity_context()} if self.provider_resolver is not None else None
+                )
             else:
                 self._requeue_ingredient(work, ingredient)
             return
@@ -459,6 +534,9 @@ class NutritionReconciliationWorker:
                 "note": (suggestion.note or "").strip(),
             },
         }
+
+        if self.provider_resolver is not None:
+            work.result = {**work.result, "executionProvider": provider.identity_context()}
 
     @staticmethod
     def _apply_ingredient(ingredient: RecipeIngredientModel, value: RecipeIngredient) -> None:
@@ -543,20 +621,6 @@ class NutritionReconciliationWorker:
             fingerprint,
             work=work,
             preserve_active_claim=False,
-        )
-
-    def _provider_available(self, group_id: UUID) -> bool:
-        settings = self.session.scalar(sa.select(AIProviderSettings).where(AIProviderSettings.group_id == group_id))
-        if settings is None or settings.default_provider_id is None:
-            return False
-        return (
-            self.session.scalar(
-                sa.select(AIProvider.id).where(
-                    AIProvider.id == settings.default_provider_id,
-                    AIProvider.settings_id == settings.id,
-                )
-            )
-            is not None
         )
 
     def _reserve_provider_request(
@@ -767,6 +831,7 @@ class NutritionReconciliationWorker:
             .exists()
         )
         statement = sa.select(HealthLabsNutritionWork.id).where(
+            self._target_scope(),
             ~active_lease,
             sa.or_(
                 sa.and_(
@@ -784,12 +849,41 @@ class NutritionReconciliationWorker:
                 statement.order_by(HealthLabsNutritionWork.update_at, HealthLabsNutritionWork.id).limit(self.batch_size)
             )
         )
+        if self.recipe_guard is not None:
+            stale_ids = [
+                work_id
+                for work_id in stale_ids
+                if (work := self.session.get(HealthLabsNutritionWork, work_id)) is not None
+                and source_target_authorized(
+                    self.session,
+                    group_id=work.group_id,
+                    kind=work.kind,
+                    target_id=work.target_id,
+                    recipe_ids=self.recipe_ids,
+                    recipe_guard=self.recipe_guard,
+                )
+            ]
         if stale_ids:
             self.session.execute(
                 sa.delete(HealthLabsNutritionWork)
                 .where(HealthLabsNutritionWork.id.in_(stale_ids))
                 .execution_options(synchronize_session=False)
             )
+
+    def _target_scope(self) -> sa.ColumnElement[bool]:
+        from mealie.services.healthlabs.recipe_metadata_source_refresh import source_work_recipe_scope
+
+        targets = (
+            sa.true()
+            if self.target_ids is None
+            else sa.or_(
+                *(
+                    sa.and_(HealthLabsNutritionWork.kind == kind, HealthLabsNutritionWork.target_id.in_(values))
+                    for kind, values in self.target_ids.items()
+                )
+            )
+        )
+        return sa.and_(targets, source_work_recipe_scope(self.recipe_ids))
 
     def _current_time(self) -> datetime:
         return self._fixed_now or get_utc_now()

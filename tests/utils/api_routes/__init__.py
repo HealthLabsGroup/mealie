@@ -99,6 +99,8 @@ healthlabs_v1_import_drafts = "/api/healthlabs/v1/import-drafts"
 """`/api/healthlabs/v1/import-drafts`"""
 healthlabs_v1_nutrition_foods = "/api/healthlabs/v1/nutrition/foods"
 """`/api/healthlabs/v1/nutrition/foods`"""
+healthlabs_v1_nutrition_ingredients_parse = "/api/healthlabs/v1/nutrition/ingredients/parse"
+"""`/api/healthlabs/v1/nutrition/ingredients/parse`"""
 healthlabs_v1_nutrition_source_foods = "/api/healthlabs/v1/nutrition/source-foods"
 """`/api/healthlabs/v1/nutrition/source-foods`"""
 healthlabs_v1_nutrition_sources = "/api/healthlabs/v1/nutrition/sources"
@@ -412,6 +414,11 @@ def healthlabs_v1_nutrition_foods_food_id_match(food_id):
 def healthlabs_v1_nutrition_foods_food_id_portions(food_id):
     """`/api/healthlabs/v1/nutrition/foods/{food_id}/portions`"""
     return f"{prefix}/healthlabs/v1/nutrition/foods/{food_id}/portions"
+
+
+def healthlabs_v1_nutrition_source_foods_food_id(food_id):
+    """`/api/healthlabs/v1/nutrition/source-foods/{food_id}`"""
+    return f"{prefix}/healthlabs/v1/nutrition/source-foods/{food_id}"
 
 
 def healthlabs_v1_operations_idempotency_key(idempotency_key):

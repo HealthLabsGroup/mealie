@@ -6,6 +6,7 @@ from mealie.core import root_logger
 from mealie.core.config import get_app_settings
 from mealie.db.db_setup import session_context
 from mealie.services.healthlabs.nutrition_worker import NutritionReconciliationWorker
+from mealie.services.healthlabs.recipe_metadata_scheduler import RecipeMetadataScheduler
 
 logger = root_logger.get_logger()
 _run_lock = Lock()
@@ -24,14 +25,23 @@ def resume_nutrition_reconciliation() -> None:
 def reconcile_healthlabs_nutrition() -> None:
     if _shutdown_requested.is_set():
         return
+    settings = get_app_settings()
+    if not settings.HEALTHLABS_NUTRITION_RECONCILIATION_ENABLED:
+        return
     if not _run_lock.acquire(blocking=False):
         return
 
     try:
-        settings = get_app_settings()
         deadline = monotonic() + MAX_TICK_SECONDS
         processed = completed = review_required = failed = 0
         with session_context() as session:
+            # Always advance metadata before nutrition can exhaust the four-minute
+            # tick. This enqueue-only page runs every five minutes, even at zero budget.
+            try:
+                RecipeMetadataScheduler(session).scan_page(page_size=20, max_seconds=15)
+            except Exception:
+                session.rollback()
+                logger.warning("Recipe metadata scan deferred to next periodic tick")
             while True:
                 report = asyncio.run(
                     NutritionReconciliationWorker(

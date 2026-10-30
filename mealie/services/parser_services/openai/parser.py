@@ -1,5 +1,6 @@
 import json
 from collections.abc import Callable
+from uuid import UUID
 
 from rapidfuzz import fuzz
 
@@ -12,6 +13,7 @@ from mealie.schema.recipe.recipe_ingredient import (
     RecipeIngredient,
     RecipeIngredientSubstitution,
 )
+from mealie.services.healthlabs.nutrition_provider_resolution import ResolvedCuratorProvider
 from mealie.services.openai import OpenAIDataInjection, OpenAIService
 
 from .._base import ABCIngredientParser
@@ -19,6 +21,7 @@ from ..parser_utils import extract_quantity_from_string
 
 
 class OpenAIParser(ABCIngredientParser):
+    resolved_provider: ResolvedCuratorProvider | None = None
     max_completion_tokens: int | None = None
     request_guard: Callable[[int, int], bool] | None = None
     last_usage: dict[str, int] | None = None
@@ -165,6 +168,8 @@ class OpenAIParser(ABCIngredientParser):
         return service.get_prompt("recipes.parse-recipe-ingredients", data_injections=data_injections)
 
     async def _parse(self, ingredients: list[str]) -> OpenAIIngredients:
+        if self.resolved_provider is not None and self.resolved_provider.group_id != UUID(str(self.group_id)):
+            raise ValueError("provider group mismatch")
         service = OpenAIService(self.repos)
         prompt = self._get_prompt(service)
         self.last_usage = None
@@ -173,6 +178,7 @@ class OpenAIParser(ABCIngredientParser):
             prompt,
             json.dumps(ingredients, separators=(",", ":")),
             response_schema=OpenAIIngredients,
+            provider=self.resolved_provider.transport() if self.resolved_provider is not None else None,
             max_completion_tokens=self.max_completion_tokens,
             request_guard=self.request_guard,
             usage_callback=self._capture_usage if self.request_guard is not None else None,

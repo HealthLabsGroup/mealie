@@ -5,14 +5,26 @@ from decimal import Decimal
 from threading import Event, Thread
 from types import SimpleNamespace
 
+import pytest
+
 from mealie import app
 from mealie.services.scheduler import SchedulerRegistry, tasks
 
 task_module = importlib.import_module("mealie.services.scheduler.tasks.reconcile_healthlabs_nutrition")
 
 
+@pytest.fixture(autouse=True)
+def isolate_metadata_scan(monkeypatch):
+    # These tests exercise nutrition drain timing with a deliberately non-DB
+    # session. Metadata's real SQL page/hook is covered by its integration tests.
+    monkeypatch.setattr(
+        task_module, "RecipeMetadataScheduler", lambda session: SimpleNamespace(scan_page=lambda **kwargs: None)
+    )
+
+
 def _settings(request_limit: int):
     return SimpleNamespace(
+        HEALTHLABS_NUTRITION_RECONCILIATION_ENABLED=True,
         HEALTHLABS_NUTRITION_PROVIDER_DAILY_REQUEST_LIMIT=request_limit,
         HEALTHLABS_NUTRITION_PROVIDER_DAILY_BUDGET_USD=Decimal("1"),
         HEALTHLABS_NUTRITION_PROVIDER_INPUT_USD_PER_MILLION_TOKENS=Decimal("1"),
@@ -249,3 +261,24 @@ def test_task_is_registered_minutely(monkeypatch):
         SchedulerRegistry._daily[:] = daily
         SchedulerRegistry._hourly[:] = hourly
         SchedulerRegistry._minutely[:] = minutely
+
+
+def test_periodic_reconciliation_pause_prevents_scan_sessions_and_worker(monkeypatch):
+    settings = _settings(10)
+    settings.HEALTHLABS_NUTRITION_RECONCILIATION_ENABLED = False
+    monkeypatch.setattr(task_module, "get_app_settings", lambda: settings)
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        calls.append("called")
+        raise AssertionError("paused callback must not open sessions or start work")
+
+    monkeypatch.setattr(task_module, "session_context", forbidden)
+    monkeypatch.setattr(task_module, "RecipeMetadataScheduler", forbidden)
+    monkeypatch.setattr(task_module, "NutritionReconciliationWorker", forbidden)
+    task_module.resume_nutrition_reconciliation()
+    task_module.reconcile_healthlabs_nutrition()
+    assert calls == []
+    # A disabled tick never keeps the overlap lock.
+    assert task_module._run_lock.acquire(blocking=False)
+    task_module._run_lock.release()

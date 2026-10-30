@@ -18,6 +18,7 @@ from mealie.db.models.recipe import RecipeIngredientModel
 from mealie.schema.recipe import Recipe, SaveIngredientFood, SaveIngredientUnit
 from mealie.services.healthlabs.nutrition_curator_candidates import NutritionCuratorCandidateService
 from mealie.services.healthlabs.nutrition_curator_prompt import NutritionCuratorPrompt
+from mealie.services.healthlabs.nutrition_provider_resolution import ResolvedCuratorProvider
 from tests.fixtures.fixture_users import build_unique_user
 from tests.utils import TestUser
 
@@ -150,7 +151,7 @@ def test_ingredient_candidates_put_exact_first_cap_lists_and_stay_in_group(
 
     candidates = NutritionCuratorCandidateService(user.repos.session).build(
         _work(user, "ingredient_structure", str(ingredient.id)),
-        _provider(user),
+        ResolvedCuratorProvider.from_persisted(_provider(user)),
     )
 
     assert candidates is not None
@@ -184,7 +185,7 @@ def test_ingredient_candidates_require_positive_quantity_and_exclude_ambiguous_a
     no_quantity = _ingredient(user, f"{alias} {alias}")
     candidate_set = NutritionCuratorCandidateService(user.repos.session).build(
         _work(user, "ingredient_structure", str(no_quantity.id)),
-        _provider(user),
+        ResolvedCuratorProvider.from_persisted(_provider(user)),
     )
 
     assert candidate_set is not None
@@ -193,7 +194,7 @@ def test_ingredient_candidates_require_positive_quantity_and_exclude_ambiguous_a
     positive = _ingredient(user, f"2 {alias} {alias}")
     candidate_set = NutritionCuratorCandidateService(user.repos.session).build(
         _work(user, "ingredient_structure", str(positive.id)),
-        _provider(user),
+        ResolvedCuratorProvider.from_persisted(_provider(user)),
     )
     assert candidate_set is not None
     candidate_ids = {item["id"] for values in candidate_set.prompt_payload["candidates"].values() for item in values}
@@ -220,7 +221,9 @@ def test_ingredient_candidates_use_sanitized_work_suggestion_without_exposing_no
     }
     user.repos.session.commit()
 
-    candidate_set = NutritionCuratorCandidateService(user.repos.session).build(work, _provider(user))
+    candidate_set = NutritionCuratorCandidateService(user.repos.session).build(
+        work, ResolvedCuratorProvider.from_persisted(_provider(user))
+    )
 
     assert candidate_set is not None
     assert candidate_set.prompt_payload["candidates"]["foods"][0]["id"] == str(food.id)
@@ -246,7 +249,7 @@ def test_food_candidates_are_country_preparation_scoped_capped_and_public(
 
     candidate_set = NutritionCuratorCandidateService(user.repos.session, country="GB").build(
         _work(user, "food_match", str(food.id)),
-        _provider(user),
+        ResolvedCuratorProvider.from_persisted(_provider(user)),
     )
 
     assert candidate_set is not None
@@ -276,7 +279,7 @@ def test_food_candidate_specificity_breaks_token_subset_score_ties(
 
     candidate_set = NutritionCuratorCandidateService(user.repos.session, country="GB").build(
         _work(user, "food_match", str(food.id)),
-        _provider(user),
+        ResolvedCuratorProvider.from_persisted(_provider(user)),
     )
 
     assert candidate_set is not None
@@ -351,7 +354,7 @@ def test_portion_candidates_use_current_match_and_never_expose_grams(
 
     candidate_set = NutritionCuratorCandidateService(user.repos.session).build(
         _work(user, "portion_resolution", str(ingredient.id)),
-        _provider(user),
+        ResolvedCuratorProvider.from_persisted(_provider(user)),
     )
 
     assert candidate_set is not None
@@ -396,8 +399,8 @@ def test_curator_fingerprint_covers_context_but_not_candidate_order(
     provider = _provider(user)
     service = NutritionCuratorCandidateService(user.repos.session)
 
-    baseline = service.build(work, provider)
-    repeated = service.build(work, provider)
+    baseline = service.build(work, ResolvedCuratorProvider.from_persisted(provider))
+    repeated = service.build(work, ResolvedCuratorProvider.from_persisted(provider))
     assert baseline is not None and repeated is not None
     assert repeated.curator_sha256 == baseline.curator_sha256
     assert repeated.reuse_sha256 == baseline.reuse_sha256
@@ -406,7 +409,7 @@ def test_curator_fingerprint_covers_context_but_not_candidate_order(
     other_target_payload["targetId"] = str(uuid4())
     other_curator_sha256, other_reuse_sha256 = service._fingerprints(
         work,
-        provider,
+        ResolvedCuratorProvider.from_persisted(provider),
         other_target_payload,
         baseline.snapshot,
     )
@@ -415,34 +418,42 @@ def test_curator_fingerprint_covers_context_but_not_candidate_order(
 
     provider.api_key = "rotated-offline-test-key"
     user.repos.session.commit()
-    rotated_credentials = service.build(work, provider)
+    rotated_credentials = service.build(work, ResolvedCuratorProvider.from_persisted(provider))
     assert rotated_credentials is not None and rotated_credentials.curator_sha256 == baseline.curator_sha256
 
     provider.model = "test/model-v2"
     user.repos.session.commit()
-    changed_provider = service.build(work, provider)
+    changed_provider = service.build(work, ResolvedCuratorProvider.from_persisted(provider))
     assert changed_provider is not None and changed_provider.curator_sha256 != baseline.curator_sha256
     assert changed_provider.reuse_sha256 != baseline.reuse_sha256
     provider.model = "test/model-v1"
     release.sha256 = "f" * 64
     user.repos.session.commit()
-    changed_source = service.build(work, provider)
+    changed_source = service.build(work, ResolvedCuratorProvider.from_persisted(provider))
     assert changed_source is not None and changed_source.curator_sha256 != baseline.curator_sha256
     assert changed_source.reuse_sha256 != baseline.reuse_sha256
 
     release.sha256 = original_source_sha
     user.repos.session.commit()
-    restored = NutritionCuratorCandidateService(user.repos.session).build(work, provider)
+    restored = NutritionCuratorCandidateService(user.repos.session).build(
+        work, ResolvedCuratorProvider.from_persisted(provider)
+    )
     assert restored is not None and restored.curator_sha256 == baseline.curator_sha256
     user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"catalogue {uuid4()}"))
-    changed_catalogue = NutritionCuratorCandidateService(user.repos.session).build(work, provider)
+    changed_catalogue = NutritionCuratorCandidateService(user.repos.session).build(
+        work, ResolvedCuratorProvider.from_persisted(provider)
+    )
     assert changed_catalogue is not None and changed_catalogue.curator_sha256 != restored.curator_sha256
 
     monkeypatch.setattr(NutritionCuratorPrompt, "system", staticmethod(lambda: "changed persona prompt"))
-    changed_persona = NutritionCuratorCandidateService(user.repos.session).build(work, provider)
+    changed_persona = NutritionCuratorCandidateService(user.repos.session).build(
+        work, ResolvedCuratorProvider.from_persisted(provider)
+    )
     assert changed_persona is not None and changed_persona.curator_sha256 != changed_catalogue.curator_sha256
 
     source_food.name = f"renamed {token}"
     user.repos.session.commit()
-    changed_candidates = NutritionCuratorCandidateService(user.repos.session).build(work, provider)
+    changed_candidates = NutritionCuratorCandidateService(user.repos.session).build(
+        work, ResolvedCuratorProvider.from_persisted(provider)
+    )
     assert changed_candidates is not None and changed_candidates.curator_sha256 != changed_persona.curator_sha256

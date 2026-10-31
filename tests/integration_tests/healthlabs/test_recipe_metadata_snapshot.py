@@ -98,6 +98,153 @@ def test_twenty_recipe_page_uses_one_source_scan_and_preserves_every_quantity(
         assert recipe["nutritionMetadata"]["perServing"]["proteinG"]["verified"] == pytest.approx(quantity / 10)
 
 
+def test_twenty_recipe_page_recovers_ready_metadata_after_step_reference_permutation(
+    api_client, shared_source_page, monkeypatch
+):
+    from mealie.db.models.healthlabs import HealthLabsRecipeMetadataEstimate
+    from mealie.db.models.recipe import RecipeModel
+    from mealie.db.models.recipe.ingredient import RecipeIngredientModel
+    from mealie.db.models.recipe.instruction import RecipeInstruction
+    from mealie.repos.all_repositories import get_repositories
+    from mealie.schema.recipe import Recipe
+    from mealie.services.healthlabs.nutrition_service import NutritionService
+    from mealie.services.healthlabs.recipe_api_service import RecipeApiService, _RecipeReadProjection
+
+    engine = SessionLocal.kw["bind"]
+    headers, marker, _ = shared_source_page
+    monkeypatch.setattr(metadata_module, "get_utc_now", lambda: FIXED_TIME)
+    if engine.dialect.name != "postgresql":
+        # SQLite cannot open the production PG snapshot; exercise its HTTP
+        # projection branch with the request session instead. PG uses the real
+        # read-only snapshot and cache, with the same assertions below.
+        @contextmanager
+        def projection_snapshot(service):
+            nutrition = NutritionService(service.session)
+            yield _RecipeReadProjection(
+                service.session, nutrition, metadata_module.RecipeMetadataService(service.session, nutrition=nutrition)
+            )
+
+        monkeypatch.setattr(RecipeApiService, "_projection_snapshot", projection_snapshot)
+
+    before = api_client.get("/api/healthlabs/v1/recipes", headers=headers, params={"q": marker})
+    assert before.status_code == 200, before.text
+    target_id = UUID(before.json()["items"][0]["id"])
+    with Session(engine) as setup:
+        model = setup.scalar(
+            sa.select(RecipeModel).where(RecipeModel.id == target_id).options(*Recipe.loader_options())
+        )
+        ingredient = model.recipe_ingredient[0]
+        second_ref = uuid4()
+        model.recipe_ingredient.append(
+            RecipeIngredientModel(
+                session=setup,
+                group_id=model.group_id,
+                food_id=ingredient.food_id,
+                unit_id=ingredient.unit_id,
+                quantity=100,
+                reference_id=second_ref,
+                position=len(model.recipe_ingredient),
+            )
+        )
+        model.recipe_instructions = [
+            RecipeInstruction(
+                session=setup,
+                text="Combine both ingredients",
+                ingredient_references=[{"reference_id": ingredient.reference_id}, {"reference_id": second_ref}],
+            )
+        ]
+        model.recipe_servings = 0
+        setup.commit()
+        setup.expunge_all()
+        current = get_repositories(setup, group_id=None, household_id=None).recipes.get_one(target_id, "id")
+        point_references = tuple(
+            ref.model_copy(deep=True) for ref in current.recipe_instructions[0].ingredient_references
+        )
+        inputs = metadata_module.RecipeMetadataService(setup).inputs(current)
+        payload = metadata_module.validate_plan(
+            inputs,
+            {
+                "effective_servings": 2,
+                "servings_assumption": "Two portions",
+                "ingredients": [
+                    {
+                        "reference_id": str(fact.reference_id),
+                        "effective_grams": float(fact.resolved_grams),
+                        "nutrients_per_100g": {},
+                        "rationale": "Recorded mass",
+                    }
+                    for fact in inputs.ingredients
+                ],
+                "general_metadata": {},
+            },
+            provider="test-provider",
+            model="test-model",
+        )
+        job = HealthLabsRecipeMetadataEstimate(
+            group_id=current.group_id,
+            recipe_id=target_id,
+            authoring_fingerprint=inputs.authoring_fingerprint,
+            input_fingerprint=inputs.input_fingerprint,
+            policy_version=metadata_module.POLICY_VERSION,
+            state="ready",
+            payload=payload.model_dump(mode="json"),
+            provider_name="test-provider",
+            provider_model="test-model",
+            next_attempt_at=FIXED_TIME,
+        )
+        setup.add(job)
+        setup.commit()
+        job_id, original_payload = job.id, job.payload
+        expected_fp = inputs.input_fingerprint
+
+    original_to_out = RecipeApiService.to_out
+    original_reload = RecipeApiService._reload_recipe
+    displayed_refs, reloads = [], []
+
+    def permute_list(service, recipe, *, revision=None, projection=None):
+        if projection is not None and recipe.id == target_id:
+            recipe = recipe.model_copy(deep=True)
+            recipe.recipe_instructions[0].ingredient_references = [
+                ref.model_copy(deep=True) for ref in reversed(point_references)
+            ]
+            displayed_refs[:] = [str(ref.reference_id) for ref in recipe.recipe_instructions[0].ingredient_references]
+            assert displayed_refs != [str(ref.reference_id) for ref in point_references]
+        return original_to_out(service, recipe, revision=revision, projection=projection)
+
+    def track_reload(recipe_id, projection):
+        transaction = projection.session.get_transaction()
+        connection = projection.session.get_bind()
+        if engine.dialect.name == "postgresql":
+            assert projection.session.scalar(sa.text("SHOW transaction_read_only")) == "on"
+            assert connection.get_execution_options()["isolation_level"] == "REPEATABLE READ"
+        result = original_reload(recipe_id, projection)
+        assert projection.session.get_transaction() is transaction
+        assert projection.session.get_bind() is connection
+        reloads.append(recipe_id)
+        return result
+
+    monkeypatch.setattr(RecipeApiService, "to_out", permute_list)
+    monkeypatch.setattr(RecipeApiService, "_reload_recipe", staticmethod(track_reload))
+    page = api_client.get("/api/healthlabs/v1/recipes", headers=headers, params={"q": marker})
+    assert page.status_code == 200, page.text
+    assert len(page.json()["items"]) == 20
+    projected = next(item for item in page.json()["items"] if item["id"] == str(target_id))
+    assert projected["nutritionMetadata"]["complete"] is True
+    assert projected["nutritionMetadata"]["inputFingerprint"] == expected_fp
+    assert projected["instructions"][0]["ingredientReferences"] == displayed_refs
+    assert reloads == [target_id]
+    detail = api_client.get(f"/api/healthlabs/v1/recipes/{target_id}", headers=headers)
+    assert detail.status_code == 200, detail.text
+    revision_id = detail.json()["revisionId"]
+    pinned = api_client.get(f"/api/healthlabs/v1/recipes/{target_id}/revisions/{revision_id}", headers=headers)
+    assert pinned.status_code == 200, pinned.text
+    assert reloads == [target_id]
+    with Session(engine) as verify:
+        unchanged = verify.get(HealthLabsRecipeMetadataEstimate, job_id)
+        assert unchanged.payload == original_payload
+        assert unchanged.input_fingerprint == expected_fp
+
+
 def test_source_commit_mid_page_is_visible_only_to_the_next_request(api_client, shared_source_page, monkeypatch):
     engine = _postgres_engine()
     headers, marker, source_id = shared_source_page
@@ -248,7 +395,7 @@ def test_projection_failure_rolls_back_and_closes_only_its_source_connection(
     headers, marker, _ = shared_source_page
     source_connections = []
 
-    def fail(service, recipe):
+    def fail(service, recipe, **kwargs):
         connection = service.session.get_bind()
         assert isinstance(connection, sa.engine.Connection)
         source_connections.append(connection)
@@ -483,11 +630,11 @@ def test_cross_subject_projection_failure_does_not_commit_audit_or_leak_connecti
     original = metadata_module.RecipeMetadataService.project
     source_connections = []
 
-    def fail_foreign(service, recipe):
+    def fail_foreign(service, recipe, **kwargs):
         source_connections.append(service.session.get_bind())
         if recipe.user_id == UUID(second["userId"]):
             raise ValueError("test foreign projection failure")
-        return original(service, recipe)
+        return original(service, recipe, **kwargs)
 
     monkeypatch.setattr(metadata_module.RecipeMetadataService, "project", fail_foreign)
     response = api_client.get(

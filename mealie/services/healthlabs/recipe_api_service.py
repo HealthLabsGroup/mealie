@@ -5,6 +5,7 @@ import json
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from io import BytesIO
 from uuid import UUID
 
@@ -279,7 +280,12 @@ class RecipeApiService:
             )
         calculated_nutrition = nutrition.calculate_recipe(recipe, "OTHER")
         metadata_service = projection.metadata if projection is not None else RecipeMetadataService(self.session)
-        nutrition_metadata, metadata = metadata_service.project(recipe)
+        if projection is not None:
+            nutrition_metadata, metadata = metadata_service.project(
+                recipe, reload_recipe=partial(self._reload_recipe, recipe.id, projection)
+            )
+        else:
+            nutrition_metadata, metadata = metadata_service.project(recipe)
         ingredients = [self._ingredient_out(item, nutrition_service=nutrition) for item in recipe.recipe_ingredient]
         instructions = [
             HealthLabsInstruction(
@@ -327,6 +333,22 @@ class RecipeApiService:
             nutrition_metadata=nutrition_metadata,
             metadata=metadata,
         )
+
+    @staticmethod
+    def _reload_recipe(recipe_id: UUID, projection: _RecipeReadProjection) -> Recipe | None:
+        # Refresh already-loaded associations using the exact point-read shape,
+        # within the list's existing read-only snapshot. The display DTO is kept.
+        model = (
+            projection.session.execute(
+                sa.select(RecipeModel)
+                .where(RecipeModel.id == recipe_id)
+                .options(*Recipe.loader_options())
+                .execution_options(populate_existing=True)
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
+        return Recipe.model_validate(model) if model is not None else None
 
     def _native_write(self, data: HealthLabsRecipeWrite, *, scope: HealthLabsRecipeScope) -> Recipe:
         ingredients = [

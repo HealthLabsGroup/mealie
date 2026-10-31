@@ -71,6 +71,19 @@ def fingerprint(value: Any) -> str:
     ).hexdigest()
 
 
+def _with_sorted_step_references(authoring: dict[str, Any]) -> dict[str, Any]:
+    """Compare association order without changing stored fingerprints or authored order."""
+    result = dict(authoring)
+    if isinstance(instructions := authoring.get("instructions"), list):
+        result["instructions"] = [
+            {**step, "ingredient_references": sorted(step["ingredient_references"], key=fingerprint)}
+            if isinstance(step, dict) and isinstance(step.get("ingredient_references"), list)
+            else step
+            for step in instructions
+        ]
+    return result
+
+
 def valid_number(value: Any, *, positive: bool = False) -> TypeGuard[int | float | Decimal]:
     return (
         isinstance(value, (int, float, Decimal))
@@ -1484,8 +1497,38 @@ class RecipeMetadataService:
                 continue
         return None
 
-    def project(self, recipe: Recipe) -> tuple[RecipeNutritionMetadata, RecipeGeneralMetadata]:
+    def project(
+        self, recipe: Recipe, *, reload_recipe: Callable[[], Recipe | None] | None = None
+    ) -> tuple[RecipeNutritionMetadata, RecipeGeneralMetadata]:
         inputs = self.inputs(recipe)
         for _, payload in self._ready_evidence(inputs):
             return project_metadata(inputs, payload)
+        if reload_recipe is not None and any(
+            len(step.ingredient_references) >= 2 for step in recipe.recipe_instructions or []
+        ):
+            fallback = self._reference_order_fallback(inputs, reload_recipe)
+            if fallback is not None:
+                for _, payload in self._ready_evidence(fallback):
+                    return project_metadata(fallback, payload)
         return project_metadata(inputs)
+
+    def _reference_order_fallback(
+        self, inputs: RecipeMetadataInputs, reload_recipe: Callable[[], Recipe | None]
+    ) -> RecipeMetadataInputs | None:
+        """Retry unchanged evidence when a list join permutes a step's references.
+
+        Point reads retain the original authoring fingerprint used by existing
+        jobs. Only association permutations are equivalent; ingredient/step
+        order, reference multiplicity, tenant and all authored values stay fixed.
+        """
+        reloaded = reload_recipe()
+        if reloaded is None or reloaded.id != inputs.recipe.id or reloaded.group_id != inputs.recipe.group_id:
+            return None
+        fallback = self.inputs(reloaded)
+        if fallback.authoring_fingerprint == inputs.authoring_fingerprint:
+            return None
+        if fingerprint(_with_sorted_step_references(inputs.authoring_context)) != fingerprint(
+            _with_sorted_step_references(fallback.authoring_context)
+        ):
+            return None
+        return fallback

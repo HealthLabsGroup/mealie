@@ -413,16 +413,24 @@ def test_food_apply_serializes_edit_after_fingerprint_check(
 
     def edit_before_authorize(self, food_id, *args, **kwargs):
         nonlocal blocked
-        with session_context() as concurrent:
-            concurrent.execute(sa.text("PRAGMA busy_timeout = 0"))
-            current = concurrent.get(IngredientFoodModel, food_id)
-            assert current is not None
-            current.name = f"raw beef {uuid4().hex[:8]}"
+        # Keep ownership through rollback so the timeout is restored before
+        # this connection can return to the shared pool.
+        with user.repos.session.get_bind().connect() as connection:
+            previous = connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one()
             try:
-                concurrent.commit()
-            except OperationalError:
-                blocked = True
-                concurrent.rollback()
+                connection.exec_driver_sql("PRAGMA busy_timeout = 0")
+                with Session(bind=connection) as concurrent:
+                    current = concurrent.get(IngredientFoodModel, food_id)
+                    assert current is not None
+                    current.name = f"raw beef {uuid4().hex[:8]}"
+                    try:
+                        concurrent.commit()
+                    except OperationalError:
+                        blocked = True
+                        concurrent.rollback()
+            finally:
+                connection.exec_driver_sql(f"PRAGMA busy_timeout = {previous}")
+                assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one() == previous
         return original(self, food_id, *args, **kwargs)
 
     monkeypatch.setattr(NutritionService, "_authorize_write", edit_before_authorize)

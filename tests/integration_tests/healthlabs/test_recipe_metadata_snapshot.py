@@ -143,6 +143,7 @@ def test_twenty_recipe_page_recovers_ready_metadata_after_step_reference_permuta
                 unit_id=ingredient.unit_id,
                 quantity=100,
                 reference_id=second_ref,
+                position=len(model.recipe_ingredient),
             )
         )
         model.recipe_instructions = [
@@ -156,6 +157,9 @@ def test_twenty_recipe_page_recovers_ready_metadata_after_step_reference_permuta
         setup.commit()
         setup.expunge_all()
         current = get_repositories(setup, group_id=None, household_id=None).recipes.get_one(target_id, "id")
+        point_references = tuple(
+            ref.model_copy(deep=True) for ref in current.recipe_instructions[0].ingredient_references
+        )
         inputs = metadata_module.RecipeMetadataService(setup).inputs(current)
         payload = metadata_module.validate_plan(
             inputs,
@@ -200,8 +204,11 @@ def test_twenty_recipe_page_recovers_ready_metadata_after_step_reference_permuta
     def permute_list(service, recipe, *, revision=None, projection=None):
         if projection is not None and recipe.id == target_id:
             recipe = recipe.model_copy(deep=True)
-            recipe.recipe_instructions[0].ingredient_references.reverse()
+            recipe.recipe_instructions[0].ingredient_references = [
+                ref.model_copy(deep=True) for ref in reversed(point_references)
+            ]
             displayed_refs[:] = [str(ref.reference_id) for ref in recipe.recipe_instructions[0].ingredient_references]
+            assert displayed_refs != [str(ref.reference_id) for ref in point_references]
         return original_to_out(service, recipe, revision=revision, projection=projection)
 
     def track_reload(recipe_id, projection):

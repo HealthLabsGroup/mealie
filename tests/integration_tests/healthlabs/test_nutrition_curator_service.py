@@ -24,7 +24,7 @@ from mealie.db.models.healthlabs import (
 )
 from mealie.db.models.recipe import IngredientFoodModel, RecipeIngredientModel
 from mealie.schema.healthlabs.nutrition_curator import NutritionCuratorProviderDecision
-from mealie.schema.recipe import Recipe, SaveIngredientFood, SaveIngredientUnit
+from mealie.schema.recipe import IngredientFoodSave, IngredientUnitSave, RecipeDraft
 from mealie.services.healthlabs.nutrition_curator_prompt import NutritionCuratorPrompt
 from mealie.services.healthlabs.nutrition_curator_service import NutritionCuratorService
 from mealie.services.healthlabs.nutrition_fingerprint_service import NutritionFingerprintService
@@ -113,7 +113,7 @@ def _food_case(
 ) -> tuple[AIProvider, object, HealthLabsNutrientSourceRelease, HealthLabsNutrientFood, HealthLabsNutritionWork]:
     provider = _provider(user)
     food = user.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=user.group_id, name=f"raw apple {uuid4().hex[:8]}")
+        IngredientFoodSave(group_id=user.group_id, name=f"raw apple {uuid4().hex[:8]}")
     )
     source = _source(user)
     nutrient_food = _source_food(user, source, food.name, preparation_state="raw")
@@ -317,7 +317,7 @@ def test_apply_revalidates_every_stale_boundary(
     elif mutation == "source":
         source.sha256 = "f" * 64
     elif mutation == "catalogue":
-        user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"extra-{uuid4()}"))
+        user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"extra-{uuid4()}"))
     elif mutation == "provider":
         provider.model = "test/model-v2"
     elif mutation == "provider_header":
@@ -496,7 +496,7 @@ def test_start_is_unique_and_empty_candidates_finalize_without_provider(unique_u
     user = unique_user_fn_scoped
     _provider(user)
     recipe = user.repos.recipes.create(
-        Recipe(
+        RecipeDraft(
             user_id=user.user_id,
             group_id=user.group_id,
             household_id=user.household_id,
@@ -538,10 +538,12 @@ def test_ingredient_selection_is_same_group_compare_and_set_and_preserves_text(u
     user = unique_user_fn_scoped
     _provider(user)
     token = uuid4().hex[:8]
-    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"apple {token}"))
-    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"tablespoon {token}"))
+    food = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"apple {token}"))
+    unit = user.repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=f"tablespoon {token}"))
     recipe = user.repos.recipes.create(
-        Recipe(user_id=user.user_id, group_id=user.group_id, household_id=user.household_id, name=f"Recipe {token}")
+        RecipeDraft(
+            user_id=user.user_id, group_id=user.group_id, household_id=user.household_id, name=f"Recipe {token}"
+        )
     )
     ingredient = RecipeIngredientModel(
         session=user.repos.session,
@@ -629,8 +631,8 @@ def test_food_selection_is_audited_agent_review_and_preserves_optional_metadata(
 def test_portion_selection_maps_existing_row_and_drives_calculation(unique_user_fn_scoped: TestUser) -> None:
     user = unique_user_fn_scoped
     _provider(user)
-    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"apple-{uuid4()}"))
-    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"scoop-{uuid4()}"))
+    food = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"apple-{uuid4()}"))
+    unit = user.repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=f"scoop-{uuid4()}"))
     nutrient_food = _source_food(user, _source(user), food.name)
     match = HealthLabsFoodMatch(
         ingredient_food_id=food.id,
@@ -656,7 +658,9 @@ def test_portion_selection_maps_existing_row_and_drives_calculation(unique_user_
         grams=456,
     )
     recipe = user.repos.recipes.create(
-        Recipe(user_id=user.user_id, group_id=user.group_id, household_id=user.household_id, name=f"Recipe {uuid4()}")
+        RecipeDraft(
+            user_id=user.user_id, group_id=user.group_id, household_id=user.household_id, name=f"Recipe {uuid4()}"
+        )
     )
     ingredient = RecipeIngredientModel(
         session=user.repos.session,

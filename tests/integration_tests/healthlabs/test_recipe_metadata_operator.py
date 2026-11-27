@@ -156,7 +156,7 @@ def test_source_approval_refresh_is_scoped_and_failure_cannot_undo_facts(
     unique_user_fn_scoped, curator_settings, monkeypatch, notification_fails
 ):
     from mealie.db.models.healthlabs import HealthLabsFoodMatch
-    from mealie.schema.recipe import Recipe, RecipeIngredient
+    from mealie.schema.recipe import RecipeDraft, RecipeIngredient
     from mealie.services.healthlabs.nutrition_curator_worker import NutritionCuratorWorker
     from mealie.services.healthlabs.recipe_metadata_scheduler import RecipeMetadataScheduler
     from tests.integration_tests.healthlabs.test_nutrition_curator_worker import NOW, _food_work, _install_success
@@ -166,7 +166,7 @@ def test_source_approval_refresh_is_scoped_and_failure_cannot_undo_facts(
 
     def recipe():
         return user.repos.recipes.create(
-            Recipe(
+            RecipeDraft(
                 name=f"source hook {uuid4()}",
                 user_id=user.user_id,
                 group_id=user.group_id,
@@ -394,7 +394,7 @@ def test_scoped_curator_rejects_target_moved_outside_manifest_during_http(
     unique_user_fn_scoped, curator_settings, monkeypatch
 ):
     from mealie.db.models.recipe import RecipeIngredientModel
-    from mealie.schema.recipe import Recipe
+    from mealie.schema.recipe import RecipeDraft
     from mealie.services.healthlabs.nutrition_curator_worker import NutritionCuratorWorker
     from mealie.services.openai import OpenAIService
     from tests.integration_tests.healthlabs.test_nutrition_curator_worker import NOW, _ingredient_work, _install_success
@@ -403,7 +403,7 @@ def test_scoped_curator_rejects_target_moved_outside_manifest_during_http(
     ingredient, _, _, work = _ingredient_work(user)
     allowed_id = ingredient.recipe_id
     private = user.repos.recipes.create(
-        Recipe(
+        RecipeDraft(
             name=f"private move {uuid4()}", user_id=user.user_id, group_id=user.group_id, household_id=user.household_id
         )
     )
@@ -501,14 +501,14 @@ def test_source_operator_applies_only_manifest_target_and_resumes_without_paid_r
     unique_user_fn_scoped, curator_settings, monkeypatch
 ):
     from mealie.db.models.healthlabs import HealthLabsNutritionWork
-    from mealie.schema.recipe import Recipe, RecipeIngredient, SaveIngredientFood
+    from mealie.schema.recipe import IngredientFoodSave, RecipeDraft, RecipeIngredient
     from mealie.services.healthlabs.recipe_metadata_operator import run_source_manifest
     from tests.integration_tests.healthlabs.test_nutrition_curator_worker import NOW, _food_work, _install_success
 
     user = unique_user_fn_scoped
     food, _, work = _food_work(user)
     recipe = user.repos.recipes.create(
-        Recipe(
+        RecipeDraft(
             name=f"scoped source {uuid4()}",
             user_id=user.user_id,
             group_id=user.group_id,
@@ -518,7 +518,7 @@ def test_source_operator_applies_only_manifest_target_and_resumes_without_paid_r
         )
     )
     other = user.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=user.group_id, name=f"private food {uuid4()}")
+        IngredientFoodSave(group_id=user.group_id, name=f"private food {uuid4()}")
     )
     unrelated = HealthLabsNutritionWork(
         group_id=user.group_id,
@@ -555,14 +555,14 @@ def test_source_operator_applies_only_manifest_target_and_resumes_without_paid_r
 def test_source_operator_stops_on_actual_http_throttle(unique_user_fn_scoped, curator_settings):
     import httpx2
 
-    from mealie.schema.recipe import Recipe, RecipeIngredient
+    from mealie.schema.recipe import RecipeDraft, RecipeIngredient
     from mealie.services.healthlabs.recipe_metadata_operator import run_source_manifest
     from tests.integration_tests.healthlabs.test_nutrition_curator_worker import _food_work
 
     user = unique_user_fn_scoped
     food, _, _ = _food_work(user)
     recipe = user.repos.recipes.create(
-        Recipe(
+        RecipeDraft(
             name=f"throttle source {uuid4()}",
             user_id=user.user_id,
             group_id=user.group_id,

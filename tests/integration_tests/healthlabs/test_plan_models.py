@@ -12,13 +12,13 @@ from mealie.db.models.healthlabs import (
 )
 from mealie.db.models.household.mealplan import GroupMealPlan
 from mealie.db.models.recipe.recipe import HealthLabsRecipeRevision
-from mealie.schema.recipe.recipe import Recipe
+from mealie.schema.recipe.recipe import RecipeDraft
 from tests.utils import TestUser
 
 
 def _recipe_revision(user: TestUser) -> HealthLabsRecipeRevision:
     recipe = user.repos.recipes.create(
-        Recipe(
+        RecipeDraft(
             user_id=user.user_id,
             group_id=user.group_id,
             name=f"Plan recipe {uuid4()}",

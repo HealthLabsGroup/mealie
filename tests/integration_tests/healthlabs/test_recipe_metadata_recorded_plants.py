@@ -14,7 +14,7 @@ from mealie.db.models.recipe.recipe import HealthLabsRecipeRevision
 from mealie.repos.repository_factory import AllRepositories
 from mealie.schema.healthlabs.identity import HealthLabsCapability
 from mealie.schema.healthlabs.nutrition import HealthLabsFoodMatchWrite
-from mealie.schema.recipe.recipe_ingredient import CreateIngredientFood
+from mealie.schema.recipe.recipe_ingredient import IngredientFoodCreate
 from mealie.services.healthlabs.recipe_metadata_scheduler import RecipeMetadataScheduler
 from mealie.services.healthlabs.recipe_metadata_service import RecipeMetadataService
 
@@ -30,7 +30,7 @@ def accepted_plant_recipe(
 ):
     plant_id, food_name = request.param
     # These are supported public write inputs, independent of inference constraints.
-    CreateIngredientFood(name=food_name)
+    IngredientFoodCreate(name=food_name)
     identity, headers = healthlabs_provision()
     healthlabs_set_capabilities(
         identity["userId"],

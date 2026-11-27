@@ -47,6 +47,12 @@
         "description": "",
         "abbreviation": "ml"
     },
+    "centiliter": {
+        "name": "sentilíter",
+        "plural_name": "sentilítrar",
+        "description": "",
+        "abbreviation": "sl"
+    },
     "liter": {
         "name": "líter",
         "plural_name": "lítrar",

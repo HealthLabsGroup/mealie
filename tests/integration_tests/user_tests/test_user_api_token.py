@@ -1,10 +1,11 @@
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 from pytest import fixture
 
 from mealie.db.models.users import User
+from mealie.repos.repository_factory import AllRepositories
 from tests.utils import api_routes
 from tests.utils.fixture_schemas import TestUser
 
@@ -94,3 +95,21 @@ def test_managed_account_cannot_create_token_through_upstream_route(
         headers=unique_user_fn_scoped.token,
     )
     assert response.status_code == 403
+
+
+def test_user_with_token_can_move_group(
+    api_client: TestClient, unfiltered_database: AllRepositories, unique_user_fn_scoped: TestUser, g2_user: TestUser
+):
+    user = unique_user_fn_scoped
+    response = api_client.post(api_routes.users_api_tokens, json={"name": "Moving Token"}, headers=user.token)
+    assert response.status_code == 201
+    token_id = response.json()["id"]
+
+    user_data = unfiltered_database.users.get_one(user.user_id)
+    assert user_data
+    user_data.group_id = UUID(g2_user.group_id)
+    user_data.household_id = UUID(g2_user.household_id)
+    updated = unfiltered_database.users.update(user.user_id, user_data)
+
+    assert str(updated.group_id) == g2_user.group_id
+    assert [token.id for token in updated.tokens] == [token_id]

@@ -17,7 +17,7 @@ from mealie.db.models.users import User
 from mealie.repos.repository_factory import AllRepositories
 from mealie.schema.healthlabs.identity import HealthLabsCapability
 from mealie.schema.healthlabs.plan import HealthLabsPlanEntryWrite, HealthLabsPlanPublicationWrite
-from mealie.schema.recipe.recipe import Recipe
+from mealie.schema.recipe.recipe import RecipeDraft
 from mealie.schema.user import PrivateUser
 from mealie.services.healthlabs.idempotency_service import IdempotencyConflict
 from mealie.services.healthlabs.plan_api_service import (
@@ -62,7 +62,7 @@ def _target(
 
 def _recipe_revision(user: TestUser, *, name: str = "Plan soup") -> tuple[RecipeModel, HealthLabsRecipeRevision]:
     recipe = user.repos.recipes.create(
-        Recipe(
+        RecipeDraft(
             user_id=user.user_id,
             group_id=user.group_id,
             name=f"{name} {uuid4()}",

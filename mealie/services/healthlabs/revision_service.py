@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mealie.db.models.recipe.recipe import HealthLabsRecipeRevision, RecipeModel
-from mealie.schema.recipe.recipe import Recipe
+from mealie.schema.recipe.recipe import RecipeOut
 
 
 class RecipeRevisionService:
@@ -63,7 +63,7 @@ class RecipeRevisionService:
         ).encode()
 
     @classmethod
-    def build_snapshot(cls, recipe: Recipe) -> dict[str, Any]:
+    def build_snapshot(cls, recipe: RecipeOut) -> dict[str, Any]:
         data = recipe.model_dump(mode="json", by_alias=False)
         snapshot = {field: data.get(field) for field in cls.SNAPSHOT_FIELDS}
         for field in cls.UNORDERED_LIST_FIELDS:
@@ -90,7 +90,7 @@ class RecipeRevisionService:
             .limit(1)
         ).one_or_none()
 
-    def record(self, recipe: Recipe, *, actor_user_id: UUID) -> HealthLabsRecipeRevision:
+    def record(self, recipe: RecipeOut, *, actor_user_id: UUID) -> HealthLabsRecipeRevision:
         if recipe.id is None:
             raise ValueError("Cannot revision a recipe without an id")
 

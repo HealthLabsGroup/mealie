@@ -515,14 +515,14 @@ def test_invalid_ingredient_plans_cannot_reach_ready(unique_user_fn_scoped, cura
 
 
 def test_87_ingredients_are_chunked_with_real_guard_accounting(unique_user_fn_scoped, curator_settings, monkeypatch):
-    from mealie.schema.recipe import Recipe
+    from mealie.schema.recipe import RecipeDraft
 
     user = unique_user_fn_scoped
     original, source = _recipe(user)
     source.nutrient_values = {key: value for key, value in source.nutrient_values.items() if key != "fibre_g"}
     user.repos.session.commit()
     recipe = user.repos.recipes.create(
-        Recipe(
+        RecipeDraft(
             name=f"87 ingredients {uuid4()}",
             user_id=user.user_id,
             group_id=user.group_id,

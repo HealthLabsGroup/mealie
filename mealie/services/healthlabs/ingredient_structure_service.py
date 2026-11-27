@@ -13,7 +13,7 @@ from mealie.db.models.recipe import (
     RecipeModel,
 )
 from mealie.lang.providers import Translator
-from mealie.schema.recipe import CreateIngredientFood, CreateIngredientUnit, IngredientFood, IngredientUnit
+from mealie.schema.recipe import IngredientFoodCreate, IngredientFoodOut, IngredientUnitCreate, IngredientUnitOut
 from mealie.schema.recipe.recipe_ingredient import RecipeIngredient
 from mealie.schema.response.pagination import PaginationQuery
 from mealie.services.parser_services.ingredient_parser import BruteForceParser
@@ -40,6 +40,10 @@ class _ExactDataMatcher:
         )
 
     @property
+    def foods_by_alias(self) -> dict[str, Any | None]:
+        return self.foods
+
+    @property
     def units_by_alias(self) -> dict[str, Any | None]:
         return self.units
 
@@ -60,14 +64,14 @@ class _ExactDataMatcher:
                     result[key] = None
         return result
 
-    def find_food_match(self, food: IngredientFood | CreateIngredientFood | str) -> IngredientFood | None:
-        if isinstance(food, IngredientFood):
+    def find_food_match(self, food: IngredientFoodOut | IngredientFoodCreate | str) -> IngredientFoodOut | None:
+        if isinstance(food, IngredientFoodOut):
             return food
         name = food if isinstance(food, str) else food.name
         return self.foods.get(IngredientFoodModel.normalize(name))
 
-    def find_unit_match(self, unit: IngredientUnit | CreateIngredientUnit | str) -> IngredientUnit | None:
-        if isinstance(unit, IngredientUnit):
+    def find_unit_match(self, unit: IngredientUnitOut | IngredientUnitCreate | str) -> IngredientUnitOut | None:
+        if isinstance(unit, IngredientUnitOut):
             return unit
         name = unit if isinstance(unit, str) else unit.name
         return self.units.get(IngredientUnitModel.normalize(name))
@@ -124,7 +128,7 @@ class IngredientStructureService:
 
         food = self.matcher.foods.get(IngredientFoodModel.normalize(parsed_food.name))
         unit = self.matcher.units.get(IngredientUnitModel.normalize(parsed_unit.name))
-        if not isinstance(food, IngredientFood) or not isinstance(unit, IngredientUnit):
+        if not isinstance(food, IngredientFoodOut) or not isinstance(unit, IngredientUnitOut):
             return False
 
         ingredient.quantity = parsed.quantity

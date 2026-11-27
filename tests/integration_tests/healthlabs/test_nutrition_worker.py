@@ -21,14 +21,14 @@ from mealie.db.models.healthlabs import (
 )
 from mealie.db.models.recipe import IngredientFoodModel, RecipeIngredientModel
 from mealie.schema.recipe import (
-    CreateIngredientFood,
-    CreateIngredientUnit,
     IngredientConfidence,
+    IngredientFoodCreate,
+    IngredientFoodSave,
+    IngredientUnitCreate,
+    IngredientUnitSave,
     ParsedIngredient,
-    Recipe,
+    RecipeDraft,
     RecipeIngredient,
-    SaveIngredientFood,
-    SaveIngredientUnit,
 )
 from mealie.services.healthlabs.nutrition_provider_budget import NutritionProviderBudget
 from mealie.services.healthlabs.nutrition_service import NutritionService
@@ -63,7 +63,7 @@ def _recipe_ingredients(
 ) -> list[RecipeIngredientModel]:
     session = user.repos.session
     recipe = user.repos.recipes.create(
-        Recipe(
+        RecipeDraft(
             user_id=user.user_id,
             group_id=user.group_id,
             household_id=user.household_id,
@@ -159,8 +159,8 @@ def _parsed(source: str, *, quantity: float, unit: str, food: str) -> ParsedIngr
         ingredient=RecipeIngredient(
             original_text=source,
             quantity=quantity,
-            unit=CreateIngredientUnit(name=unit),
-            food=CreateIngredientFood(name=food),
+            unit=IngredientUnitCreate(name=unit),
+            food=IngredientFoodCreate(name=food),
         ),
     )
 
@@ -170,8 +170,8 @@ def test_worker_discovers_bounded_batches_and_structures_exact_ingredients(
 ) -> None:
     user = unique_user_fn_scoped
     token = uuid4().hex
-    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"scoop-{token}"))
-    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"oats-{token}"))
+    unit = user.repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=f"scoop-{token}"))
+    food = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"oats-{token}"))
     texts = [f"{amount} {unit.name} {food.name}" for amount in (1, 2, 3)]
     ingredients = _recipe_ingredients(user, texts)
 
@@ -243,8 +243,8 @@ def test_cleanup_removes_work_when_existing_targets_are_no_longer_eligible(
 ) -> None:
     user = unique_user_fn_scoped
     token = uuid4().hex
-    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"unit-{token}"))
-    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"food-{token}"))
+    unit = user.repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=f"unit-{token}"))
+    food = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"food-{token}"))
     ingredient = _recipe_ingredients(
         user,
         [f"1 {unit.name} {food.name}"],
@@ -405,8 +405,8 @@ def test_small_discovery_batches_rotate_between_work_kinds(session: Session, mon
 def test_worker_requeues_changed_input_and_removes_deleted_targets(unique_user_fn_scoped: TestUser) -> None:
     user = unique_user_fn_scoped
     token = uuid4().hex
-    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"cup-{token}"))
-    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"rice-{token}"))
+    unit = user.repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=f"cup-{token}"))
+    food = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"rice-{token}"))
     ingredient = _recipe_ingredients(user, [f"unresolved-{token}"])[0]
 
     reports = []
@@ -454,8 +454,8 @@ def test_worker_does_not_resolve_ingredient_from_another_group(
     owner = unique_user_fn_scoped
     other = build_unique_user(session, "", api_client)
     token = uuid4().hex
-    unit = other.repos.ingredient_units.create(SaveIngredientUnit(group_id=other.group_id, name=f"jar-{token}"))
-    food = other.repos.ingredient_foods.create(SaveIngredientFood(group_id=other.group_id, name=f"beans-{token}"))
+    unit = other.repos.ingredient_units.create(IngredientUnitSave(group_id=other.group_id, name=f"jar-{token}"))
+    food = other.repos.ingredient_foods.create(IngredientFoodSave(group_id=other.group_id, name=f"beans-{token}"))
     ingredient = _recipe_ingredients(owner, [f"1 {unit.name} {food.name}"])[0]
     other_ingredient = _recipe_ingredients(other, [f"1 {unit.name} {food.name}"])[0]
 
@@ -489,18 +489,18 @@ def test_worker_auto_applies_unique_deterministic_source_matches(unique_user_fn_
     _, exact_source = _source_food(user, f"apple-{token}")
     _, alias_source = _source_food(user, f"courgette-{token}")
     _, multilingual_source = _source_food(user, f"crème brûlée-{token}")
-    exact = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=exact_source.name))
+    exact = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=exact_source.name))
     alias = user.repos.ingredient_foods.create(
-        SaveIngredientFood(
+        IngredientFoodSave(
             group_id=user.group_id,
             name=f"zucchini-{token}",
             aliases=[{"name": alias_source.name}],
         )
     )
     multilingual = user.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=user.group_id, name=multilingual_source.name)
+        IngredientFoodSave(group_id=user.group_id, name=multilingual_source.name)
     )
-    unknown = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"unknown-{token}"))
+    unknown = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"unknown-{token}"))
     user.repos.session.commit()
 
     _run(user)
@@ -540,7 +540,7 @@ def test_worker_auto_applies_unique_deterministic_source_matches(unique_user_fn_
 def test_worker_rechecks_historical_unreviewed_match_candidates(unique_user_fn_scoped: TestUser) -> None:
     user = unique_user_fn_scoped
     _, source = _source_food(user, f"historical-{uuid4()}")
-    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=source.name))
+    food = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=source.name))
     match = HealthLabsFoodMatch(
         ingredient_food_id=food.id,
         nutrient_food_id=source.id,
@@ -572,7 +572,7 @@ def test_worker_preserves_review_completed_while_candidate_was_computed(
     user = unique_user_fn_scoped
     _, automatic_source = _source_food(user, f"concurrent-{uuid4()}")
     _, reviewed_source = _source_food(user, f"reviewed-{uuid4()}")
-    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=automatic_source.name))
+    food = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=automatic_source.name))
     match = HealthLabsFoodMatch(
         ingredient_food_id=food.id,
         nutrient_food_id=automatic_source.id,
@@ -613,8 +613,8 @@ def test_worker_leaves_ambiguous_and_missing_source_matches_for_review(unique_us
     ambiguous_name = f"ambiguous-{uuid4()}"
     _source_food(user, ambiguous_name)
     _source_food(user, ambiguous_name)
-    ambiguous = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=ambiguous_name))
-    missing = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"missing-{uuid4()}"))
+    ambiguous = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=ambiguous_name))
+    missing = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"missing-{uuid4()}"))
     user.repos.session.commit()
 
     _run(user)
@@ -638,7 +638,7 @@ def test_worker_stops_before_claiming_the_next_target(unique_user_fn_scoped: Tes
     user = unique_user_fn_scoped
     foods = [
         user.repos.ingredient_foods.create(
-            SaveIngredientFood(group_id=user.group_id, name=f"shutdown-{index}-{uuid4()}")
+            IngredientFoodSave(group_id=user.group_id, name=f"shutdown-{index}-{uuid4()}")
         )
         for index in range(2)
     ]
@@ -673,8 +673,8 @@ def test_worker_stops_before_claiming_the_next_target(unique_user_fn_scoped: Tes
 def test_worker_tracks_only_unresolved_authoritative_portions(unique_user_fn_scoped: TestUser) -> None:
     user = unique_user_fn_scoped
     token = uuid4().hex
-    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"tofu-{token}"))
-    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"block-{token}"))
+    food = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"tofu-{token}"))
+    unit = user.repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=f"block-{token}"))
     _, source_food = _source_food(user, food.name)
     user.repos.session.add(
         HealthLabsFoodMatch(
@@ -726,8 +726,8 @@ def test_worker_tracks_only_unresolved_authoritative_portions(unique_user_fn_sco
 def test_source_managed_portion_wins_over_group_override(unique_user_fn_scoped: TestUser) -> None:
     user = unique_user_fn_scoped
     token = uuid4().hex
-    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"tofu-{token}"))
-    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"block-{token}"))
+    food = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"tofu-{token}"))
+    unit = user.repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=f"block-{token}"))
     _, source_food = _source_food(user, food.name)
     user.repos.session.add_all(
         [
@@ -771,12 +771,12 @@ def test_source_managed_portion_wins_over_group_override(unique_user_fn_scoped: 
 def test_discovery_reserves_capacity_for_each_work_kind(unique_user_fn_scoped: TestUser) -> None:
     user = unique_user_fn_scoped
     _recipe_ingredients(user, [f"ingredient-backlog-{uuid4()}" for _ in range(3)])
-    user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"unmatched-{uuid4()}"))
+    user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"unmatched-{uuid4()}"))
     portion_food = user.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=user.group_id, name=f"portion-{uuid4()}")
+        IngredientFoodSave(group_id=user.group_id, name=f"portion-{uuid4()}")
     )
     portion_unit = user.repos.ingredient_units.create(
-        SaveIngredientUnit(group_id=user.group_id, name=f"portion-unit-{uuid4()}")
+        IngredientUnitSave(group_id=user.group_id, name=f"portion-unit-{uuid4()}")
     )
     _, source_food = _source_food(user, portion_food.name)
     user.repos.session.add(
@@ -818,9 +818,9 @@ def test_worker_commits_each_target_and_continues_after_one_failure(
     monkeypatch,
 ) -> None:
     user = unique_user_fn_scoped
-    failing = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"failing-{uuid4()}"))
+    failing = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"failing-{uuid4()}"))
     succeeding = user.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=user.group_id, name=f"succeeding-{uuid4()}")
+        IngredientFoodSave(group_id=user.group_id, name=f"succeeding-{uuid4()}")
     )
     user.repos.session.commit()
     original = NutritionService.suggest_food_match
@@ -860,7 +860,7 @@ def test_worker_processes_due_rows_in_stable_order_and_reclaims_expired_leases(
     user = unique_user_fn_scoped
     foods = [
         user.repos.ingredient_foods.create(
-            SaveIngredientFood(group_id=user.group_id, name=f"ordered-{index}-{uuid4()}")
+            IngredientFoodSave(group_id=user.group_id, name=f"ordered-{index}-{uuid4()}")
         )
         for index in range(2)
     ]
@@ -1078,8 +1078,8 @@ def test_provider_configuration_wakes_waiting_work_and_applies_only_exact_result
 ) -> None:
     user = unique_user_fn_scoped
     token = uuid4().hex
-    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"bowl-{token}"))
-    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"quinoa-{token}"))
+    unit = user.repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=f"bowl-{token}"))
+    food = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"quinoa-{token}"))
     ingredient = _recipe_ingredients(user, [f"provider-needed-{token}"])[0]
     calls = 0
     timeouts: list[float] = []
@@ -1171,8 +1171,8 @@ def test_provider_result_does_not_overwrite_a_concurrent_ingredient_edit(
 ) -> None:
     user = unique_user_fn_scoped
     token = uuid4().hex
-    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"cup-{token}"))
-    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"rice-{token}"))
+    unit = user.repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=f"cup-{token}"))
+    food = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"rice-{token}"))
     ingredient = _recipe_ingredients(user, [f"provider-{token}"])[0]
     _configure_provider(user)
     edited_note = f"user-edited-{token}"
@@ -1220,8 +1220,8 @@ def test_provider_result_is_requeued_after_a_concurrent_catalogue_change(
 ) -> None:
     user = unique_user_fn_scoped
     token = uuid4().hex
-    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"cup-{token}"))
-    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"rice-{token}"))
+    unit = user.repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=f"cup-{token}"))
+    food = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"rice-{token}"))
     ingredient = _recipe_ingredients(user, [f"provider-catalogue-{token}"])[0]
     _configure_provider(user)
     original_food_name = food.name
@@ -1273,8 +1273,8 @@ def test_provider_apply_requeues_when_a_selected_catalogue_row_changes(
 ) -> None:
     user = unique_user_fn_scoped
     token = uuid4().hex
-    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"cup-{token}"))
-    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"rice-{token}"))
+    unit = user.repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=f"cup-{token}"))
+    food = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"rice-{token}"))
     ingredient = _recipe_ingredients(user, [f"provider-catalogue-guard-{token}"])[0]
     _configure_provider(user)
 
@@ -1370,8 +1370,8 @@ def test_provider_apply_requeues_when_target_changes_after_the_final_check(
 ) -> None:
     user = unique_user_fn_scoped
     token = uuid4().hex
-    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"cup-{token}"))
-    food = user.repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=f"rice-{token}"))
+    unit = user.repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=f"cup-{token}"))
+    food = user.repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=f"rice-{token}"))
     ingredient = _recipe_ingredients(user, [f"provider-final-check-{token}"])[0]
     _configure_provider(user)
 

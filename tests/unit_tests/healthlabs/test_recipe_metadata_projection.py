@@ -5,14 +5,14 @@ from uuid import uuid4
 
 import pytest
 
-from mealie.schema.recipe import Recipe, RecipeIngredient
+from mealie.schema.recipe import RecipeDraft, RecipeIngredient
 
 
 def _inputs(*, servings=2, values=None, grams=100):
     from mealie.services.healthlabs.recipe_metadata_service import IngredientMetadataInput, RecipeMetadataInputs
 
     reference = uuid4()
-    recipe = Recipe(
+    recipe = RecipeDraft(
         id=uuid4(),
         group_id=uuid4(),
         name="Example",

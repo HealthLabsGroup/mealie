@@ -2,7 +2,6 @@ import { RecipeAPI } from "./user/recipes";
 import { UserApi } from "./user/users";
 import { HouseholdAPI } from "./user/households";
 import { GroupAPI } from "./user/groups";
-import { BackupAPI } from "./user/backups";
 import { UploadFile } from "./user/upload";
 import { CategoriesAPI } from "./user/organizer-categories";
 import { TagsAPI } from "./user/organizer-tags";
@@ -33,7 +32,6 @@ export class UserApiClient {
   public users: UserApi;
   public households: HouseholdAPI;
   public groups: GroupAPI;
-  public backups: BackupAPI;
   public categories: CategoriesAPI;
   public tags: TagsAPI;
   public utils: UtilsAPI;
@@ -88,7 +86,6 @@ export class UserApiClient {
     this.healthlabsNutrition = new HealthLabsNutritionApi(requests);
 
     // Admin
-    this.backups = new BackupAPI(requests);
 
     // Utils
     this.upload = new UploadFile(requests);

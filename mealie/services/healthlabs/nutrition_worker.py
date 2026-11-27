@@ -18,7 +18,7 @@ from mealie.db.models.healthlabs import (
 )
 from mealie.db.models.recipe import IngredientFoodModel, IngredientUnitModel, RecipeIngredientModel, RecipeModel
 from mealie.lang.providers import get_locale_provider
-from mealie.schema.recipe import IngredientFood, IngredientUnit, RecipeIngredient
+from mealie.schema.recipe import IngredientFoodOut, IngredientUnitOut, RecipeIngredient
 from mealie.services.healthlabs.ingredient_structure_service import IngredientStructureService
 from mealie.services.healthlabs.nutrition_fingerprint_service import NutritionFingerprintService
 from mealie.services.healthlabs.nutrition_provider_budget import NutritionProviderBudget, ProviderReservation
@@ -540,8 +540,8 @@ class NutritionReconciliationWorker:
 
     @staticmethod
     def _apply_ingredient(ingredient: RecipeIngredientModel, value: RecipeIngredient) -> None:
-        assert isinstance(value.food, IngredientFood) and value.food.id is not None
-        assert isinstance(value.unit, IngredientUnit) and value.unit.id is not None
+        assert isinstance(value.food, IngredientFoodOut) and value.food.id is not None
+        assert isinstance(value.unit, IngredientUnitOut) and value.unit.id is not None
         ingredient.quantity = value.quantity
         ingredient.food_id = value.food.id
         ingredient.unit_id = value.unit.id
@@ -554,8 +554,8 @@ class NutritionReconciliationWorker:
         value: RecipeIngredient,
         expected: tuple[str | None, float | None, str | None, str | None],
     ) -> bool:
-        assert isinstance(value.food, IngredientFood) and value.food.id is not None
-        assert isinstance(value.unit, IngredientUnit) and value.unit.id is not None
+        assert isinstance(value.food, IngredientFoodOut) and value.food.id is not None
+        assert isinstance(value.unit, IngredientUnitOut) and value.unit.id is not None
         food_is_current = (
             sa.select(IngredientFoodModel.id)
             .where(

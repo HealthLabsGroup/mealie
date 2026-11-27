@@ -106,7 +106,7 @@ def test_twenty_recipe_page_recovers_ready_metadata_after_step_reference_permuta
     from mealie.db.models.recipe.ingredient import RecipeIngredientModel
     from mealie.db.models.recipe.instruction import RecipeInstruction
     from mealie.repos.all_repositories import get_repositories
-    from mealie.schema.recipe import Recipe
+    from mealie.schema.recipe import RecipeOut
     from mealie.services.healthlabs.nutrition_service import NutritionService
     from mealie.services.healthlabs.recipe_api_service import RecipeApiService, _RecipeReadProjection
 
@@ -131,7 +131,7 @@ def test_twenty_recipe_page_recovers_ready_metadata_after_step_reference_permuta
     target_id = UUID(before.json()["items"][0]["id"])
     with Session(engine) as setup:
         model = setup.scalar(
-            sa.select(RecipeModel).where(RecipeModel.id == target_id).options(*Recipe.loader_options())
+            sa.select(RecipeModel).where(RecipeModel.id == target_id).options(*RecipeOut.loader_options())
         )
         ingredient = model.recipe_ingredient[0]
         second_ref = uuid4()

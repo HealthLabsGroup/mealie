@@ -47,6 +47,12 @@
         "description": "",
         "abbreviation": "ml"
     },
+    "centiliter": {
+        "name": "センチリットル",
+        "plural_name": "センチリットル",
+        "description": "",
+        "abbreviation": "cL"
+    },
     "liter": {
         "name": "リットル",
         "plural_name": "リットル",

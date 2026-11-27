@@ -39,7 +39,7 @@ from mealie.schema.healthlabs.nutrition import (
     HealthLabsReviewerOut,
 )
 from mealie.schema.healthlabs.nutrition_curator import public_curator_note
-from mealie.schema.recipe import Recipe
+from mealie.schema.recipe import RecipeDraft, RecipeOut
 from mealie.schema.user import PrivateUser
 from mealie.services.healthlabs.access_policy import BreakGlassContext, RecipeAccessDenied, RecipeAccessPolicy
 from mealie.services.healthlabs.nutrition_fingerprint_service import NutritionFingerprintService
@@ -648,7 +648,7 @@ class NutritionService:
             ),
         )
 
-    def calculate_recipe(self, recipe: Recipe, country: str) -> HealthLabsRecipeNutrition:
+    def calculate_recipe(self, recipe: RecipeOut | RecipeDraft, country: str) -> HealthLabsRecipeNutrition:
         del country  # Reviewed matches already pin their source country.
         totals = {code: Decimal(0) for code in CORE_NUTRIENTS}
         known = dict.fromkeys(CORE_NUTRIENTS, True)

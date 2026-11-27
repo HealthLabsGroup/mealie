@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 import mealie.db.models._all_models  # noqa: F401
 from mealie.db.models.recipe import RecipeIngredientModel, RecipeModel
 from mealie.lang.providers import get_locale_provider
-from mealie.schema.recipe import IngredientFood, IngredientUnit, RecipeIngredient
+from mealie.schema.recipe import IngredientFoodOut, IngredientUnitOut, RecipeIngredient
 from mealie.services.healthlabs.ingredient_structure_service import IngredientStructureService
 
 
@@ -74,8 +74,8 @@ def backfill_ingredient_structure(
             counts["candidates"] += 1
             if apply:
                 row.quantity = ingredient.quantity
-                assert isinstance(ingredient.unit, IngredientUnit)
-                assert isinstance(ingredient.food, IngredientFood)
+                assert isinstance(ingredient.unit, IngredientUnitOut)
+                assert isinstance(ingredient.food, IngredientFoodOut)
                 row.unit_id = ingredient.unit.id
                 row.food_id = ingredient.food.id
                 row.note = ingredient.note

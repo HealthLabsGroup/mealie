@@ -19,7 +19,7 @@ from mealie.core.security.tokens import ALGORITHM
 from mealie.db.db_setup import generate_session
 from mealie.repos.all_repositories import get_repositories
 from mealie.schema.user import PrivateUser, TokenData
-from mealie.schema.user.user import DEFAULT_INTEGRATION_ID, GroupInDB
+from mealie.schema.user.user import DEFAULT_INTEGRATION_ID, GroupOut
 from mealie.services.healthlabs.nutrition_curator_identity_service import assert_interactive_user
 
 oauth2_scheme_soft_fail = OAuth2PasswordBearer(tokenUrl="/api/auth/token", auto_error=False)
@@ -34,7 +34,7 @@ credentials_exception = HTTPException(
 )
 
 
-async def is_logged_in(token: str = Depends(oauth2_scheme_soft_fail), session=Depends(generate_session)) -> bool:
+def is_logged_in(token: str = Depends(oauth2_scheme_soft_fail), session=Depends(generate_session)) -> bool:
     """
     When you need to determine if the user is logged in, but don't need the user, you can use this
     function to return a boolean value to represent if the user is logged in. No Auth exceptions are raised
@@ -65,7 +65,7 @@ async def is_logged_in(token: str = Depends(oauth2_scheme_soft_fail), session=De
         return False
 
 
-async def get_public_group(group_slug: str = fastapi.Path(...), session=Depends(generate_session)) -> GroupInDB:
+def get_public_group(group_slug: str = fastapi.Path(...), session=Depends(generate_session)) -> GroupOut:
     repos = get_repositories(session)
     group = repos.groups.get_by_slug_or_id(group_slug)
 
@@ -91,18 +91,18 @@ async def get_auth_token(
     return token or ""
 
 
-async def try_get_current_user(
+def try_get_current_user(
     request: Request,
     token: str = Depends(get_auth_token),
     session=Depends(generate_session),
 ) -> PrivateUser | None:
     try:
-        return await get_current_user(request, token, session)
+        return get_current_user(request, token, session)
     except Exception:
         return None
 
 
-async def get_current_user(
+def get_current_user(
     request: Request,
     token: str = Depends(get_auth_token),
     session=Depends(generate_session),

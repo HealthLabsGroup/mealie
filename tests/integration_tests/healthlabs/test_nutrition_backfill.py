@@ -21,7 +21,7 @@ from mealie.db.models.recipe.ingredient import IngredientFoodAliasModel, Ingredi
 from mealie.db.models.users import User
 from mealie.repos.all_repositories import get_repositories
 from mealie.repos.repository_factory import AllRepositories
-from mealie.schema.recipe import SaveIngredientFood, SaveIngredientUnit
+from mealie.schema.recipe import IngredientFoodSave, IngredientUnitSave
 from tests.utils import TestUser
 
 ROOT = Path(__file__).parents[3]
@@ -81,19 +81,19 @@ def test_backfill_is_idempotent_and_classifies_every_food(unique_user_fn_scoped:
     ]
     _, source_foods = _source(session, names)
     exact = unique_user_fn_scoped.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=unique_user_fn_scoped.group_id, name=names[0])
+        IngredientFoodSave(group_id=unique_user_fn_scoped.group_id, name=names[0])
     )
     alias = unique_user_fn_scoped.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=unique_user_fn_scoped.group_id, name=f"Green squash {token}")
+        IngredientFoodSave(group_id=unique_user_fn_scoped.group_id, name=f"Green squash {token}")
     )
     ambiguous = unique_user_fn_scoped.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=unique_user_fn_scoped.group_id, name=names[2])
+        IngredientFoodSave(group_id=unique_user_fn_scoped.group_id, name=names[2])
     )
     unknown = unique_user_fn_scoped.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=unique_user_fn_scoped.group_id, name=f"Unknown food {token}")
+        IngredientFoodSave(group_id=unique_user_fn_scoped.group_id, name=f"Unknown food {token}")
     )
     reviewed = unique_user_fn_scoped.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=unique_user_fn_scoped.group_id, name=f"Banana {token}")
+        IngredientFoodSave(group_id=unique_user_fn_scoped.group_id, name=f"Banana {token}")
     )
     session.add(IngredientFoodAliasModel(session=session, food_id=alias.id, name=names[1]))
     reviewed_match = HealthLabsFoodMatch(
@@ -298,11 +298,11 @@ def test_structure_backfill_requires_exact_complete_parse(
     unit_name = f"scoop{token}"
     food_name = f"Exact apple {token}"
     ambiguous_name = f"ambiguous{token}"
-    unit = repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=unit_name))
-    food = repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=food_name))
+    unit = repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=unit_name))
+    food = repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=food_name))
     ambiguous_foods = [
         repos.ingredient_foods.create(
-            SaveIngredientFood(group_id=user.group_id, name=f"Ambiguous food {index} {token}")
+            IngredientFoodSave(group_id=user.group_id, name=f"Ambiguous food {index} {token}")
         )
         for index in range(2)
     ]
@@ -395,11 +395,11 @@ def test_runtime_recipe_writes_structure_exact_ingredients_and_calculate_portion
     unit_name = f"measure{token}"
     food_name = f"Portioned oats {token}"
     ambiguous_name = f"ambiguous-runtime-{token}"
-    repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=unit_name))
-    food = repos.ingredient_foods.create(SaveIngredientFood(group_id=user.group_id, name=food_name))
+    repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=unit_name))
+    food = repos.ingredient_foods.create(IngredientFoodSave(group_id=user.group_id, name=food_name))
     ambiguous_foods = [
         repos.ingredient_foods.create(
-            SaveIngredientFood(group_id=user.group_id, name=f"Runtime ambiguous food {index} {token}")
+            IngredientFoodSave(group_id=user.group_id, name=f"Runtime ambiguous food {index} {token}")
         )
         for index in range(2)
     ]

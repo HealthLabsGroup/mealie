@@ -15,7 +15,7 @@ from mealie.db.models.healthlabs import (
 from mealie.db.models.recipe import RecipeIngredientModel
 from mealie.db.models.users import User, UserType
 from mealie.schema.healthlabs.nutrition_curator import NutritionCuratorProviderDecision
-from mealie.schema.recipe import Recipe, SaveIngredientFood, SaveIngredientUnit
+from mealie.schema.recipe import IngredientFoodSave, IngredientUnitSave, RecipeDraft
 from mealie.services.healthlabs.nutrition_curator_prompt import PROMPT_VERSION, NutritionCuratorPrompt
 from mealie.services.healthlabs.nutrition_curator_service import DECISION_VERSION, NutritionCuratorService
 from mealie.services.healthlabs.nutrition_curator_worker import NutritionCuratorWorker
@@ -69,7 +69,7 @@ def _food_work(user: TestUser, *, provider: bool = True):
     if provider:
         _provider(user)
     food = user.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=user.group_id, name=f"raw apple {uuid4().hex[:8]}")
+        IngredientFoodSave(group_id=user.group_id, name=f"raw apple {uuid4().hex[:8]}")
     )
     from mealie.db.models.healthlabs import HealthLabsNutrientFood, HealthLabsNutrientSourceRelease
 
@@ -115,14 +115,14 @@ def _ingredient_work(user: TestUser, *, provider: bool = True, food=None, unit=N
     if provider:
         _provider(user)
     food = food or user.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=user.group_id, name=f"shared apple {uuid4().hex[:8]}")
+        IngredientFoodSave(group_id=user.group_id, name=f"shared apple {uuid4().hex[:8]}")
     )
     unit = unit or user.repos.ingredient_units.create(
-        SaveIngredientUnit(group_id=user.group_id, name=f"shared gram {uuid4().hex[:8]}")
+        IngredientUnitSave(group_id=user.group_id, name=f"shared gram {uuid4().hex[:8]}")
     )
     source = f"1 {unit.name} {food.name}"
     recipe = user.repos.recipes.create(
-        Recipe(
+        RecipeDraft(
             user_id=user.user_id,
             group_id=user.group_id,
             household_id=user.household_id,

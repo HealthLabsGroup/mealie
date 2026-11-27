@@ -77,6 +77,10 @@ class RecipeRevisionService:
         # the immutable recipe meaning captured by this snapshot.
         for instruction in snapshot["recipe_instructions"] or []:
             instruction.pop("id", None)
+            # Steps without a duration snapshot as they did before steps had one, so an
+            # unchanged recipe keeps its content hash and an equivalent retry stays a no-op.
+            if instruction.get("duration_seconds") is None:
+                instruction.pop("duration_seconds", None)
 
         extras = data.get("extras") or {}
         snapshot["extras"] = {key: value for key, value in extras.items() if key.startswith("healthlabs.")}

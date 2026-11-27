@@ -1,5 +1,5 @@
 /* tslint:disable */
-
+/* eslint-disable */
 /**
 /* This file was automatically generated from pydantic models by running pydantic2ts.
 /* Do not modify it by hand - just update the pydantic models and then re-run the script
@@ -9,41 +9,13 @@ export type GroupRecipeActionType = "link" | "post";
 export type WebhookType = "mealplan";
 export type HealthLabsRecipeScope = "personal" | "catalogue";
 
-export interface CreateGroupRecipeAction {
-  actionType: GroupRecipeActionType;
-  title: string;
-  url: string;
-}
-export interface CreateHouseholdPreferences {
-  privateHousehold?: boolean;
-  showAnnouncements?: boolean;
-  lockRecipeEditsFromOtherHouseholds?: boolean;
-  firstDayOfWeek?: number;
-  recipePublic?: boolean;
-  recipeShowNutrition?: boolean;
-  recipeShowAssets?: boolean;
-  recipeLandscapeView?: boolean;
-  recipeDisableComments?: boolean;
-}
-export interface CreateInviteToken {
-  uses: number;
-  groupId?: string | null;
-  householdId?: string | null;
-}
-export interface CreateWebhook {
-  enabled?: boolean;
-  name?: string;
-  url?: string;
-  webhookType?: WebhookType;
-  scheduledTime: string;
-}
-export interface EmailInitationResponse {
-  success: boolean;
-  error?: string | null;
-}
 export interface EmailInvitation {
   email: string;
   token: string;
+}
+export interface EmailInvitationResponse {
+  success: boolean;
+  error?: string | null;
 }
 export interface GroupEventNotifierCreate {
   name: string;
@@ -79,64 +51,34 @@ export interface GroupEventNotifierOptions {
   labelDeleted?: boolean;
 }
 export interface GroupEventNotifierOptionsOut {
-  testMessage?: boolean;
-  webhookTask?: boolean;
-  recipeCreated?: boolean;
-  recipeUpdated?: boolean;
-  recipeDeleted?: boolean;
-  userSignup?: boolean;
-  dataMigrations?: boolean;
-  dataExport?: boolean;
-  dataImport?: boolean;
-  mealplanEntryCreated?: boolean;
-  mealplanEntryUpdated?: boolean;
-  mealplanEntryDeleted?: boolean;
-  shoppingListCreated?: boolean;
-  shoppingListUpdated?: boolean;
-  shoppingListDeleted?: boolean;
-  cookbookCreated?: boolean;
-  cookbookUpdated?: boolean;
-  cookbookDeleted?: boolean;
-  tagCreated?: boolean;
-  tagUpdated?: boolean;
-  tagDeleted?: boolean;
-  categoryCreated?: boolean;
-  categoryUpdated?: boolean;
-  categoryDeleted?: boolean;
-  labelCreated?: boolean;
-  labelUpdated?: boolean;
-  labelDeleted?: boolean;
+  testMessage: boolean;
+  webhookTask: boolean;
+  recipeCreated: boolean;
+  recipeUpdated: boolean;
+  recipeDeleted: boolean;
+  userSignup: boolean;
+  dataMigrations: boolean;
+  dataExport: boolean;
+  dataImport: boolean;
+  mealplanEntryCreated: boolean;
+  mealplanEntryUpdated: boolean;
+  mealplanEntryDeleted: boolean;
+  shoppingListCreated: boolean;
+  shoppingListUpdated: boolean;
+  shoppingListDeleted: boolean;
+  cookbookCreated: boolean;
+  cookbookUpdated: boolean;
+  cookbookDeleted: boolean;
+  tagCreated: boolean;
+  tagUpdated: boolean;
+  tagDeleted: boolean;
+  categoryCreated: boolean;
+  categoryUpdated: boolean;
+  categoryDeleted: boolean;
+  labelCreated: boolean;
+  labelUpdated: boolean;
+  labelDeleted: boolean;
   id: string;
-}
-export interface GroupEventNotifierOptionsSave {
-  testMessage?: boolean;
-  webhookTask?: boolean;
-  recipeCreated?: boolean;
-  recipeUpdated?: boolean;
-  recipeDeleted?: boolean;
-  userSignup?: boolean;
-  dataMigrations?: boolean;
-  dataExport?: boolean;
-  dataImport?: boolean;
-  mealplanEntryCreated?: boolean;
-  mealplanEntryUpdated?: boolean;
-  mealplanEntryDeleted?: boolean;
-  shoppingListCreated?: boolean;
-  shoppingListUpdated?: boolean;
-  shoppingListDeleted?: boolean;
-  cookbookCreated?: boolean;
-  cookbookUpdated?: boolean;
-  cookbookDeleted?: boolean;
-  tagCreated?: boolean;
-  tagUpdated?: boolean;
-  tagDeleted?: boolean;
-  categoryCreated?: boolean;
-  categoryUpdated?: boolean;
-  categoryDeleted?: boolean;
-  labelCreated?: boolean;
-  labelUpdated?: boolean;
-  labelDeleted?: boolean;
-  notifierId: string;
 }
 export interface GroupEventNotifierOut {
   id: string;
@@ -172,6 +114,11 @@ export interface GroupEventNotifierUpdate {
   options?: GroupEventNotifierOptions;
   id: string;
 }
+export interface GroupRecipeActionCreate {
+  actionType: GroupRecipeActionType;
+  title: string;
+  url: string;
+}
 export interface GroupRecipeActionOut {
   actionType: GroupRecipeActionType;
   title: string;
@@ -185,21 +132,20 @@ export interface GroupRecipeActionPayload {
   content: unknown;
   recipeScale: number;
 }
-export interface HouseholdCreate {
-  groupId?: string | null;
-  name: string;
+export interface GroupRecipeActionSave {
+  actionType: GroupRecipeActionType;
+  title: string;
+  url: string;
+  groupId: string;
+  householdId: string;
 }
-export interface HouseholdInDB {
+export interface HouseholdAdminUpdate {
   groupId: string;
   name: string;
   id: string;
-  slug: string;
-  preferences?: ReadHouseholdPreferences | null;
-  group: string;
-  users?: HouseholdUserSummary[] | null;
-  webhooks?: ReadWebhook[];
+  preferences?: HouseholdPreferencesUpdate | null;
 }
-export interface ReadHouseholdPreferences {
+export interface HouseholdPreferencesUpdate {
   privateHousehold?: boolean;
   showAnnouncements?: boolean;
   lockRecipeEditsFromOtherHouseholds?: boolean;
@@ -209,21 +155,69 @@ export interface ReadHouseholdPreferences {
   recipeShowAssets?: boolean;
   recipeLandscapeView?: boolean;
   recipeDisableComments?: boolean;
+}
+export interface HouseholdCreate {
+  groupId?: string | null;
+  name: string;
+}
+export interface HouseholdOut {
+  groupId: string;
+  name: string;
+  id: string;
+  slug: string;
+  preferences: HouseholdPreferencesOut | null;
+  group: string;
+  users: HouseholdUserSummary[] | null;
+  webhooks: WebhookOut[];
+}
+export interface HouseholdPreferencesOut {
+  privateHousehold: boolean;
+  showAnnouncements: boolean;
+  lockRecipeEditsFromOtherHouseholds: boolean;
+  firstDayOfWeek: number;
+  recipePublic: boolean;
+  recipeShowNutrition: boolean;
+  recipeShowAssets: boolean;
+  recipeLandscapeView: boolean;
+  recipeDisableComments: boolean;
   id: string;
 }
 export interface HouseholdUserSummary {
   id: string;
   fullName: string;
 }
-export interface ReadWebhook {
-  enabled?: boolean;
-  name?: string;
-  url?: string;
-  webhookType?: WebhookType;
+export interface WebhookOut {
+  enabled: boolean;
+  name: string;
+  url: string;
+  webhookType: WebhookType;
   scheduledTime: string;
   groupId: string;
   householdId: string;
   id: string;
+}
+export interface HouseholdPreferencesCreate {
+  privateHousehold?: boolean;
+  showAnnouncements?: boolean;
+  lockRecipeEditsFromOtherHouseholds?: boolean;
+  firstDayOfWeek?: number;
+  recipePublic?: boolean;
+  recipeShowNutrition?: boolean;
+  recipeShowAssets?: boolean;
+  recipeLandscapeView?: boolean;
+  recipeDisableComments?: boolean;
+}
+export interface HouseholdPreferencesSave {
+  privateHousehold?: boolean;
+  showAnnouncements?: boolean;
+  lockRecipeEditsFromOtherHouseholds?: boolean;
+  firstDayOfWeek?: number;
+  recipePublic?: boolean;
+  recipeShowNutrition?: boolean;
+  recipeShowAssets?: boolean;
+  recipeLandscapeView?: boolean;
+  recipeDisableComments?: boolean;
+  householdId: string;
 }
 export interface HouseholdRecipeBase {
   lastMade?: string | null;
@@ -234,13 +228,13 @@ export interface HouseholdRecipeCreate {
   recipeId: string;
 }
 export interface HouseholdRecipeOut {
-  lastMade?: string | null;
+  lastMade: string | null;
   householdId: string;
   recipeId: string;
   id: string;
 }
 export interface HouseholdRecipeSummary {
-  lastMade?: string | null;
+  lastMade: string | null;
   recipeId: string;
 }
 export interface HouseholdRecipeUpdate {
@@ -262,47 +256,30 @@ export interface HouseholdSummary {
   name: string;
   id: string;
   slug: string;
-  preferences?: ReadHouseholdPreferences | null;
+  preferences: HouseholdPreferencesOut | null;
 }
-export interface ReadInviteToken {
+export interface HouseholdUpdate {
+  groupId: string;
+  name: string;
+  id: string;
+  slug: string;
+}
+export interface InviteTokenCreate {
+  uses: number;
+  groupId?: string | null;
+  householdId?: string | null;
+}
+export interface InviteTokenOut {
   token: string;
   usesLeft: number;
   groupId: string;
   householdId: string;
 }
-export interface SaveGroupRecipeAction {
-  actionType: GroupRecipeActionType;
-  title: string;
-  url: string;
-  groupId: string;
-  householdId: string;
-}
-export interface SaveHouseholdPreferences {
-  privateHousehold?: boolean;
-  showAnnouncements?: boolean;
-  lockRecipeEditsFromOtherHouseholds?: boolean;
-  firstDayOfWeek?: number;
-  recipePublic?: boolean;
-  recipeShowNutrition?: boolean;
-  recipeShowAssets?: boolean;
-  recipeLandscapeView?: boolean;
-  recipeDisableComments?: boolean;
-  householdId: string;
-}
-export interface SaveInviteToken {
+export interface InviteTokenSave {
   usesLeft: number;
   groupId: string;
   householdId: string;
   token: string;
-}
-export interface SaveWebhook {
-  enabled?: boolean;
-  name?: string;
-  url?: string;
-  webhookType?: WebhookType;
-  scheduledTime: string;
-  groupId: string;
-  householdId: string;
 }
 export interface SetPermissions {
   userId: string;
@@ -317,9 +294,9 @@ export interface ShoppingListAddRecipeParams {
 }
 export interface RecipeIngredient {
   quantity?: number | null;
-  unit?: IngredientUnit | CreateIngredientUnit | null;
-  food?: IngredientFood | CreateIngredientFood | null;
-  referencedRecipe?: Recipe | null;
+  unit?: IngredientUnitOut | IngredientUnitCreate | null;
+  food?: IngredientFoodOut | IngredientFoodCreate | null;
+  referencedRecipe?: RecipeDraft | null;
   note?: string | null;
   display?: string;
   title?: string | null;
@@ -327,28 +304,28 @@ export interface RecipeIngredient {
   substitutions?: RecipeIngredientSubstitution[];
   referenceId?: string;
 }
-export interface IngredientUnit {
+export interface IngredientUnitOut {
   id: string;
   name: string;
-  pluralName?: string | null;
-  description?: string;
-  extras?: {
+  pluralName: string | null;
+  description: string;
+  extras: {
     [k: string]: unknown;
   } | null;
-  fraction?: boolean;
-  abbreviation?: string;
-  pluralAbbreviation?: string | null;
-  useAbbreviation?: boolean;
-  aliases?: IngredientUnitAlias[];
-  standardQuantity?: number | null;
-  standardUnit?: string | null;
-  createdAt?: string | null;
-  updatedAt?: string | null;
+  fraction: boolean;
+  abbreviation: string;
+  pluralAbbreviation: string | null;
+  useAbbreviation: boolean;
+  aliases: IngredientUnitAlias[];
+  standardQuantity: number | null;
+  standardUnit: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
 }
 export interface IngredientUnitAlias {
   name: string;
 }
-export interface CreateIngredientUnit {
+export interface IngredientUnitCreate {
   id?: string | null;
   name: string;
   pluralName?: string | null;
@@ -360,29 +337,29 @@ export interface CreateIngredientUnit {
   abbreviation?: string;
   pluralAbbreviation?: string | null;
   useAbbreviation?: boolean;
-  aliases?: CreateIngredientUnitAlias[];
+  aliases?: IngredientUnitAliasCreate[];
   standardQuantity?: number | null;
   standardUnit?: string | null;
 }
-export interface CreateIngredientUnitAlias {
+export interface IngredientUnitAliasCreate {
   name: string;
 }
-export interface IngredientFood {
+export interface IngredientFoodOut {
   id: string;
   name: string;
-  pluralName?: string | null;
-  description?: string;
-  extras?: {
+  pluralName: string | null;
+  description: string;
+  extras: {
     [k: string]: unknown;
   } | null;
-  labelId?: string | null;
-  aliases?: IngredientFoodAlias[];
-  substitutions?: IngredientFoodSubstitution[];
-  householdsWithIngredientFood?: string[];
-  label?: MultiPurposeLabelSummary | null;
-  recipeCount?: number;
-  createdAt?: string | null;
-  updatedAt?: string | null;
+  labelId: string | null;
+  aliases: IngredientFoodAlias[];
+  substitutions: IngredientFoodSubstitution[];
+  householdsWithIngredientFood: string[];
+  label: MultiPurposeLabelSummary | null;
+  recipeCount: number;
+  createdAt: string | null;
+  updatedAt: string | null;
 }
 export interface IngredientFoodAlias {
   name: string;
@@ -395,15 +372,15 @@ export interface IngredientFoodSubstitution {
 export interface IngredientFoodSummary {
   id: string;
   name: string;
-  pluralName?: string | null;
+  pluralName: string | null;
 }
 export interface MultiPurposeLabelSummary {
   name: string;
-  color?: string;
+  color: string;
   groupId: string;
   id: string;
 }
-export interface CreateIngredientFood {
+export interface IngredientFoodCreate {
   id?: string | null;
   name: string;
   pluralName?: string | null;
@@ -412,22 +389,22 @@ export interface CreateIngredientFood {
     [k: string]: unknown;
   } | null;
   labelId?: string | null;
-  aliases?: CreateIngredientFoodAlias[];
-  substitutions?: CreateIngredientFoodSubstitution[];
+  aliases?: IngredientFoodAliasCreate[];
+  substitutions?: IngredientFoodSubstitutionCreate[];
   householdsWithIngredientFood?: string[];
 }
-export interface CreateIngredientFoodAlias {
+export interface IngredientFoodAliasCreate {
   name: string;
 }
-export interface CreateIngredientFoodSubstitution {
+export interface IngredientFoodSubstitutionCreate {
   substituteFoodId?: string | null;
   note?: string | null;
 }
-export interface Recipe {
+export interface RecipeDraft {
   id?: string | null;
-  userId?: string;
-  householdId?: string;
-  groupId?: string;
+  userId?: string | null;
+  householdId?: string | null;
+  groupId?: string | null;
   healthlabsScope?: HealthLabsRecipeScope;
   healthlabsRevisionNumber?: number;
   copiedFromRecipeId?: string | null;
@@ -441,52 +418,50 @@ export interface Recipe {
   recipeYield?: string | null;
   totalTime?: string | null;
   prepTime?: string | null;
-  cookTime?: string | null;
   performTime?: string | null;
   totalTimeSeconds?: number | null;
   prepTimeSeconds?: number | null;
   performTimeSeconds?: number | null;
   description?: string | null;
-  recipeCategory?: RecipeCategory[] | null;
-  tags?: RecipeTag[] | null;
-  tools?: RecipeTool[];
+  recipeCategory?: CategoryDraft[];
+  tags?: TagDraft[];
+  tools?: ToolDraft[];
   rating?: number | null;
   orgURL?: string | null;
   dateAdded?: string | null;
   dateUpdated?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
-  lastMade?: string | null;
   recipeIngredient?: RecipeIngredient[];
-  recipeInstructions?: RecipeStep[] | null;
+  recipeInstructions?: RecipeStep[];
   nutrition?: Nutrition | null;
   settings?: RecipeSettings | null;
-  assets?: RecipeAsset[] | null;
-  notes?: RecipeNote[] | null;
+  assets?: RecipeAsset[];
+  notes?: RecipeNote[];
   extras?: {
     [k: string]: unknown;
-  } | null;
-  comments?: RecipeCommentOut[] | null;
+  };
+  comments?: RecipeCommentOut[];
 }
-export interface RecipeCategory {
+export interface CategoryDraft {
   id?: string | null;
   groupId?: string | null;
   name: string;
-  slug: string;
+  slug?: string | null;
   recipeCount?: number;
 }
-export interface RecipeTag {
+export interface TagDraft {
   id?: string | null;
   groupId?: string | null;
   name: string;
-  slug: string;
+  slug?: string | null;
   recipeCount?: number;
 }
-export interface RecipeTool {
-  id: string;
+export interface ToolDraft {
+  id?: string | null;
   groupId?: string | null;
   name: string;
-  slug: string;
+  slug?: string | null;
   recipeCount?: number;
   householdsWithTool?: string[];
 }
@@ -497,6 +472,7 @@ export interface RecipeStep {
   text: string;
   ingredientReferences?: IngredientReferences[];
   noteReferences?: NoteReference[];
+  durationSeconds?: number | null;
 }
 export interface IngredientReferences {
   referenceId?: string | null;
@@ -542,9 +518,9 @@ export interface RecipeCommentOut {
   createdAt: string;
   updatedAt: string;
   userId: string;
-  user: UserBase;
+  user: RecipeCommentUser;
 }
-export interface UserBase {
+export interface RecipeCommentUser {
   id: string;
   username?: string | null;
   admin: boolean;
@@ -570,9 +546,9 @@ export interface ShoppingListCreate {
 }
 export interface ShoppingListItemBase {
   quantity?: number;
-  unit?: IngredientUnit | CreateIngredientUnit | null;
-  food?: IngredientFood | CreateIngredientFood | null;
-  referencedRecipe?: Recipe | null;
+  unit?: IngredientUnitOut | IngredientUnitCreate | null;
+  food?: IngredientFoodOut | IngredientFoodCreate | null;
+  referencedRecipe?: RecipeDraft | null;
   note?: string | null;
   display?: string;
   shoppingListId: string;
@@ -587,9 +563,9 @@ export interface ShoppingListItemBase {
 }
 export interface ShoppingListItemCreate {
   quantity?: number;
-  unit?: IngredientUnit | CreateIngredientUnit | null;
-  food?: IngredientFood | CreateIngredientFood | null;
-  referencedRecipe?: Recipe | null;
+  unit?: IngredientUnitOut | IngredientUnitCreate | null;
+  food?: IngredientFoodOut | IngredientFoodCreate | null;
+  referencedRecipe?: RecipeDraft | null;
   note?: string | null;
   display?: string;
   shoppingListId: string;
@@ -611,34 +587,34 @@ export interface ShoppingListItemRecipeRefCreate {
   recipeNote?: string | null;
 }
 export interface ShoppingListItemOut {
-  quantity?: number;
-  unit?: IngredientUnit | null;
-  food?: IngredientFood | null;
-  referencedRecipe?: Recipe | null;
-  note?: string | null;
-  display?: string;
+  quantity: number;
+  unit: IngredientUnitOut | null;
+  food: IngredientFoodOut | null;
+  referencedRecipe: RecipeDraft | null;
+  note: string | null;
+  display: string;
   shoppingListId: string;
-  checked?: boolean;
-  position?: number;
-  foodId?: string | null;
-  labelId?: string | null;
-  unitId?: string | null;
-  extras?: {
+  checked: boolean;
+  position: number;
+  foodId: string | null;
+  labelId: string | null;
+  unitId: string | null;
+  extras: {
     [k: string]: unknown;
   } | null;
   id: string;
   groupId: string;
   householdId: string;
-  label?: MultiPurposeLabelSummary | null;
-  recipeReferences?: ShoppingListItemRecipeRefOut[];
-  createdAt?: string | null;
-  updatedAt?: string | null;
+  label: MultiPurposeLabelSummary | null;
+  recipeReferences: ShoppingListItemRecipeRefOut[];
+  createdAt: string | null;
+  updatedAt: string | null;
 }
 export interface ShoppingListItemRecipeRefOut {
   recipeId: string;
-  recipeQuantity?: number;
-  recipeScale?: number | null;
-  recipeNote?: string | null;
+  recipeQuantity: number;
+  recipeScale: number | null;
+  recipeNote: string | null;
   id: string;
   shoppingListItemId: string;
 }
@@ -652,9 +628,9 @@ export interface ShoppingListItemRecipeRefUpdate {
 }
 export interface ShoppingListItemUpdate {
   quantity?: number;
-  unit?: IngredientUnit | CreateIngredientUnit | null;
-  food?: IngredientFood | CreateIngredientFood | null;
-  referencedRecipe?: Recipe | null;
+  unit?: IngredientUnitOut | IngredientUnitCreate | null;
+  food?: IngredientFoodOut | IngredientFoodCreate | null;
+  referencedRecipe?: RecipeDraft | null;
   note?: string | null;
   display?: string;
   shoppingListId: string;
@@ -670,9 +646,9 @@ export interface ShoppingListItemUpdate {
 }
 export interface ShoppingListItemUpdateBulk {
   quantity?: number;
-  unit?: IngredientUnit | CreateIngredientUnit | null;
-  food?: IngredientFood | CreateIngredientFood | null;
-  referencedRecipe?: Recipe | null;
+  unit?: IngredientUnitOut | IngredientUnitCreate | null;
+  food?: IngredientFoodOut | IngredientFoodCreate | null;
+  referencedRecipe?: RecipeDraft | null;
   note?: string | null;
   display?: string;
   shoppingListId: string;
@@ -688,9 +664,9 @@ export interface ShoppingListItemUpdateBulk {
   id: string;
 }
 export interface ShoppingListItemsCollectionOut {
-  createdItems?: ShoppingListItemOut[];
-  updatedItems?: ShoppingListItemOut[];
-  deletedItems?: ShoppingListItemOut[];
+  createdItems: ShoppingListItemOut[];
+  updatedItems: ShoppingListItemOut[];
+  deletedItems: ShoppingListItemOut[];
 }
 export interface ShoppingListMultiPurposeLabelCreate {
   shoppingListId: string;
@@ -700,7 +676,7 @@ export interface ShoppingListMultiPurposeLabelCreate {
 export interface ShoppingListMultiPurposeLabelOut {
   shoppingListId: string;
   labelId: string;
-  position?: number;
+  position: number;
   id: string;
   label: MultiPurposeLabelSummary;
 }
@@ -711,19 +687,19 @@ export interface ShoppingListMultiPurposeLabelUpdate {
   id: string;
 }
 export interface ShoppingListOut {
-  name?: string | null;
-  extras?: {
+  name: string | null;
+  extras: {
     [k: string]: unknown;
   } | null;
-  createdAt?: string | null;
-  updatedAt?: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
   groupId: string;
   userId: string;
   id: string;
-  listItems?: ShoppingListItemOut[];
+  listItems: ShoppingListItemOut[];
   householdId: string;
-  recipeReferences?: ShoppingListRecipeRefOut[];
-  labelSettings?: ShoppingListMultiPurposeLabelOut[];
+  recipeReferences: ShoppingListRecipeRefOut[];
+  labelSettings: ShoppingListMultiPurposeLabelOut[];
 }
 export interface ShoppingListRecipeRefOut {
   id: string;
@@ -733,39 +709,59 @@ export interface ShoppingListRecipeRefOut {
   recipe: RecipeSummary;
 }
 export interface RecipeSummary {
-  id?: string | null;
-  userId?: string;
-  householdId?: string;
-  groupId?: string;
-  healthlabsScope?: HealthLabsRecipeScope;
-  healthlabsRevisionNumber?: number;
-  copiedFromRecipeId?: string | null;
-  copiedFromRevisionId?: string | null;
-  copiedAt?: string | null;
-  name?: string | null;
-  slug?: string;
-  image?: unknown;
-  recipeServings?: number;
-  recipeYieldQuantity?: number;
-  recipeYield?: string | null;
-  totalTime?: string | null;
-  prepTime?: string | null;
-  cookTime?: string | null;
-  performTime?: string | null;
-  totalTimeSeconds?: number | null;
-  prepTimeSeconds?: number | null;
-  performTimeSeconds?: number | null;
-  description?: string | null;
-  recipeCategory?: RecipeCategory[] | null;
-  tags?: RecipeTag[] | null;
-  tools?: RecipeTool[];
-  rating?: number | null;
-  orgURL?: string | null;
-  dateAdded?: string | null;
-  dateUpdated?: string | null;
-  createdAt?: string | null;
-  updatedAt?: string | null;
-  lastMade?: string | null;
+  id: string;
+  userId: string;
+  householdId: string;
+  groupId: string;
+  healthlabsScope: HealthLabsRecipeScope;
+  healthlabsRevisionNumber: number;
+  copiedFromRecipeId: string | null;
+  copiedFromRevisionId: string | null;
+  copiedAt: string | null;
+  name: string;
+  slug: string;
+  image: string | null;
+  recipeServings: number;
+  recipeYieldQuantity: number;
+  recipeYield: string | null;
+  totalTime: string | null;
+  prepTime: string | null;
+  performTime: string | null;
+  totalTimeSeconds: number | null;
+  prepTimeSeconds: number | null;
+  performTimeSeconds: number | null;
+  description: string | null;
+  recipeCategory: CategoryOut[];
+  tags: TagOut[];
+  tools: ToolOut[];
+  rating: number | null;
+  orgURL: string | null;
+  dateAdded: string | null;
+  dateUpdated: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+export interface CategoryOut {
+  id: string;
+  groupId: string;
+  name: string;
+  slug: string;
+  recipeCount: number;
+}
+export interface TagOut {
+  id: string;
+  groupId: string;
+  name: string;
+  slug: string;
+  recipeCount: number;
+}
+export interface ToolOut {
+  id: string;
+  groupId: string;
+  name: string;
+  slug: string;
+  recipeCount: number;
+  householdsWithTool: string[];
 }
 export interface ShoppingListRemoveRecipeParams {
   recipeDecrementQuantity?: number;
@@ -781,12 +777,12 @@ export interface ShoppingListSave {
   userId: string;
 }
 export interface ShoppingListSummary {
-  name?: string | null;
-  extras?: {
+  name: string | null;
+  extras: {
     [k: string]: unknown;
   } | null;
-  createdAt?: string | null;
-  updatedAt?: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
   groupId: string;
   userId: string;
   id: string;
@@ -806,34 +802,28 @@ export interface ShoppingListUpdate {
   id: string;
   listItems?: ShoppingListItemOut[];
 }
-export interface UpdateHousehold {
+export interface WebhookCreate {
+  enabled?: boolean;
+  name?: string;
+  url?: string;
+  webhookType?: WebhookType;
+  scheduledTime: string;
+}
+export interface WebhookSave {
+  enabled?: boolean;
+  name?: string;
+  url?: string;
+  webhookType?: WebhookType;
+  scheduledTime: string;
   groupId: string;
-  name: string;
-  id: string;
-  slug: string;
+  householdId: string;
 }
-export interface UpdateHouseholdAdmin {
-  groupId: string;
-  name: string;
-  id: string;
-  preferences?: UpdateHouseholdPreferences | null;
-}
-export interface UpdateHouseholdPreferences {
-  privateHousehold?: boolean;
-  showAnnouncements?: boolean;
-  lockRecipeEditsFromOtherHouseholds?: boolean;
-  firstDayOfWeek?: number;
-  recipePublic?: boolean;
-  recipeShowNutrition?: boolean;
-  recipeShowAssets?: boolean;
-  recipeLandscapeView?: boolean;
-  recipeDisableComments?: boolean;
-}
+export interface MealieOutModel {}
 export interface RecipeIngredientBase {
   quantity?: number | null;
-  unit?: IngredientUnit | CreateIngredientUnit | null;
-  food?: IngredientFood | CreateIngredientFood | null;
-  referencedRecipe?: Recipe | null;
+  unit?: IngredientUnitOut | IngredientUnitCreate | null;
+  food?: IngredientFoodOut | IngredientFoodCreate | null;
+  referencedRecipe?: RecipeDraft | null;
   note?: string | null;
   display?: string;
 }

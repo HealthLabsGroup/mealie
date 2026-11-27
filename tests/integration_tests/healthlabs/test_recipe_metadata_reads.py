@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 import sqlalchemy as sa
 
-from mealie.schema.recipe import Recipe, RecipeIngredient, RecipeStep, SaveIngredientUnit
+from mealie.schema.recipe import IngredientUnitSave, RecipeDraft, RecipeIngredient, RecipeStep
 from tests.unit_tests.healthlabs.test_nutrition_calculation import (
     CORE_VALUES,
     _ingredient_food,
@@ -20,10 +20,10 @@ def _recipe(user, *, servings=2):
     source_food = _nutrient_food(user, _source(user), name=food.name)
     _reviewed_match(user, food.id, source_food.id)
     unit = user.repos.ingredient_units.create(
-        SaveIngredientUnit(group_id=user.group_id, name=f"g-{uuid4()}", standard_unit="gram", standard_quantity=1)
+        IngredientUnitSave(group_id=user.group_id, name=f"g-{uuid4()}", standard_unit="gram", standard_quantity=1)
     )
     recipe = user.repos.recipes.create(
-        Recipe(
+        RecipeDraft(
             name=f"Metadata {uuid4()}",
             user_id=user.user_id,
             household_id=user.household_id,
@@ -178,7 +178,7 @@ def test_raw_measurements_do_not_hide_credible_source_candidates(unique_user_fn_
 
     user = unique_user_fn_scoped
     source_food = _nutrient_food(user, _source(user), name=name)
-    recipe = Recipe(
+    recipe = RecipeDraft(
         id=uuid4(),
         group_id=user.group_id,
         name="Raw recipe",

@@ -37,11 +37,11 @@ def _healthlabs_request() -> Request:
     )
 
 
-async def _get_managed_user_for_service_policy_test(
+def _get_managed_user_for_service_policy_test(
     token: str = Depends(get_auth_token),
     session=Depends(generate_session),
 ):
-    return await get_current_user(_healthlabs_request(), token, session)
+    return get_current_user(_healthlabs_request(), token, session)
 
 
 @fixture

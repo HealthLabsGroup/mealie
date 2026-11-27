@@ -7,6 +7,7 @@ from mealie.core import security
 from mealie.db.models.users import User
 from mealie.routes._base import BaseAdminController, controller
 from mealie.routes._base.mixins import HttpRepo
+from mealie.routes._base.permissions import forbidden
 from mealie.schema.response.pagination import PaginationQuery
 from mealie.schema.response.responses import ErrorResponse
 from mealie.schema.user.auth import UnlockResults
@@ -71,7 +72,7 @@ class AdminUserManagementRoutes(BaseAdminController):
 
         # Prevent self demotion
         if self.user.id == item_id and self.user.admin != data.admin:
-            raise HTTPException(status_code=403, detail=ErrorResponse.respond("you cannot demote yourself"))
+            raise forbidden("you cannot demote yourself")
 
         return self.mixins.update_one(data, item_id)
 

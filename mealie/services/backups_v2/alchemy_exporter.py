@@ -86,7 +86,7 @@ class AlchemyExporter(BaseService):
     """Column names restored back into datetimes. Anything stored as a `NaiveDateTime` and missing
     here comes back from a backup as a string; `test_every_datetime_column_survives_a_backup` guards
     against forgetting to add one."""
-    look_for_date = {"date_added", "date", "from_date", "usage_date"}
+    look_for_date = {"date_added", "date", "from_date", "usage_date", "end_date"}
     look_for_time = {"scheduled_time"}
     uuid_string_columns = {"target_id"}
 

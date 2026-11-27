@@ -3,14 +3,13 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from pydantic import ConfigDict
 from sqlalchemy import Boolean, Enum, ForeignKey, Integer, String, orm, select
 from sqlalchemy.ext.associationproxy import AssociationProxy, association_proxy
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, Session, mapped_column, validates
 
 from mealie.core.config import get_app_settings
-from mealie.db.models._model_utils.auto_init import auto_init
+from mealie.db.models._model_utils.auto_init import AutoInitOptions, auto_init
 from mealie.db.models._model_utils.datetime import NaiveDateTime
 from mealie.db.models._model_utils.guid import GUID
 
@@ -47,6 +46,7 @@ class AuthMethod(enum.Enum):
     MEALIE = "Mealie"
     LDAP = "LDAP"
     OIDC = "OIDC"
+    REVERSE_PROXY = "ReverseProxy"
 
 
 class UserType(StrEnum):
@@ -143,7 +143,7 @@ class User(SqlAlchemyBase, BaseMixins):
         viewonly=True,
         overlaps="recipe,rated_by,rated_recipes",
     )
-    model_config = ConfigDict(
+    model_config = AutoInitOptions(
         exclude={
             "password",
             "admin",

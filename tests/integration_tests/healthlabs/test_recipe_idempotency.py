@@ -6,9 +6,9 @@ from uuid import uuid4
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
+from mealie.db.models._model_utils.datetime import get_utc_now
 from mealie.db.models.healthlabs import HealthLabsIdempotencyOperation
 from mealie.db.models.recipe import RecipeModel
-from mealie.db.models._model_utils.datetime import get_utc_now
 from mealie.repos.repository_factory import AllRepositories
 
 

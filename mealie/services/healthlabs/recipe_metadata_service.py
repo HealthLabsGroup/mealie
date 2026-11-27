@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, DecimalException
@@ -57,7 +57,7 @@ from mealie.schema.healthlabs.recipe_metadata import (
     RecipeMetadataProviderResponse,
     RecipeNutritionMetadata,
 )
-from mealie.schema.recipe import Recipe
+from mealie.schema.recipe import RecipeDraft, RecipeOut
 from mealie.services.healthlabs.nutrition_service import MASS_GRAMS, VOLUME_MILLILITRES, NutritionService
 
 POLICY_VERSION = "recipe-metadata-v1"
@@ -144,7 +144,7 @@ class IngredientMetadataInput:
 
 @dataclass
 class RecipeMetadataInputs:
-    recipe: Recipe
+    recipe: RecipeOut | RecipeDraft
     authoring_fingerprint: str
     input_fingerprint: str
     ingredients: list[IngredientMetadataInput]
@@ -164,7 +164,7 @@ class RecipeMetadataInputs:
         return missing
 
 
-def _bounds(values: dict[str, float | None], model_keys: set[str]) -> None:
+def _bounds(values: Mapping[Any, float | None], model_keys: set[str]) -> None:
     for code, value in values.items():
         if value is not None and (not valid_number(value) or value > (1000 if code == "kcal" else 100)):
             raise ValueError(f"invalid per-100g dimension: {code}")
@@ -393,7 +393,7 @@ def _validate_general(inputs: RecipeMetadataInputs, general: MetadataGeneralPlan
             raise ValueError("plant quantity references unknown ingredient position")
 
 
-def _recorded_general(recipe: Recipe) -> dict:
+def _recorded_general(recipe: RecipeOut | RecipeDraft) -> dict:
     extras = recipe.extras or {}
     try:
         authoring = json.loads(extras.get("healthlabs.ephra", "{}"))
@@ -703,6 +703,7 @@ def project_metadata(
             )
         ],
     )
+    nutrition_provenance_fields: list[NutritionMetadataField | MetadataField] = [*fields.values(), per_serving_mass]
     nutrition = RecipeNutritionMetadata(
         status=status,
         complete=complete,
@@ -714,8 +715,7 @@ def project_metadata(
         provenance=[
             provenance[key]
             for key in sorted(
-                {key for value in (*fields.values(), per_serving_mass) for key in value.provenance_ids}
-                | set(serving_refs)
+                {key for value in nutrition_provenance_fields for key in value.provenance_ids} | set(serving_refs)
             )
         ],
         input_fingerprint=inputs.input_fingerprint,
@@ -969,7 +969,7 @@ class RecipeMetadataService:
             ("source_row", model.__tablename__, identifier), lambda: self.session.get(model, identifier)
         )
 
-    def _ingredient_sources(self, food_id: UUID | None, unit_id: UUID | None, group_id: UUID) -> dict[str, Any]:
+    def _ingredient_sources(self, food_id: UUID | None, unit_id: UUID | None, group_id: UUID | None) -> dict[str, Any]:
         def load() -> dict[str, Any]:
             food = (
                 self.session.scalar(
@@ -1081,7 +1081,7 @@ class RecipeMetadataService:
 
         return self._cached(("ingredient_sources", group_id, food_id, unit_id), load)
 
-    def inputs(self, recipe: Recipe) -> RecipeMetadataInputs:
+    def inputs(self, recipe: RecipeOut | RecipeDraft) -> RecipeMetadataInputs:
         data = recipe.model_dump(mode="json", by_alias=False)
         authoring = {
             key: data.get(key)
@@ -1106,8 +1106,15 @@ class RecipeMetadataService:
             )
         }
         authoring["ingredients"] = [_authoring_ingredient(row) for row in data["recipe_ingredient"]]
+        # Steps without a duration hash as they did before steps had one, so adding the
+        # field does not make every existing estimate stale.
         authoring["instructions"] = [
-            {key: value for key, value in row.items() if key != "id"} for row in data.get("recipe_instructions") or []
+            {
+                key: value
+                for key, value in row.items()
+                if key != "id" and not (key == "duration_seconds" and value is None)
+            }
+            for row in data.get("recipe_instructions") or []
         ]
         authoring["policy"] = POLICY_VERSION
         authoring_hash = fingerprint(authoring)
@@ -1498,7 +1505,7 @@ class RecipeMetadataService:
         return None
 
     def project(
-        self, recipe: Recipe, *, reload_recipe: Callable[[], Recipe | None] | None = None
+        self, recipe: RecipeOut | RecipeDraft, *, reload_recipe: Callable[[], RecipeOut | None] | None = None
     ) -> tuple[RecipeNutritionMetadata, RecipeGeneralMetadata]:
         inputs = self.inputs(recipe)
         for _, payload in self._ready_evidence(inputs):
@@ -1513,7 +1520,7 @@ class RecipeMetadataService:
         return project_metadata(inputs)
 
     def _reference_order_fallback(
-        self, inputs: RecipeMetadataInputs, reload_recipe: Callable[[], Recipe | None]
+        self, inputs: RecipeMetadataInputs, reload_recipe: Callable[[], RecipeOut | None]
     ) -> RecipeMetadataInputs | None:
         """Retry unchanged evidence when a list join permutes a step's references.
 

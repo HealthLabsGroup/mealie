@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from mealie.db.models.healthlabs import HealthLabsFoodMatch
 from mealie.db.models.healthlabs import HealthLabsRecipeMetadataEstimate as Job
 from mealie.db.models.recipe import RecipeModel
-from mealie.schema.recipe import Recipe, RecipeIngredient
+from mealie.schema.recipe import RecipeDraft, RecipeIngredient
 from mealie.services.healthlabs import nutrition_curator_runner as runner
 from mealie.services.healthlabs.recipe_metadata_operator import RecipeManifest, run_manifest, run_source_manifest
 from mealie.services.healthlabs.recipe_metadata_service import RecipeMetadataService
@@ -39,7 +39,7 @@ def test_source_revalidates_full_frozen_scope_and_pins_during_io(
     food, source, _ = _food_work(user)
     scope = "catalogue" if change == "catalogue_to_personal" else "personal"
     recipe = user.repos.recipes.create(
-        Recipe(
+        RecipeDraft(
             name=f"frozen source {uuid4()}",
             user_id=user.user_id,
             group_id=user.group_id,

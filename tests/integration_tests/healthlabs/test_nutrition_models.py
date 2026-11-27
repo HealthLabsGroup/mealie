@@ -17,7 +17,7 @@ from mealie.db.models.healthlabs import (
     HealthLabsNutritionWork,
 )
 from mealie.db.models.users import User
-from mealie.schema.recipe import SaveIngredientFood, SaveIngredientUnit
+from mealie.schema.recipe import IngredientFoodSave, IngredientUnitSave
 from mealie.schema.user import PrivateUser, UserIn
 from tests.utils import TestUser
 
@@ -206,10 +206,10 @@ def test_portion_mapping_is_group_scoped_and_unique(unique_user_fn_scoped: TestU
     assert mapping_type is not None, "HealthLabsFoodPortionMapping is not implemented"
     session = unique_user_fn_scoped.repos.session
     ingredient_food = unique_user_fn_scoped.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=unique_user_fn_scoped.group_id, name=f"food-{uuid4()}")
+        IngredientFoodSave(group_id=unique_user_fn_scoped.group_id, name=f"food-{uuid4()}")
     )
     ingredient_unit = unique_user_fn_scoped.repos.ingredient_units.create(
-        SaveIngredientUnit(group_id=unique_user_fn_scoped.group_id, name=f"unit-{uuid4()}")
+        IngredientUnitSave(group_id=unique_user_fn_scoped.group_id, name=f"unit-{uuid4()}")
     )
     nutrient_food = _nutrient_food(unique_user_fn_scoped, _source(unique_user_fn_scoped))
     portion = HealthLabsFoodPortion(
@@ -389,7 +389,7 @@ def test_source_food_identity_is_unique_within_release(unique_user_fn_scoped: Te
 def test_food_has_only_one_match_and_records_review(unique_user_fn_scoped: TestUser) -> None:
     session = unique_user_fn_scoped.repos.session
     ingredient_food = unique_user_fn_scoped.repos.ingredient_foods.create(
-        SaveIngredientFood(
+        IngredientFoodSave(
             group_id=unique_user_fn_scoped.group_id,
             name=f"lentils-{uuid4()}",
         )
@@ -439,7 +439,7 @@ def test_food_match_rejects_confidence_outside_unit_interval(
 ) -> None:
     session = unique_user_fn_scoped.repos.session
     ingredient_food = unique_user_fn_scoped.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=unique_user_fn_scoped.group_id, name=f"food-{uuid4()}")
+        IngredientFoodSave(group_id=unique_user_fn_scoped.group_id, name=f"food-{uuid4()}")
     )
     nutrient_food = _nutrient_food(unique_user_fn_scoped, _source(unique_user_fn_scoped))
     session.add(
@@ -460,7 +460,7 @@ def test_food_match_rejects_confidence_outside_unit_interval(
 def test_food_match_requires_review_actor_and_time_together(unique_user_fn_scoped: TestUser) -> None:
     session = unique_user_fn_scoped.repos.session
     ingredient_food = unique_user_fn_scoped.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=unique_user_fn_scoped.group_id, name=f"food-{uuid4()}")
+        IngredientFoodSave(group_id=unique_user_fn_scoped.group_id, name=f"food-{uuid4()}")
     )
     nutrient_food = _nutrient_food(unique_user_fn_scoped, _source(unique_user_fn_scoped))
     session.add(

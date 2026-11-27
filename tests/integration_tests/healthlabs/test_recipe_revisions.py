@@ -12,7 +12,7 @@ from mealie.db.models.healthlabs import HealthLabsCapabilityGrant
 from mealie.db.models.recipe.recipe import HealthLabsRecipeRevision
 from mealie.db.models.users import User
 from mealie.schema.healthlabs.identity import HealthLabsCapability
-from mealie.schema.recipe.recipe_ingredient import SaveIngredientFood, SaveIngredientUnit
+from mealie.schema.recipe.recipe_ingredient import IngredientFoodSave, IngredientUnitSave
 from tests.utils import TestUser, api_routes
 from tests.utils.factories import random_string
 
@@ -65,8 +65,10 @@ def test_recipe_revisions_are_monotonic_immutable_and_skip_equivalent_retry(
     revisions = _revisions(unique_user_fn_scoped, recipe["id"])
     assert len(revisions) == 1
     first_snapshot = deepcopy(revisions[0].snapshot)
-    assert first_snapshot["recipe_ingredient"]
-    assert first_snapshot["recipe_instructions"]
+    # New recipes no longer get a placeholder ingredient and step (upstream #9041), so the
+    # snapshot records the empty lists.
+    assert first_snapshot["recipe_ingredient"] == []
+    assert first_snapshot["recipe_instructions"] == []
     assert "tags" in first_snapshot
     assert "image" in first_snapshot
     assert (
@@ -84,10 +86,10 @@ def test_recipe_revisions_are_monotonic_immutable_and_skip_equivalent_retry(
     assert len(_revisions(unique_user_fn_scoped, recipe["id"])) == 1
 
     food = unique_user_fn_scoped.repos.ingredient_foods.create(
-        SaveIngredientFood(name="Tomato", group_id=unique_user_fn_scoped.group_id)
+        IngredientFoodSave(name="Tomato", group_id=unique_user_fn_scoped.group_id)
     )
     unit = unique_user_fn_scoped.repos.ingredient_units.create(
-        SaveIngredientUnit(name="gram", abbreviation="g", group_id=unique_user_fn_scoped.group_id)
+        IngredientUnitSave(name="gram", abbreviation="g", group_id=unique_user_fn_scoped.group_id)
     )
     changed = equivalent.json()
     changed["description"] = "Revision two"

@@ -34,7 +34,7 @@ from mealie.schema.healthlabs.recipe import (
     HealthLabsUnitOut,
 )
 from mealie.schema.recipe.recipe import HealthLabsRecipeScope as NativeRecipeScope
-from mealie.schema.recipe.recipe import Recipe
+from mealie.schema.recipe.recipe import RecipeDraft, RecipeOut
 from mealie.schema.user import PrivateUser
 from mealie.services.healthlabs.access_policy import RecipeAccessDenied, RecipeAccessPolicy
 from mealie.services.healthlabs.nutrition_service import NutritionService
@@ -127,7 +127,7 @@ class RecipeApiService:
         break_glass_reason: str | None = None,
     ) -> HealthLabsRecipePage:
         conditions = self._visibility_conditions(break_glass_reason)
-        query = sa.select(RecipeModel).where(sa.or_(*conditions)).options(*Recipe.loader_options())
+        query = sa.select(RecipeModel).where(sa.or_(*conditions)).options(*RecipeOut.loader_options())
         if q and (normalized := RecipeModel.normalize(q)):
             query = query.where(
                 sa.or_(
@@ -149,7 +149,7 @@ class RecipeApiService:
             visible = models[:PAGE_SIZE]
             recipes: list[HealthLabsRecipeOut] = []
             for model in visible:
-                recipe = Recipe.model_validate(model)
+                recipe = RecipeOut.model_validate(model)
                 # Policy and cross-read audit writes retain their original session.
                 self._authorize_read(recipe, access_reason, break_glass_reason)
                 recipes.append(self.to_out(recipe, projection=projection) if projection else self.to_out(recipe))
@@ -188,7 +188,8 @@ class RecipeApiService:
         )
         if revision is None:
             raise HealthLabsRecipeNotFound(recipe_id)
-        snapshot = Recipe.model_validate(revision.snapshot)
+        # A snapshot keeps only SNAPSHOT_FIELDS (no household), so it is read back as a draft.
+        snapshot = RecipeDraft.model_validate(revision.snapshot)
         result = HealthLabsRecipeRevisionOut(
             id=revision.id,
             recipe_id=revision.recipe_id,
@@ -208,7 +209,7 @@ class RecipeApiService:
             self.policy.require(HealthLabsCapability.RECIPES_WRITE_OWN)
         native = self._native_write(data, scope=scope)
         cleaned = self.native.clean_recipe_dict(native.model_dump(mode="json", by_alias=False))
-        created = self.native.create_one(Recipe.model_validate(cleaned))
+        created = self.native.create_one(RecipeDraft.model_validate(cleaned))
         return self.to_out(created)
 
     def update_recipe(self, recipe_id: UUID, data: HealthLabsRecipeWrite) -> HealthLabsRecipeOut:
@@ -221,7 +222,7 @@ class RecipeApiService:
         if "source_url" not in data.model_fields_set:
             native.org_url = current.org_url
         cleaned = self.native.clean_recipe_dict(native.model_dump(mode="json", by_alias=False))
-        updated = self.native.update_one(recipe_id, Recipe.model_validate(cleaned))
+        updated = self.native.update_one(recipe_id, RecipeDraft.model_validate(cleaned))
         return self.to_out(updated)
 
     def delete_recipe(self, recipe_id: UUID) -> HealthLabsRecipeOut:
@@ -250,7 +251,7 @@ class RecipeApiService:
         )
         if not recipe.image:
             raise HealthLabsRecipeNotFound(recipe_id)
-        image_path = Recipe.directory_from_id(recipe_id).joinpath("images", "original.webp")
+        image_path = RecipeOut.directory_from_id(recipe_id).joinpath("images", "original.webp")
         if not image_path.is_file():
             raise HealthLabsRecipeNotFound(recipe_id)
         return image_path.read_bytes()
@@ -262,7 +263,7 @@ class RecipeApiService:
 
     def to_out(
         self,
-        recipe: Recipe,
+        recipe: RecipeOut | RecipeDraft,
         *,
         revision: HealthLabsRecipeRevision | None = None,
         projection: _RecipeReadProjection | None = None,
@@ -335,22 +336,22 @@ class RecipeApiService:
         )
 
     @staticmethod
-    def _reload_recipe(recipe_id: UUID, projection: _RecipeReadProjection) -> Recipe | None:
+    def _reload_recipe(recipe_id: UUID, projection: _RecipeReadProjection) -> RecipeOut | None:
         # Refresh already-loaded associations using the exact point-read shape,
         # within the list's existing read-only snapshot. The display DTO is kept.
         model = (
             projection.session.execute(
                 sa.select(RecipeModel)
                 .where(RecipeModel.id == recipe_id)
-                .options(*Recipe.loader_options())
+                .options(*RecipeOut.loader_options())
                 .execution_options(populate_existing=True)
             )
             .unique()
             .scalar_one_or_none()
         )
-        return Recipe.model_validate(model) if model is not None else None
+        return RecipeOut.model_validate(model) if model is not None else None
 
-    def _native_write(self, data: HealthLabsRecipeWrite, *, scope: HealthLabsRecipeScope) -> Recipe:
+    def _native_write(self, data: HealthLabsRecipeWrite, *, scope: HealthLabsRecipeScope) -> RecipeDraft:
         ingredients = [
             {
                 "reference_id": str(item.reference_id),
@@ -374,7 +375,7 @@ class RecipeApiService:
             }
             for step in data.instructions
         ]
-        return Recipe(
+        return RecipeDraft(
             name=data.name,
             description=data.description,
             healthlabs_scope=NativeRecipeScope(scope.value),
@@ -467,13 +468,13 @@ class RecipeApiService:
             return {}
         return value
 
-    def _get_any_recipe(self, recipe_id: UUID) -> Recipe:
+    def _get_any_recipe(self, recipe_id: UUID) -> RecipeOut:
         recipe = self.unfiltered_recipes.get_one(recipe_id, "id")
         if recipe is None:
             raise HealthLabsRecipeNotFound(recipe_id)
         return recipe
 
-    def _get_mutation_target(self, recipe_id: UUID) -> Recipe:
+    def _get_mutation_target(self, recipe_id: UUID) -> RecipeOut:
         recipe = self._get_any_recipe(recipe_id)
         if recipe.healthlabs_scope == NativeRecipeScope.CATALOGUE:
             self.policy.require(HealthLabsCapability.CATALOGUE_WRITE)
@@ -506,7 +507,7 @@ class RecipeApiService:
 
     def _authorize_read(
         self,
-        recipe: Recipe,
+        recipe: RecipeOut,
         access_reason: str | None,
         break_glass_reason: str | None,
     ) -> None:
@@ -527,7 +528,7 @@ class RecipeApiService:
             return
         raise HealthLabsRecipeNotFound(recipe.id)
 
-    def _record_cross_read(self, recipe: Recipe, reason: str | None, action: str) -> None:
+    def _record_cross_read(self, recipe: RecipeOut, reason: str | None, action: str) -> None:
         clean_reason = (reason or "").strip()
         if not clean_reason:
             raise RecipeAccessDenied("Cross-subject access reason is required")

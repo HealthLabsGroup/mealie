@@ -17,7 +17,7 @@ from mealie.db.models.group.ai_providers import AIProvider, AIProviderSettings
 from mealie.db.models.healthlabs import HealthLabsRecipeMetadataEstimate, HealthLabsRecipeMetadataScan
 from mealie.db.models.recipe import RecipeModel
 from mealie.repos.repository_factory import AllRepositories
-from mealie.schema.recipe import Recipe
+from mealie.schema.recipe import RecipeOut
 from mealie.services.healthlabs.recipe_metadata_service import POLICY_VERSION, RecipeMetadataService, fingerprint
 
 
@@ -40,7 +40,7 @@ class RecipeMetadataScheduler:
         self.country = country
         self.now = now or get_utc_now()
 
-    def schedule(self, recipe: Recipe) -> UUID | None:
+    def schedule(self, recipe: RecipeOut) -> UUID | None:
         service = RecipeMetadataService(self.session, country=self.country)
         inputs = service.inputs(recipe)
         jobs = HealthLabsRecipeMetadataEstimate

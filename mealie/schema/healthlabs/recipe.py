@@ -170,7 +170,7 @@ class HealthLabsImportDraftRequest(MealieModel):
 
 
 class HealthLabsImportRecipeDraft(HealthLabsRecipeWrite):
-    ingredients: list[HealthLabsDraftIngredient] = []
+    ingredients: list[HealthLabsDraftIngredient] = []  # type: ignore[assignment]  # narrows the write type's items; list is invariant
 
 
 class HealthLabsImportDraftOut(MealieModel):

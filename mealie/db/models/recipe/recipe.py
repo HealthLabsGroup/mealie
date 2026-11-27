@@ -3,7 +3,6 @@ from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 import sqlalchemy.orm as orm
-from pydantic import ConfigDict
 from sqlalchemy import event
 from sqlalchemy.ext.associationproxy import AssociationProxy, association_proxy
 from sqlalchemy.ext.orderinglist import ordering_list
@@ -11,7 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, validates
 from sqlalchemy.orm.attributes import get_history
 from sqlalchemy.orm.session import object_session
 
-from mealie.db.models._model_utils.auto_init import auto_init
+from mealie.db.models._model_utils.auto_init import AutoInitOptions, auto_init
 from mealie.db.models._model_utils.datetime import NaiveDateTime, get_utc_now, get_utc_today
 from mealie.db.models._model_utils.guid import GUID
 from mealie.db.models.recipe.ingredient import RecipeIngredientModel
@@ -41,7 +40,7 @@ if TYPE_CHECKING:
 
 class RecipeModel(SqlAlchemyBase, BaseMixins):
     __tablename__ = "recipes"
-    __table_args__: tuple[sa.Constraint, ...] = (
+    __table_args__: tuple[sa.Constraint | sa.Index, ...] = (
         sa.UniqueConstraint("slug", "group_id", name="recipe_slug_group_id_key"),
         sa.CheckConstraint(
             "healthlabs_scope IN ('personal', 'catalogue')",
@@ -51,6 +50,9 @@ class RecipeModel(SqlAlchemyBase, BaseMixins):
             "healthlabs_revision_number >= 0",
             name="healthlabs_recipe_revision_nonnegative",
         ),
+        # The recipe list's default sort. Without it the database reads and sorts the whole group to
+        # return one page, and recipes arriving in created_at order is the worst case for that sort.
+        sa.Index("ix_recipes_group_id_created_at", "group_id", "created_at"),
     )
 
     id: FilterableColumn[GUID] = mapped_column(GUID, primary_key=True, default=GUID.generate)
@@ -170,7 +172,6 @@ class RecipeModel(SqlAlchemyBase, BaseMixins):
     date_added: FilterableColumn[date | None] = mapped_column(sa.Date, default=get_utc_today)
     date_updated: FilterableColumn[datetime | None] = mapped_column(NaiveDateTime)
 
-    last_made: FilterableColumn[datetime | None] = mapped_column(NaiveDateTime)
     made_by: Mapped[list[Household]] = orm.relationship(
         "Household", secondary=HouseholdToRecipe.__tablename__, back_populates="made_recipes"
     )
@@ -190,7 +191,7 @@ class RecipeModel(SqlAlchemyBase, BaseMixins):
     # Automatically updated by sqlalchemy event, do not write to this manually
     name_normalized: FilterableColumn[str] = mapped_column(sa.String, nullable=False, index=True)
     description_normalized: FilterableColumn[str | None] = mapped_column(sa.String, index=True)
-    model_config = ConfigDict(
+    model_config = AutoInitOptions(
         get_attr="slug",
         exclude={
             "assets",
@@ -205,7 +206,8 @@ class RecipeModel(SqlAlchemyBase, BaseMixins):
     )
 
     # Deprecated
-    cook_time: Mapped[str | None] = mapped_column(sa.String)
+    # Kept as a query-filter anchor until aliases can be defined without a model column.
+    last_made: FilterableColumn[datetime | None] = mapped_column(NaiveDateTime)
     recipeCuisine: Mapped[str | None] = mapped_column(sa.String)
     is_ocr_recipe: Mapped[bool | None] = mapped_column(sa.Boolean, default=False)
 

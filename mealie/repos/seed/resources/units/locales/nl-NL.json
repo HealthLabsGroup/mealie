@@ -47,6 +47,12 @@
         "description": "",
         "abbreviation": "ml"
     },
+    "centiliter": {
+        "name": "centiliter",
+        "plural_name": "centiliter",
+        "description": "",
+        "abbreviation": "cl"
+    },
     "liter": {
         "name": "liter",
         "plural_name": "liter",
@@ -86,13 +92,13 @@
     },
     "splash": {
         "name": "scheutje",
-        "plural_name": "scheutje",
+        "plural_name": "scheutjes",
         "description": "",
         "abbreviation": ""
     },
     "dash": {
         "name": "snufje",
-        "plural_name": "snuif",
+        "plural_name": "snufjes",
         "description": "",
         "abbreviation": ""
     },

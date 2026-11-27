@@ -26,7 +26,7 @@ from mealie.db.models.healthlabs import HealthLabsRecipeMetadataEstimate as Job
 from mealie.db.models.recipe import RecipeModel
 from mealie.repos.repository_factory import AllRepositories
 from mealie.schema.healthlabs.recipe_metadata import MetadataPlants
-from mealie.schema.recipe import Recipe
+from mealie.schema.recipe import RecipeOut
 from mealie.services.healthlabs.nutrition_provider_resolution import CuratorProviderResolver, resolve_default_provider
 from mealie.services.healthlabs.recipe_metadata_estimator import MetadataRequestLimits
 from mealie.services.healthlabs.recipe_metadata_scheduler import RecipeMetadataScheduler
@@ -92,7 +92,7 @@ class RecipeManifest(RootModel[tuple[ManifestRecipe, ...]]):
         return frozenset(r.recipe_id for r in self.root)
 
 
-def _load(session: Session, entry: ManifestRecipe) -> tuple[Recipe | None, str]:
+def _load(session: Session, entry: ManifestRecipe) -> tuple[RecipeOut | None, str]:
     actual = session.execute(
         sa.select(RecipeModel.group_id, RecipeModel.healthlabs_scope).where(RecipeModel.id == entry.recipe_id)
     ).first()

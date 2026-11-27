@@ -13,7 +13,7 @@ from mealie.db.models.healthlabs import (
     HealthLabsNutritionWork,
 )
 from mealie.schema.healthlabs.nutrition import HealthLabsNutritionStatus
-from mealie.schema.recipe import Recipe, RecipeIngredient, SaveIngredientFood, SaveIngredientUnit
+from mealie.schema.recipe import IngredientFoodSave, IngredientUnitSave, RecipeDraft, RecipeIngredient
 from mealie.services.healthlabs.nutrition_service import NutritionService
 from tests.utils import TestUser
 
@@ -64,7 +64,7 @@ def _nutrient_food(
 
 def _ingredient_food(user: TestUser, name: str, *, aliases: list[str] | None = None):
     return user.repos.ingredient_foods.create(
-        SaveIngredientFood(
+        IngredientFoodSave(
             group_id=user.group_id,
             name=name,
             aliases=[{"name": alias} for alias in aliases or []],
@@ -160,7 +160,7 @@ def test_food_facts_converts_mass_units(
     nutrient_food = _nutrient_food(user, _source(user), name=food.name)
     _reviewed_match(user, food.id, nutrient_food.id)
     unit = user.repos.ingredient_units.create(
-        SaveIngredientUnit(
+        IngredientUnitSave(
             group_id=user.group_id,
             name=f"{name}-{uuid4()}",
             standard_quantity=standard_quantity,
@@ -207,7 +207,7 @@ def test_food_facts_uses_source_backed_volume_and_piece_portions(
         )
     )
     unit = user.repos.ingredient_units.create(
-        SaveIngredientUnit(
+        IngredientUnitSave(
             group_id=user.group_id,
             name=f"{unit_name}-{uuid4()}",
             aliases=[{"name": unit_name}],
@@ -226,7 +226,7 @@ def test_food_facts_prefers_exact_curator_portion_mapping(unique_user_fn_scoped:
     food = _ingredient_food(user, f"mapped-food-{uuid4()}")
     nutrient_food = _nutrient_food(user, _source(user), name=food.name)
     _reviewed_match(user, food.id, nutrient_food.id)
-    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"scoop-{uuid4()}"))
+    unit = user.repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=f"scoop-{uuid4()}"))
     portion = HealthLabsFoodPortion(
         nutrient_food_id=nutrient_food.id,
         description="one piece",
@@ -283,7 +283,7 @@ def test_food_facts_keeps_missing_conversion_unknown(unique_user_fn_scoped: Test
     food = _ingredient_food(user, f"unknown-unit-food-{uuid4()}")
     nutrient_food = _nutrient_food(user, _source(user), name=food.name)
     _reviewed_match(user, food.id, nutrient_food.id)
-    unit = user.repos.ingredient_units.create(SaveIngredientUnit(group_id=user.group_id, name=f"handful-{uuid4()}"))
+    unit = user.repos.ingredient_units.create(IngredientUnitSave(group_id=user.group_id, name=f"handful-{uuid4()}"))
 
     facts = NutritionService(user.repos.session).food_facts(food.id, unit.id, 1)
 
@@ -307,9 +307,9 @@ def test_unreviewed_match_never_contributes_recipe_totals(unique_user_fn_scoped:
     )
     user.repos.session.commit()
     unit = user.repos.ingredient_units.create(
-        SaveIngredientUnit(group_id=user.group_id, name=f"gram-{uuid4()}", standard_quantity=1, standard_unit="gram")
+        IngredientUnitSave(group_id=user.group_id, name=f"gram-{uuid4()}", standard_quantity=1, standard_unit="gram")
     )
-    recipe = Recipe(
+    recipe = RecipeDraft(
         name="Awaiting review",
         recipe_servings=1,
         recipe_ingredient=[RecipeIngredient(reference_id=uuid4(), quantity=100, food=food, unit=unit)],
@@ -330,10 +330,10 @@ def test_calculate_recipe_rounds_totals_and_keeps_per_serving_null_for_zero_serv
     nutrient_food = _nutrient_food(user, source, name=food.name)
     _reviewed_match(user, food.id, nutrient_food.id)
     unit = user.repos.ingredient_units.create(
-        SaveIngredientUnit(group_id=user.group_id, name=f"gram-{uuid4()}", standard_quantity=1, standard_unit="gram")
+        IngredientUnitSave(group_id=user.group_id, name=f"gram-{uuid4()}", standard_quantity=1, standard_unit="gram")
     )
     reference_id = uuid4()
-    recipe = Recipe(
+    recipe = RecipeDraft(
         name="Nutrition calculation",
         recipe_servings=0,
         recipe_ingredient=[RecipeIngredient(reference_id=reference_id, quantity=33.333, food=food, unit=unit)],
@@ -357,9 +357,9 @@ def test_calculate_recipe_rounds_only_after_summing_ingredients(unique_user_fn_s
     nutrient_food = _nutrient_food(user, _source(user), name=food.name, values=values)
     _reviewed_match(user, food.id, nutrient_food.id)
     unit = user.repos.ingredient_units.create(
-        SaveIngredientUnit(group_id=user.group_id, name=f"gram-{uuid4()}", standard_quantity=1, standard_unit="gram")
+        IngredientUnitSave(group_id=user.group_id, name=f"gram-{uuid4()}", standard_quantity=1, standard_unit="gram")
     )
-    recipe = Recipe(
+    recipe = RecipeDraft(
         name="Round once",
         recipe_servings=1,
         recipe_ingredient=[

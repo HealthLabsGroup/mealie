@@ -1,0 +1,2 @@
+# Upstream test (mealie-recipes/mealie #8715): the setting name OIDC_TLS_CACERTFILE matches generic-api-key.
+c9bf6f1cab3e54dfa676c4fa5db64811839ef4a1:tests/unit_tests/test_oidc_ssl.py:generic-api-key:71

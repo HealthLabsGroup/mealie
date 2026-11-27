@@ -13,7 +13,7 @@ from mealie.db.models.healthlabs import (
     HealthLabsNutrientSourceRelease,
 )
 from mealie.schema.healthlabs.nutrition_source import NutrientValue, SourceDensityRow, SourceFoodRow, SourceManifest
-from mealie.schema.recipe import SaveIngredientFood
+from mealie.schema.recipe import IngredientFoodSave
 from mealie.services.healthlabs.nutrition_import_service import NutritionImportService, SourceChecksumMismatch
 from tests.utils import TestUser
 
@@ -183,7 +183,7 @@ def test_reimport_preserves_reviewed_food_match(unique_user_fn_scoped: TestUser)
         select(HealthLabsNutrientFood).where(HealthLabsNutrientFood.source_release_id == result.source_release_id)
     ).one()
     ingredient_food = unique_user_fn_scoped.repos.ingredient_foods.create(
-        SaveIngredientFood(group_id=unique_user_fn_scoped.group_id, name=f"lentils-{uuid4()}")
+        IngredientFoodSave(group_id=unique_user_fn_scoped.group_id, name=f"lentils-{uuid4()}")
     )
     reviewed_at = datetime(2026, 10, 17, 9, 30, tzinfo=UTC)
     match = HealthLabsFoodMatch(
